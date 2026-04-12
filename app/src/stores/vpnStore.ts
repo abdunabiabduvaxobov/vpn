@@ -195,6 +195,44 @@ export const useVpnStore = create<VpnState>((set, get) => ({
       return;
     }
 
+    const current = get().connectionState;
+
+    // Guard 1: preemptive 'connecting' window. useVpnConnection.connect()
+    // sets state to 'connecting' BEFORE vpnStore.connect() runs (so the
+    // button turns yellow immediately). During this API-prep window,
+    // _connecting is false, so the guard above doesn't fire. Native
+    // events arriving during this window are stale echoes from the
+    // previous session's teardown (or a status poll on startup) and
+    // must not overwrite the preemptive state — otherwise the UI
+    // flickers back to 'disconnected' / "Press to connect" for 1-2s
+    // in the middle of a tap the user already committed to.
+    // Only 'error' punches through (a real native failure we must
+    // surface even during prep).
+    if (current === 'connecting' && !get()._connecting && status.state !== 'error') {
+      set({
+        bytesUp: status.bytes_up,
+        bytesDown: status.bytes_down,
+        connectedAt: status.connected_at > 0 ? new Date(status.connected_at * 1000) : null,
+      });
+      return;
+    }
+
+    // Guard 2: stale events after connection is established. After
+    // connect() resolves and state reaches 'connected', the native
+    // side may still fire delayed 'connecting' events (or even
+    // another 'connected' event). Only real state changes matter:
+    // 'disconnected' (tunnel dropped) and 'error' (tunnel crashed).
+    // Everything else is an echo that would cause a visible flicker
+    // in the UI (connected → connecting → connected in ~100ms).
+    if (current === 'connected' && status.state !== 'disconnected' && status.state !== 'error') {
+      set({
+        bytesUp: status.bytes_up,
+        bytesDown: status.bytes_down,
+        connectedAt: status.connected_at > 0 ? new Date(status.connected_at * 1000) : null,
+      });
+      return;
+    }
+
     // If native confirms 'disconnected', clear stats and cancel safety timeout
     if (status.state === 'disconnected') {
       clearDisconnectTimeout();
