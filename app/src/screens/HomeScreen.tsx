@@ -1,5 +1,5 @@
-import React, {useEffect, useState} from 'react';
-import {View, Text, StyleSheet, SafeAreaView, TouchableOpacity} from 'react-native';
+import React, {useEffect, useRef, useState} from 'react';
+import {AppState, AppStateStatus, View, Text, StyleSheet, SafeAreaView, TouchableOpacity} from 'react-native';
 import {useTranslation} from 'react-i18next';
 import {useNavigation} from '@react-navigation/native';
 import type {NativeStackNavigationProp} from '@react-navigation/native-stack';
@@ -8,6 +8,7 @@ import {ConnectButton} from '../components/ConnectButton';
 import {SpeedIndicator} from '../components/SpeedIndicator';
 import {StatusBadge} from '../components/StatusBadge';
 import {useVpnConnection} from '../hooks/useVpnConnection';
+import {useAuthStore} from '../stores/authStore';
 import {useServerStore} from '../stores/serverStore';
 import {useLayout} from '../hooks/useLayout';
 import {AdBanner} from '../ads/AdBanner';
@@ -31,6 +32,22 @@ export function HomeScreen() {
   } = useVpnConnection();
   const {selectedServer} = useServerStore();
   const {tabletContentStyle} = useLayout();
+  const fetchAccount = useAuthStore(s => s.fetchAccount);
+  const isAuthenticated = useAuthStore(s => s.isAuthenticated);
+
+  // Refresh user data (subscription_tier) when app returns to foreground
+  // so ad gating picks up changes made via the admin panel.
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  useEffect(() => {
+    if (isAuthenticated) fetchAccount();
+    const sub = AppState.addEventListener('change', next => {
+      if (appStateRef.current !== 'active' && next === 'active' && isAuthenticated) {
+        fetchAccount();
+      }
+      appStateRef.current = next;
+    });
+    return () => sub.remove();
+  }, [isAuthenticated, fetchAccount]);
 
   // Connection timer
   const [elapsed, setElapsed] = useState('00:00:00');
