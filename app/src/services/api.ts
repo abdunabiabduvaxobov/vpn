@@ -82,16 +82,32 @@ api.interceptors.response.use(
           return api(originalRequest);
         } catch (refreshError) {
           processQueue(refreshError, null);
-          useAuthStore.getState().logout();
+          // Logout clears stale tokens, then immediately re-initialize
+          // via /auth/guest so the app doesn't get stuck in a logged-out
+          // loading state. This covers the tg_restore flow where the
+          // server deletes the guest user mid-session — the refresh
+          // fails because the session row is gone, but the device row
+          // is still bound to the real account (with cleared secret
+          // hash from PerformRestore), so /auth/guest returns fresh
+          // tokens for the correct user automatically.
+          //
+          // initialize() is idempotent (guarded by the `initializing`
+          // module flag) so concurrent 401s from different requests
+          // won't cause multiple guest-login calls.
+          const store = useAuthStore.getState();
+          await store.logout();
+          store.initialize();
           return Promise.reject(refreshError);
         } finally {
           isRefreshing = false;
         }
       } else {
-        // No refresh token — unblock waiters and logout
+        // No refresh token — unblock waiters and re-init as guest
         isRefreshing = false;
         processQueue(error, null);
-        useAuthStore.getState().logout();
+        const store = useAuthStore.getState();
+        await store.logout();
+        store.initialize();
       }
     }
 
