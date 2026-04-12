@@ -120,13 +120,22 @@ export function AccountScreen() {
   async function handleRefresh() {
     setRefreshing(true);
     try {
+      // Only await the imperative fetches — each has its own
+      // try/catch that silences errors, so Promise.all always
+      // resolves quickly (even on 401/network failure). The
+      // TanStack Query invalidations are fire-and-forget:
+      // awaiting them would block the pull indicator for up to
+      // 30s because TanStack retries failed queries 3x and each
+      // retry goes through the axios interceptor's refresh flow.
       await Promise.all([
         fetchAccount(),
         fetchActiveDevices(),
         fetchBoundDevices(),
-        queryClient.invalidateQueries({queryKey: ['telegram-status']}),
-        queryClient.invalidateQueries({queryKey: ['subscription']}),
       ]);
+      // Fire-and-forget: queries refetch in the background and
+      // the UI re-renders via TanStack's reactive hooks.
+      queryClient.invalidateQueries({queryKey: ['telegram-status']});
+      queryClient.invalidateQueries({queryKey: ['subscription']});
     } finally {
       setRefreshing(false);
     }
