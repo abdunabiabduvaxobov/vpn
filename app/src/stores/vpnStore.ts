@@ -106,7 +106,19 @@ export const useVpnStore = create<VpnState>((set, get) => ({
     try {
       // Call native module via VPN bridge → Android VpnService / iOS NEVPNManager
       // The promise resolves AFTER TUN + tun2socks are fully set up (step10).
-      await vpnBridge.connect(config);
+      //
+      // Safety timeout: if the native promise doesn't resolve or reject
+      // within 15 seconds, race it against a rejection so the UI doesn't
+      // get stuck on 'connecting' forever. The native tunnel might actually
+      // be connected (xray logs show traffic flowing while JS thinks we're
+      // still connecting) — the timeout surfaces this as an error and the
+      // user can retry, at which point the native side is already up and
+      // the second attempt resolves instantly.
+      const CONNECT_TIMEOUT_MS = 15_000;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Connection timed out')), CONNECT_TIMEOUT_MS);
+      });
+      await Promise.race([vpnBridge.connect(config), timeoutPromise]);
 
       // Promise resolved = VPN fully connected (TUN + tun2socks ready).
       set({
