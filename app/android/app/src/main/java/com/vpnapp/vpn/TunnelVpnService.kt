@@ -391,14 +391,32 @@ class TunnelVpnService : VpnService(), ProtectSocket, StatusCallback {
             return
         }
 
-        // Check Go tunnel state — if already connected, skip.
-        // This prevents the race where JS fires a second connect
-        // before the first startVpn finishes setting isRunning=true.
+        // Check Go tunnel state to avoid double-connecting.
+        //
+        // If Go is already "connected" (common after a fast disconnect→reconnect
+        // where Tunnel.disconnect() hasn't finished yet, or when the JS side
+        // retried after a timeout), we skip re-establishing xray but still
+        // need to ensure TUN + tun2socks are up and — critically — send
+        // broadcastConnectResult so the JS promise resolves. Without that
+        // broadcast the promise hangs until the 15s JS timeout fires, and the
+        // user sees "Connection timed out" even though the tunnel is up.
+        //
+        // If Go is "connecting", another startVpn is already in flight. We
+        // skip AND send a failure result so the JS side doesn't hang.
         try {
             val goStatus = Tunnel.getStatus()
             val goState = JSONObject(goStatus).optString("state", "")
-            if (goState == "connected" || goState == "connecting") {
-                sendDebugEvent("startVpn_skipped_go_state", "goState=$goState")
+            if (goState == "connecting") {
+                sendDebugEvent("startVpn_skipped_go_connecting", "goState=$goState")
+                broadcastConnectResult(success = false)
+                return
+            }
+            if (goState == "connected") {
+                sendDebugEvent("startVpn_go_already_connected", "goState=$goState")
+                // Tunnel is already up — confirm to JS immediately.
+                isRunning = true
+                isStarting = false
+                broadcastConnectResult(success = true)
                 return
             }
         } catch (_: Throwable) { }
