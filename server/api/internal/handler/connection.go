@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"time"
 
 	"vpnapp/server/api/internal/model"
 	"vpnapp/server/api/internal/repository"
@@ -44,6 +45,16 @@ func RegisterConnection(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		}
 		tier := userRecord.SubscriptionTier
 		if tier == "" {
+			tier = "free"
+		}
+		// Enforce subscription expiration in real time. The scheduler
+		// downgrades expired subscriptions every ~1 minute, but a user
+		// could start a connection in the window between expiry and the
+		// next scheduler tick. Treating an expired tier as "free" here
+		// closes that gap without a second DB write — the scheduler
+		// will permanently downgrade the tier on its next pass.
+		if tier != "free" && userRecord.SubscriptionExpiresAt != nil &&
+			userRecord.SubscriptionExpiresAt.Before(time.Now()) {
 			tier = "free"
 		}
 

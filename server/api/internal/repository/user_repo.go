@@ -2,6 +2,7 @@ package repository
 
 import (
 	"errors"
+	"fmt"
 
 	"vpnapp/server/api/internal/model"
 
@@ -264,6 +265,26 @@ func CountTelegramLinkedUsers(db *gorm.DB) (int64, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+// DowngradeExpiredSubscriptions finds every user whose paid subscription
+// has passed its expiration date and resets their tier to "free". The
+// subscription_expires_at timestamp is left intact as a historical marker
+// so the admin panel can show "expired on X" instead of just "free".
+//
+// Returns the count of users downgraded. Called by the background
+// scheduler every minute.
+func DowngradeExpiredSubscriptions(db *gorm.DB) (int64, error) {
+	if db == nil {
+		return 0, errNilDB
+	}
+	result := db.Model(&model.User{}).
+		Where("subscription_tier <> ? AND subscription_expires_at IS NOT NULL AND subscription_expires_at < NOW()", "free").
+		Update("subscription_tier", "free")
+	if result.Error != nil {
+		return 0, fmt.Errorf("downgrading expired subscriptions: %w", result.Error)
+	}
+	return result.RowsAffected, nil
 }
 
 // UpdateUserName sets the full_name on the users row identified by id.

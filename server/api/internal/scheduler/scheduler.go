@@ -115,6 +115,19 @@ func runCleanup(db *gorm.DB, logger *zap.Logger, cfg *config.Config) {
 		logger.Info("expired link codes cleaned up", zap.Int64("count", codeCount))
 	}
 
+	// Downgrade users whose paid subscription has expired. Changes
+	// subscription_tier to "free" but keeps subscription_expires_at intact
+	// so the admin panel can show "expired on X". Runs every cycle (~1 min)
+	// so the worst-case window where an expired user still has premium
+	// limits is 60 seconds — an acceptable trade-off vs per-request
+	// expiry checks on every API call.
+	expiredCount, err := repository.DowngradeExpiredSubscriptions(db)
+	if err != nil {
+		logger.Error("subscription expiry check failed", zap.Error(err))
+	} else if expiredCount > 0 {
+		logger.Info("expired subscriptions downgraded to free", zap.Int64("count", expiredCount))
+	}
+
 	// Free quota slots occupied by devices that have not been seen for the
 	// configured stale-device window. This is the safety net for the iOS
 	// reinstall edge case (and for any device the user has stopped using).
