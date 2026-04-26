@@ -33,7 +33,12 @@ jobs:
 
       - name: Install dependencies
         working-directory: landing
-        run: npm ci
+        # `npm install` (not `npm ci`) tolerates lockfile drift between the
+        # dev box (Node 25) and the runner (Node 22). The trade-off is a
+        # slightly slower install; for a static landing of this size it
+        # costs ~5s, which we'd rather pay than have CI fail on phantom
+        # lockfile mismatches whenever Node majors diverge.
+        run: npm install --no-audit --no-fund
 
       - name: Build (static export)
         working-directory: landing
