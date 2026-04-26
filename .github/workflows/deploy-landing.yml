@@ -1,0 +1,84 @@
+name: Build & Deploy Landing
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'landing/**'
+      - '.github/workflows/deploy-landing.yml'
+  workflow_dispatch:
+
+# Decoupled from deploy.yml (backend) and deploy-admin.yml (admin panel).
+# All three share only the production host (194.87.31.44) and the /opt/vpn
+# path prefix. Path filters above keep this workflow from triggering when
+# only backend or admin code changes.
+#
+# Output of `next build` with `output: 'export'` lands in landing/out/.
+# We rename it to dist/ on the server so the directory layout matches the
+# admin panel (/opt/vpn/admin-web/dist) and uses the same atomic-swap dance.
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Next.js 16 requires Node 20+. We pin 22 LTS to stay current
+          # without chasing odd-numbered releases.
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: landing/package-lock.json
+
+      - name: Install dependencies
+        working-directory: landing
+        run: npm ci
+
+      - name: Build (static export)
+        working-directory: landing
+        run: npm run build
+
+      # Upload to a staging directory so the currently-live dist/ never
+      # disappears mid-scp. `rm: true` clears dist.new before each upload —
+      # safe because nginx never serves from it. strip_components: 2 drops
+      # the "landing/out" prefix so files land at dist.new/index.html,
+      # dist.new/_next/*, dist.new/ru/*, dist.new/sitemap.xml etc.
+      - name: Upload out/ to staging
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "landing/out/*"
+          target: "/opt/vpn/landing/dist.new"
+          strip_components: 2
+          rm: true
+
+      - name: Atomic swap and verify
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            cd /opt/vpn/landing
+            # Sanity-check the staging tree before touching live dist/.
+            # If the upload failed we abort here so dist/ keeps serving
+            # whatever was there before.
+            test -f dist.new/index.html
+            test -f dist.new/ru/index.html
+            test -f dist.new/sitemap.xml
+            test -f dist.new/robots.txt
+            # Atomic swap. dist.old is kept one rotation so a rollback is
+            # `mv dist dist.broken && mv dist.old dist`.
+            if [ -d dist.old ]; then
+              rm -rf dist.old
+            fi
+            if [ -d dist ]; then
+              mv dist dist.old
+            fi
+            mv dist.new dist
+            echo "Landing deployed at $(date) — files:"
+            ls -lah dist/

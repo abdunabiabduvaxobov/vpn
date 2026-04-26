@@ -1,0 +1,142 @@
+{
+  "metadata": {
+    "title": "Rise VPN — Internet freedom without borders",
+    "description": "Premium VPN with military-grade protection. AES-256 encryption, 50+ servers, bypass blocks, no logs. Free for iOS, Android, Windows and macOS.",
+    "keywords": "VPN, free VPN, secure VPN, AES-256, no logs, bypass blocks, Rise VPN, download VPN",
+    "ogTitle": "Rise VPN — Internet freedom without borders",
+    "ogDescription": "Premium VPN with military-grade protection. 50+ countries, up to 1 Gbps, zero logs."
+  },
+  "nav": {
+    "features": "Features",
+    "howItWorks": "How it works",
+    "faq": "FAQ",
+    "download": "Download",
+    "menu": "Menu"
+  },
+  "hero": {
+    "eyebrow": "// trusted by 10M+ users",
+    "title": "Internet freedom <hl>without borders</hl>",
+    "subtitle": "Rise VPN unlocks any content with military-grade protection. Fast. Reliable. Zero logs.",
+    "ctaPrimary": "Download free",
+    "ctaSecondary": "How it works",
+    "trust": {
+      "encryption": "AES-256 encryption",
+      "servers": "50+ countries",
+      "speed": "Up to 1 Gbps",
+      "noLogs": "Zero logs"
+    }
+  },
+  "features": {
+    "eyebrow": "// features",
+    "title": "Everything you need for a free internet",
+    "subtitle": "Modern protection, all in one app",
+    "items": [
+      { "icon": "Zap", "title": "Lightning speed", "description": "10 Gbps servers with WireGuard. Stream 4K without lag." },
+      { "icon": "Shield", "title": "Military-grade", "description": "AES-256, Perfect Forward Secrecy, kill switch, DNS leak protection." },
+      { "icon": "EyeOff", "title": "Zero logs", "description": "We don't store or sell your data. Verified by independent audit." },
+      { "icon": "Globe", "title": "50+ countries", "description": "Servers in Europe, the Americas and Asia. Switch with one tap." },
+      { "icon": "Unlock", "title": "Bypass blocks", "description": "Obfuscation defeats DPI and country-level censorship." },
+      { "icon": "Smartphone", "title": "5 devices", "description": "One subscription for phone, tablet, laptop, desktop and router." }
+    ]
+  },
+  "howItWorks": {
+    "eyebrow": "// three steps",
+    "title": "Protected in 30 seconds",
+    "subtitle": "From install to connect — no setup required",
+    "steps": [
+      { "number": "01", "icon": "Download", "title": "Install the app", "description": "Available on iOS, Android, Windows, macOS, Linux. Setup takes 30 seconds." },
+      { "number": "02", "icon": "Server", "title": "Pick a server", "description": "Choose from 50+ locations or hit Auto for the best option." },
+      { "number": "03", "icon": "ShieldCheck", "title": "Connect", "description": "One tap and you're protected. Traffic encrypted, IP hidden, content open." }
+    ]
+  },
+  "faq": {
+    "eyebrow": "// FAQ",
+    "title": "Frequently asked questions",
+    "subtitle": "Didn't find an answer? Reach out <tg>on Telegram</tg>",
+    "items": [
+      { "q": "What is a VPN and why do I need one?", "a": "A VPN encrypts your internet traffic and hides your real IP address. It protects you from surveillance, unlocks blocked content, and secures public Wi-Fi." },
+      { "q": "Is Rise VPN safe to use?", "a": "Yes. We use AES-256 encryption — the same standard banks and intelligence agencies rely on. Add kill switch, DNS leak protection, no-logs policy and regular independent audits." },
+      { "q": "Will Rise VPN slow my internet?", "a": "Minimally. Our 10 Gbps servers run WireGuard, which is faster than OpenVPN. Most users see less than 5% speed loss." },
+      { "q": "Can I use Rise VPN in restrictive countries?", "a": "Yes. Traffic obfuscation defeats DPI-based blocking. The service runs reliably in Russia, Belarus, Iran and China." },
+      { "q": "How many devices are supported?", "a": "Up to 5 devices on one subscription: phone, tablet, laptop, desktop and router. Perfect for the whole family." },
+      { "q": "Is there a free tier?", "a": "Yes. The free plan includes 5 GB/month and access to 3 servers — enough to try the service with zero commitment." },
+      { "q": "How do I cancel?", "a": "One click in account settings. No phone calls, no emails, no fine print. 30-day money-back guarantee, no questions asked." },
+      { "q": "Does Rise VPN work with Netflix and other streaming?", "a": "Yes. Servers are optimised for Netflix, YouTube, Disney+, HBO Max, Amazon Prime and more. 4K streaming without buffering." },
+      { "q": "Do you log my activity?", "a": "No. We don't store browsing history, IPs, sessions or bandwidth. Our no-logs policy is independently audited by PwC." },
+      { "q": "Which payment methods do you accept?", "a": "Cards (Visa, Mastercard, MIR), SBP, crypto (BTC, ETH, USDT), Apple Pay, Google Pay. For maximum privacy we recommend crypto." }
+    ]
+  },
+  "footer": {
+    "tagline": "Internet freedom without borders",
+    "downloadCta": "Download the app",
+    "columns": {
+      "product": { "title": "Product", "links": { "features": "Features", "servers": "Servers", "pricing": "Pricing", "download": "Download" } },
+      "company": { "title": "Company", "links": { "about": "About", "blog": "Blog", "careers": "Careers", "press": "Press kit" } },
+      "support": { "title": "Support", "links": { "help": "Help center", "contact": "Contact", "status": "Server status", "faq": "FAQ" } },
+      "legal": { "title": "Legal", "links": { "privacy": "Privacy", "terms": "Terms of service", "refund": "Refund policy" } }
+    },
+    "copyright": "© 2026 Rise VPN. All rights reserved."
+  },
+  "privacy": {
+    "title": "Privacy policy",
+    "metaDescription": "What data Rise VPN collects, how we use it, our no-logs policy and your rights. Plain language, no fine print.",
+    "lastUpdated": "Last updated: April 26, 2026",
+    "intro": "Rise VPN takes privacy seriously. Below is exactly what we collect, why, who we share it with and how you can delete your data. Plain language, no fine print.",
+    "sections": [
+      {
+        "id": "data-we-collect",
+        "title": "1. What data we collect",
+        "body": "We deliberately collect the minimum needed to run the service.\n\n• Account data: device ID and device identifier. We do NOT require an email, password or phone number. Registration happens automatically on first launch (guest sign-in).\n\n• Technical data: app version, operating system, and IP address during your active session (for authentication and to enforce the device limit on your plan). The IP is deleted within 3 minutes of disconnecting.\n\n• Connection data: session start/end time, the VPN server you chose, and traffic volume (only to enforce the free-tier quota). We do NOT store traffic content, visited sites or DNS queries.\n\n• Payments: subscription card data is processed by Stripe. We only see the payment status and a subscription token — never your card number or CVV."
+      },
+      {
+        "id": "how-we-use",
+        "title": "2. How we use the data",
+        "body": "Only to make the service work:\n\n• Issue access to VPN servers and verify your active subscription.\n• Enforce device limits (1 on Free, 3 on Premium, 6 on Ultimate) and traffic quotas.\n• Process payments and renew subscriptions.\n• Provide support over Telegram (only if you reach out to us).\n• Show ads — only on the free tier, through Yandex Mobile Ads. There are no ads on paid tiers.\n\nWe do not use your data for advertising profiles or sell it to third parties."
+      },
+      {
+        "id": "third-parties",
+        "title": "3. Third parties",
+        "body": "We share the minimum data only with the services we cannot run without:\n\n• Stripe (stripe.com/privacy) — payment processing and storing payment methods. We only receive a subscription token.\n• Yandex Mobile Ads (yandex.com/legal/ads_principles) — ads on the free tier only. We share an anonymous advertising ID and device language.\n• Google Play and Apple App Store — app install/updates, in-store purchases where applicable.\n• Hosting: servers are located in Germany, the Netherlands, Moldova and the USA. All inter-server traffic is encrypted.\n\nWe do not work with analytics services that track user behaviour inside the app."
+      },
+      {
+        "id": "what-we-dont-store",
+        "title": "4. What we do NOT store",
+        "body": "This is a no-logs policy, taken literally:\n\n• Browsing history and DNS queries — no.\n• VPN traffic content — no.\n• Your IP after disconnection — deleted within 3 minutes.\n• Browsing metadata that tracks which sites you visited — no.\n\nIf law enforcement requests it, we physically cannot hand over an activity log — it does not exist in our systems."
+      },
+      {
+        "id": "your-rights",
+        "title": "5. Data deletion and your rights",
+        "body": "You can at any time:\n\n• Request a copy of your data. Email support@vpn.mydayai.uz and we will send it within 14 days.\n• Delete your account. Message us on Telegram (@flawlssr) or by email — we will erase all linked data within 30 days.\n• Cancel your subscription. One click in the app settings. 30-day money-back guarantee, no questions asked.\n• Opt out of ads. Switch to a paid plan and ads are disabled."
+      },
+      {
+        "id": "security",
+        "title": "6. Security",
+        "body": "We use:\n\n• AES-256 encryption for all VPN traffic.\n• TLS 1.3 for every connection between the app and our servers.\n• Kill switch and DNS-leak protection on the client side.\n• Regular dependency updates and infrastructure audits.\n\nWe cannot promise absolute security on the internet, but we work to keep risks as low as possible."
+      },
+      {
+        "id": "children",
+        "title": "7. Children",
+        "body": "The service is not intended for users under 13. We do not collect information that could identify a child. If you believe a child provided us with data, email support@vpn.mydayai.uz and we will delete the account."
+      },
+      {
+        "id": "changes",
+        "title": "8. Changes to this policy",
+        "body": "If we make material changes, we will warn you with an in-app banner and update the date at the top. Material changes that broaden data collection require your renewed consent."
+      },
+      {
+        "id": "contact",
+        "title": "9. Contact us",
+        "body": "Email: support@vpn.mydayai.uz\nTelegram: @flawlssr\n\nOperated by Rise VPN. For any privacy-related question, write to us. We reply within 48 hours."
+      }
+    ]
+  },
+  "notFound": {
+    "title": "Page not found",
+    "description": "The link may be outdated or removed. Head back home and keep browsing under Rise VPN protection.",
+    "cta": "Back home"
+  },
+  "common": {
+    "downloadCta": "Download free",
+    "learnMore": "Learn more"
+  }
+}

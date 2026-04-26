@@ -1,0 +1,142 @@
+{
+  "metadata": {
+    "title": "Rise VPN — Chegarasiz internet erkinligi",
+    "description": "Harbiy darajadagi himoya bilan premium VPN. AES-256 shifrlash, 50+ server, bloklarni chetlab o'tish, loglarsiz. iOS, Android, Windows va macOS uchun bepul.",
+    "keywords": "VPN, bepul VPN, xavfsiz VPN, AES-256, loglarsiz, Rise VPN, VPN yuklab olish",
+    "ogTitle": "Rise VPN — Chegarasiz internet erkinligi",
+    "ogDescription": "Harbiy darajadagi himoya bilan premium VPN. 50+ davlat, 1 Gbps gacha, loglarsiz."
+  },
+  "nav": {
+    "features": "Imkoniyatlar",
+    "howItWorks": "Qanday ishlaydi",
+    "faq": "Savollar",
+    "download": "Yuklab olish",
+    "menu": "Menyu"
+  },
+  "hero": {
+    "eyebrow": "// 10M+ foydalanuvchi ishonadi",
+    "title": "<hl>Chegarasiz</hl> internet erkinligi",
+    "subtitle": "Rise VPN harbiy darajadagi himoya bilan har qanday kontentga kirishni ochib beradi. Tez. Ishonchli. Loglarsiz.",
+    "ctaPrimary": "Bepul yuklab olish",
+    "ctaSecondary": "Qanday ishlaydi",
+    "trust": {
+      "encryption": "AES-256 shifrlash",
+      "servers": "50+ davlat",
+      "speed": "1 Gbps gacha",
+      "noLogs": "Loglarsiz"
+    }
+  },
+  "features": {
+    "eyebrow": "// imkoniyatlar",
+    "title": "Erkin internet uchun hammasi",
+    "subtitle": "Zamonaviy himoya bitta ilovada",
+    "items": [
+      { "icon": "Zap", "title": "Yashin tezligi", "description": "WireGuard qo'llab-quvvatlanadigan 10 Gbps serverlar. Kechikishlarsiz 4K." },
+      { "icon": "Shield", "title": "Harbiy darajadagi", "description": "AES-256, Perfect Forward Secrecy, kill switch, DNS sizib chiqishidan himoya." },
+      { "icon": "EyeOff", "title": "Loglarsiz", "description": "Ma'lumotlaringizni saqlamaymiz va sotmaymiz. Mustaqil audit bilan tasdiqlangan." },
+      { "icon": "Globe", "title": "50+ davlat", "description": "Yevropa, Amerika va Osiyodagi serverlar. Bir tugma bilan almashtiring." },
+      { "icon": "Unlock", "title": "Bloklarni chetlab o'tish", "description": "Obfuskatsiya texnologiyasi DPI va davlat bloklarini chetlab o'tadi." },
+      { "icon": "Smartphone", "title": "5 qurilma", "description": "Bitta obuna — telefon, planshet, kompyuter, router. Hammasi birga." }
+    ]
+  },
+  "howItWorks": {
+    "eyebrow": "// uch qadam",
+    "title": "30 soniyada himoyalangan",
+    "subtitle": "O'rnatishdan ulanishgacha — sozlash kerak emas",
+    "steps": [
+      { "number": "01", "icon": "Download", "title": "Ilovani yuklab oling", "description": "iOS, Android, Windows, macOS, Linux uchun mavjud. O'rnatish 30 soniyada." },
+      { "number": "02", "icon": "Server", "title": "Serverni tanlang", "description": "50+ davlatdan birini tanlang yoki «Avto» tugmasini bosing." },
+      { "number": "03", "icon": "ShieldCheck", "title": "Ulaning", "description": "Bir tugma — va siz himoyalangansiz. Trafik shifrlangan, IP yashirilgan." }
+    ]
+  },
+  "faq": {
+    "eyebrow": "// FAQ",
+    "title": "Tez-tez beriladigan savollar",
+    "subtitle": "Javob topa olmadingizmi? <tg>Telegram orqali</tg> yozing",
+    "items": [
+      { "q": "VPN nima va u nima uchun kerak?", "a": "VPN internet trafigingizni shifrlaydi va haqiqiy IP-manzilingizni yashiradi. Bu sizni kuzatuvdan himoya qiladi, bloklangan kontentni ochadi va ommaviy Wi-Fi tarmoqlarda xavfsizlikni ta'minlaydi." },
+      { "q": "Rise VPN dan foydalanish xavfsizmi?", "a": "Ha. Biz AES-256 shifrlashdan foydalanamiz — banklar va maxsus xizmatlar qo'llaydigan standart. Qo'shimcha: kill switch, DNS sizib chiqishidan himoya, loglarsiz siyosat va muntazam mustaqil audit." },
+      { "q": "VPN internetimni sekinlashtiradimi?", "a": "Minimal darajada. Serverlarimiz OpenVPN dan tezroq bo'lgan WireGuard protokoli bilan 10 Gbps kanallarida ishlaydi. Aksariyat hollarda tezlik yo'qotilishi 5% dan kam." },
+      { "q": "Rise VPN ni Rossiyada ishlatish mumkinmi?", "a": "Ha. Biz DPI bloklarini chetlab o'tadigan trafik obfuskatsiya texnologiyasini qo'llaymiz. Xizmat Rossiya, Belarus, Eron va Xitoyda barqaror ishlaydi." },
+      { "q": "Nechta qurilmani ulash mumkin?", "a": "Bitta obuna bir vaqtning o'zida 5 ta qurilmani qoplaydi: telefon, planshet, noutbuk, desktop va router. Butun oila uchun ideal." },
+      { "q": "Bepul versiyasi bormi?", "a": "Ha. Bepul tarif oyiga 5 GB trafik va 3 ta serverga kirishni o'z ichiga oladi. Xizmatni majburiyatlarsiz sinab ko'rish uchun yetarli." },
+      { "q": "Obunani qanday bekor qilish mumkin?", "a": "Bekor qilish hisob sozlamalarida bir bosish bilan amalga oshiriladi. Hech qanday qo'ng'iroqlar, xatlar yoki yashirin shartlar yo'q. Pulni 30 kun ichida hech qanday savolsiz qaytaramiz." },
+      { "q": "Rise VPN Netflix va boshqa striminglarni qo'llab-quvvatlaydimi?", "a": "Ha. Biz Netflix, YouTube, Disney+, HBO Max, Amazon Prime va boshqa platformalar uchun serverlarimizni optimallashtirdik. Buferlanmasdan 4K striming." },
+      { "q": "Mening faoliyatim loglarini yuritasizmi?", "a": "Yo'q. Biz tashriflar tarixini, IP-manzillarni, sessiyalarni yoki trafik hajmini saqlamaymiz. Bizning loglarsiz siyosatimiz PwC dan mustaqil audit bilan tasdiqlangan." },
+      { "q": "Qaysi to'lov usullarini qabul qilasiz?", "a": "Bank kartalari (Visa, Mastercard, MIR), SBP, kriptovalyuta (BTC, ETH, USDT), Apple Pay, Google Pay. Maxfiylik uchun kriptovalyutani tavsiya qilamiz." }
+    ]
+  },
+  "footer": {
+    "tagline": "Chegarasiz internet erkinligi",
+    "downloadCta": "Ilovani yuklab olish",
+    "columns": {
+      "product": { "title": "Mahsulot", "links": { "features": "Imkoniyatlar", "servers": "Serverlar", "pricing": "Tariflar", "download": "Yuklab olish" } },
+      "company": { "title": "Kompaniya", "links": { "about": "Biz haqimizda", "blog": "Blog", "careers": "Karyera", "press": "Matbuot" } },
+      "support": { "title": "Yordam", "links": { "help": "Yordam markazi", "contact": "Aloqa", "status": "Server holati", "faq": "FAQ" } },
+      "legal": { "title": "Yuridik", "links": { "privacy": "Maxfiylik", "terms": "Foydalanish shartlari", "refund": "Qaytarish siyosati" } }
+    },
+    "copyright": "© 2026 Rise VPN. Barcha huquqlar himoyalangan."
+  },
+  "privacy": {
+    "title": "Maxfiylik siyosati",
+    "metaDescription": "Rise VPN qanday ma'lumotlarni yig'adi, ulardan qanday foydalanadi, log saqlamaslik siyosati va sizning huquqlaringiz. Sodda til bilan, yashirin shartlarsiz.",
+    "lastUpdated": "Oxirgi yangilanish: 2026-yil 26-aprel",
+    "intro": "Rise VPN maxfiylikka jiddiy yondashadi. Quyida biz nima yig'amiz, nima uchun, kim bilan baham ko'ramiz va ma'lumotlaringizni qanday o'chirishingiz mumkinligi sodda tilda tasvirlangan.",
+    "sections": [
+      {
+        "id": "data-we-collect",
+        "title": "1. Qanday ma'lumotlarni yig'amiz",
+        "body": "Xizmatni ishlatish uchun zarur bo'lgan minimal ma'lumotlarni yig'amiz.\n\n• Hisob ma'lumotlari: qurilma ID va qurilma identifikatori. Email, parol yoki telefon raqamini SO'RAMAYMIZ. Ro'yxatdan o'tish ilovani birinchi marta ishga tushirganingizda avtomatik bo'ladi (mehmon kirishi).\n\n• Texnik ma'lumotlar: ilova versiyasi, operatsion tizim, faol seans davomidagi IP-manzil (autentifikatsiya va tarif rejasidagi qurilmalar limitini nazorat qilish uchun). IP uzilgandan keyin 3 daqiqa ichida o'chiriladi.\n\n• Ulanish ma'lumotlari: seans boshlanish/tugash vaqti, tanlangan VPN-server, trafik hajmi (faqat bepul tarifning kvotasini nazorat qilish uchun). Trafik mazmuni, tashrif buyurilgan saytlar va DNS so'rovlari saqlanmaydi.\n\n• To'lovlar: obuna karta ma'lumotlari Stripe orqali qayta ishlanadi. Biz faqat to'lov holati va obuna identifikatorini olamiz — karta raqami yoki CVV emas."
+      },
+      {
+        "id": "how-we-use",
+        "title": "2. Ma'lumotlarni qanday ishlatamiz",
+        "body": "Faqat xizmat ishlashi uchun:\n\n• VPN serverlariga kirishni ta'minlash va faol obunani tekshirish.\n• Qurilmalar limitini (Free 1, Premium 3, Ultimate 6) va trafik kvotasini nazorat qilish.\n• To'lovlarni qayta ishlash va obunalarni avtomatik yangilash.\n• Telegram orqali yordam ko'rsatish (faqat agar siz biz bilan bog'lansangiz).\n• Reklama ko'rsatish — faqat bepul tarifda, Yandex Mobile Ads orqali. To'lovli tariflarda reklama yo'q.\n\nBiz sizning ma'lumotlaringizdan reklama profillari uchun foydalanmaymiz va uchinchi tomonlarga sotmaymiz."
+      },
+      {
+        "id": "third-parties",
+        "title": "3. Uchinchi tomonlar",
+        "body": "Biz minimal ma'lumotlarni faqat xizmat ishlashi uchun zarur bo'lgan tomonlarga uzatamiz:\n\n• Stripe (stripe.com/privacy) — to'lovlarni qayta ishlash. Biz faqat obuna tokenini olamiz.\n• Yandex Mobile Ads — faqat bepul tarifda reklama ko'rsatish. Anonim reklama ID va qurilma tili uzatiladi.\n• Google Play va Apple App Store — ilovani o'rnatish/yangilash, do'kondagi xaridlar (agar mavjud bo'lsa).\n• Hosting: serverlar Germaniya, Niderlandiya, Moldova va AQShda joylashgan. Serverlar orasidagi trafik shifrlangan.\n\nBiz ilova ichidagi foydalanuvchi xatti-harakatlarini kuzatadigan analitika xizmatlari bilan ishlamaymiz."
+      },
+      {
+        "id": "what-we-dont-store",
+        "title": "4. Nimalarni saqlamaymiz",
+        "body": "Bu log saqlamaslik siyosati, va biz uni so'zma-so'z qabul qilamiz:\n\n• Tashriflar tarixi va DNS so'rovlari — yo'q.\n• VPN trafik mazmuni — yo'q.\n• Uzilgandan keyingi IP-manzilingiz — 3 daqiqa ichida o'chiriladi.\n• Qaysi saytlarga tashrif buyurganingizni kuzatadigan brauzer metadatasi — yo'q.\n\nAgar huquqni muhofaza qiluvchi organlar so'rasa, biz faoliyat jurnalini berolmaymiz — u tizimlarimizda umuman yo'q."
+      },
+      {
+        "id": "your-rights",
+        "title": "5. Ma'lumotlarni o'chirish va huquqlaringiz",
+        "body": "Istalgan vaqtda quyidagilarni qila olasiz:\n\n• Ma'lumotlaringiz nusxasini so'rang. support@vpn.mydayai.uz manziliga yozing — 14 kun ichida yuboramiz.\n• Hisobingizni o'chiring. Telegram (@flawlssr) yoki email orqali yozing — 30 kun ichida bog'langan barcha ma'lumotlarni o'chiramiz.\n• Obunani bekor qiling. Ilova sozlamalarida bir bosish bilan. 30 kun ichida pulni qaytaramiz, savolsiz.\n• Reklamadan voz keching. To'lovli tarifga o'ting — reklama o'chiriladi."
+      },
+      {
+        "id": "security",
+        "title": "6. Xavfsizlik",
+        "body": "Biz quyidagilardan foydalanamiz:\n\n• Barcha VPN trafigi uchun AES-256 shifrlash.\n• Ilova va serverlarimiz orasidagi har bir ulanish uchun TLS 1.3.\n• Mijoz tomonida kill switch va DNS sizib chiqishidan himoya.\n• Muntazam bog'liqliklarni yangilash va infratuzilma auditi.\n\nIntenet xizmatining mutlaq xavfsizligini va'da qilolmaymiz, lekin xavflarni minimallashtirish uchun harakat qilamiz."
+      },
+      {
+        "id": "children",
+        "title": "7. Bolalar",
+        "body": "Xizmat 13 yoshdan kichiklar uchun mo'ljallanmagan. Biz bolani aniqlashga imkon beradigan ma'lumotlarni yig'maymiz. Agar bola bizga ma'lumot bergan deb hisoblasangiz, support@vpn.mydayai.uz ga yozing — hisobni o'chiramiz."
+      },
+      {
+        "id": "changes",
+        "title": "8. Siyosatdagi o'zgarishlar",
+        "body": "Agar biz ushbu siyosatni jiddiy o'zgartirsak, ilova ichidagi banner orqali ogohlantiramiz va sahifa yuqorisidagi sanani yangilaymiz. Ma'lumotlar yig'ilishini kengaytiruvchi jiddiy o'zgarishlar sizdan qayta rozilik talab qiladi."
+      },
+      {
+        "id": "contact",
+        "title": "9. Biz bilan bog'lanish",
+        "body": "Email: support@vpn.mydayai.uz\nTelegram: @flawlssr\n\nXizmat operatori — Rise VPN. Maxfiylikka oid har qanday savol bo'lsa, yozing. 48 soat ichida javob beramiz."
+      }
+    ]
+  },
+  "notFound": {
+    "title": "Sahifa topilmadi",
+    "description": "Havola eskirgan yoki o'chirilgan bo'lishi mumkin. Bosh sahifaga qayting va Rise VPN himoyasi ostida internetdan foydalanishni davom ettiring.",
+    "cta": "Bosh sahifa"
+  },
+  "common": {
+    "downloadCta": "Bepul yuklab olish",
+    "learnMore": "Batafsil"
+  }
+}

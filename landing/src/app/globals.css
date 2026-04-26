@@ -1,0 +1,105 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  /* Color tokens — exposed to Tailwind utilities (bg-background, text-foreground, etc.). */
+  --color-background: hsl(var(--background));
+  --color-surface: hsl(var(--surface));
+  --color-surface-elevated: hsl(var(--surface-elevated));
+
+  --color-foreground: hsl(var(--foreground));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-subtle-foreground: hsl(var(--subtle-foreground));
+
+  --color-border: hsl(var(--border));
+  --color-border-subtle: hsl(var(--border-subtle));
+  --color-input: hsl(var(--border));
+  --color-ring: hsl(var(--primary));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-glow: hsl(var(--primary-glow));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+
+  --color-accent: hsl(var(--accent));
+  --color-accent-glow: hsl(var(--accent-glow));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+
+  --color-secondary: hsl(var(--surface-elevated));
+  --color-secondary-foreground: hsl(var(--foreground));
+
+  --color-card: hsl(var(--surface));
+  --color-card-foreground: hsl(var(--foreground));
+
+  --color-popover: hsl(var(--surface-elevated));
+  --color-popover-foreground: hsl(var(--foreground));
+
+  --color-muted: hsl(var(--surface));
+  --color-destructive: hsl(var(--destructive));
+  --color-success: hsl(var(--success));
+
+  /* Fonts — wired up via next/font CSS variables in [locale]/layout.tsx. */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-space-grotesk), var(--font-inter), ui-sans-serif, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+
+  /* Radii. */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.25rem;
+  --radius-2xl: 1.5rem;
+}
+
+:root {
+  /* Dark navy is the only theme. We declare on :root (no .dark switch needed)
+     so SSR matches client and there's no flash of light theme. next-themes is
+     installed for future-proofing only. */
+
+  /* Backgrounds */
+  --background: 222 47% 4%;        /* #030711 deep navy */
+  --surface: 217 50% 10%;          /* #0A1428 elevated */
+  --surface-elevated: 217 45% 14%; /* #14213D card */
+
+  /* Borders */
+  --border: 217 40% 22%;
+  --border-subtle: 217 35% 16%;
+
+  /* Brand */
+  --primary: 217 91% 60%;          /* electric blue */
+  --primary-glow: 213 94% 68%;
+  --primary-foreground: 210 40% 98%;
+  --accent: 188 95% 43%;           /* cyan */
+  --accent-glow: 187 92% 55%;
+  --accent-foreground: 222 47% 4%;
+
+  /* Text */
+  --foreground: 210 40% 96%;
+  --muted-foreground: 215 20% 65%;
+  --subtle-foreground: 215 16% 47%;
+
+  /* States */
+  --success: 142 71% 45%;
+  --destructive: 0 84% 60%;
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+  html {
+    color-scheme: dark;
+    font-family: var(--font-sans);
+  }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background-color: hsl(var(--primary) / 0.3);
+    color: hsl(var(--foreground));
+  }
+}
