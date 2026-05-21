@@ -43,9 +43,9 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
   7. A failed insert during refresh-token rotation rolls back the delete in the same transaction; the user never ends up logged out by a transient DB error.
   8. `createadmin` does not accept the password on argv; the seeded admin starts as `subscription_tier='free'`.
 **Plans**: 9 plans
-  - [ ] 01-01-PLAN.md — HOTFIX-06: createadmin reads password from stdin + seeds tier=free
-  - [ ] 01-02-PLAN.md — HOTFIX-08: fail-fast aggregate env validator (DB_*, REDIS_*, JWT_SECRET, TUNNEL_VLESS_UUID)
-  - [ ] 01-03-PLAN.md — HOTFIX-04: scrub 5xx error bodies + X-Request-ID middleware
+  - [x] 01-01-PLAN.md — HOTFIX-06: createadmin reads password from stdin + seeds tier=free
+  - [x] 01-02-PLAN.md — HOTFIX-08: fail-fast aggregate env validator (DB_*, REDIS_*, JWT_SECRET, TUNNEL_VLESS_UUID)
+  - [x] 01-03-PLAN.md — HOTFIX-04: scrub 5xx error bodies + X-Request-ID middleware
   - [ ] 01-04-PLAN.md — HOTFIX-02: AdminRequired re-reads role from DB on every admin request
   - [ ] 01-05-PLAN.md — HOTFIX-03: atomic Lua INCR+EXPIRE for rate limiter
   - [ ] 01-06-PLAN.md — HOTFIX-05: transactional refresh-token rotation
