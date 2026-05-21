@@ -49,7 +49,7 @@ created: 2026-05-22
 | 1-02-01 | 02 | 4 | HOTFIX-02 | T-1-02 / V4 | Demoted admin gets 403 on very next request with same JWT | integration | `cd server/api && go test ./internal/middleware/... -v -run TestAdminRequired_DemotionTakesEffect` | 🟡 extend | ⬜ pending |
 | 1-03-01 | 03 | 5 | HOTFIX-03 | T-1-03 / V5 | Every `IncrRateLimit` leaves `TTL > 0`; never -1 | unit (miniredis) | `cd server/api && go test ./internal/cache/... -v -run TestIncrRateLimit` | ❌ W0 | ⬜ pending |
 | 1-05-01 | 05 | 6 | HOTFIX-05 | T-1-05 / V3 | Failed insert during rotation rolls back delete; old session preserved | integration (sqlite) | `cd server/api && go test ./internal/handler/... -v -run TestRefreshToken_Rollback` | 🟡 extend | ⬜ pending |
-| 1-01-01 | 01 | 7 | HOTFIX-01 | T-1-01 | Scheduler downgrades expired pro user; `payment.go` diff empty (D-07 invariant) | unit + diff | `cd server/api && go test ./internal/repository/... -v -run TestDowngradeExpiredSubscriptions && git diff main -- server/api/internal/handler/payment.go \| wc -l \| grep -q ^0$` | ❌ W0 | ⬜ pending |
+| 1-01-01 | 01 | 7 | HOTFIX-01 | T-1-01 | Scheduler downgrades expired pro user; `payment.go` diff empty (D-07 invariant — PHASE-WIDE) | unit + diff | `cd server/api && go test ./internal/repository/... -v -run TestDowngradeExpiredSubscriptions && BASE=$(git merge-base HEAD main) && [ $(git diff $BASE..HEAD -- server/api/internal/handler/payment.go \| wc -l) -eq 0 ]` | ❌ W0 | ⬜ pending |
 | 1-07-01 | 07 | 8 | HOTFIX-07 | T-1-07 / V3 | `EXPLAIN` shows `Index Scan using idx_sessions_refresh_token_hash_unique` (not `Seq Scan`) | DB smoke | `bash server/api/scripts/smoke_test_session_index.sh` | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
@@ -89,8 +89,8 @@ Existing test files (extend, do not recreate):
 **MUST pass green before pushing the `v2.2.0-hotfix` tag.** (Source: `01-RESEARCH.md` §Validation Architecture.)
 
 1. `JWT_SECRET= ./vpn-api 2>&1 | head -1 | jq -e '.missing'` — exit 1, JSON log with `missing` field. **(HOTFIX-08)**
-2. `curl -i http://staging/api/v1/__force-500 | grep -q "request_id"` — response body has `request_id`; no `gorm:|bcrypt:|pq:` strings. **(HOTFIX-04)**
-3. `curl -i -H 'X-Request-ID: smoke-2' http://staging/api/v1/__force-500 | grep -q "smoke-2"` — pre-set header echoed. **(HOTFIX-04)**
+2. `curl -i -XPOST -H 'Content-Type: application/json' -d '{"refresh_token":"not-a-real-token"}' http://staging/api/v1/auth/refresh | grep -q "request_id"` — response body has `request_id`; no `gorm:|bcrypt:|pq:` strings. Endpoint chosen because it hits the rotation transaction (HOTFIX-05) and returns a scrubbed 500 once HOTFIX-04 lands. If the endpoint returns 401 instead of 500 (validation rejects the malformed token early), see plan 09 Task 4 for the alternative trigger. **(HOTFIX-04)**
+3. `curl -i -XPOST -H 'Content-Type: application/json' -H 'X-Request-ID: smoke-2' -d '{"refresh_token":"not-a-real-token"}' http://staging/api/v1/auth/refresh | grep -q "smoke-2"` — pre-set header echoed in both response header AND response body's `request_id` field. Uses the same auth/refresh endpoint as step 2 to keep the smoke surface minimal (no debug-only routes). **(HOTFIX-04)**
 4. Log in as admin on staging admin panel; in psql: `UPDATE users SET role='user' WHERE id=...`; refresh admin page → expect 403 within the current access-token lifetime. **(HOTFIX-02)**
 5. Hit `/api/v1/auth/guest` 35× in <1min → expect 429 around request 31. `redis-cli TTL rate:ip:<your_ip>` returns a positive integer. **(HOTFIX-03)**
 6. `curl -X POST http://staging/api/v1/auth/refresh -d '{"refresh_token":"<valid>"}'` succeeds; `SELECT count(*) FROM sessions WHERE user_id=?` returns exactly 1. **(HOTFIX-05)**

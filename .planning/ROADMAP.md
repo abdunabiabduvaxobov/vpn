@@ -42,7 +42,16 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
   6. A Redis outage in the middle of a rate-limit `INCR` cannot leave a counter without a TTL (atomic Lua / MULTI-EXEC verified by induced failure).
   7. A failed insert during refresh-token rotation rolls back the delete in the same transaction; the user never ends up logged out by a transient DB error.
   8. `createadmin` does not accept the password on argv; the seeded admin starts as `subscription_tier='free'`.
-**Plans**: TBD
+**Plans**: 9 plans
+  - [ ] 01-01-PLAN.md — HOTFIX-06: createadmin reads password from stdin + seeds tier=free
+  - [ ] 01-02-PLAN.md — HOTFIX-08: fail-fast aggregate env validator (DB_*, REDIS_*, JWT_SECRET, TUNNEL_VLESS_UUID)
+  - [ ] 01-03-PLAN.md — HOTFIX-04: scrub 5xx error bodies + X-Request-ID middleware
+  - [ ] 01-04-PLAN.md — HOTFIX-02: AdminRequired re-reads role from DB on every admin request
+  - [ ] 01-05-PLAN.md — HOTFIX-03: atomic Lua INCR+EXPIRE for rate limiter
+  - [ ] 01-06-PLAN.md — HOTFIX-05: transactional refresh-token rotation
+  - [ ] 01-07-PLAN.md — HOTFIX-01: regression tests for subscription downgrade (test-only, column+scheduler already correct)
+  - [ ] 01-08-PLAN.md — HOTFIX-07: UNIQUE index on sessions.refresh_token_hash + dedupe migration
+  - [ ] 01-09-PLAN.md — staging smoke (10 steps) + v2.2.0-hotfix tag
 
 ### Phase 2: Auth SSO backend
 **Goal**: Apple and Google identities map deterministically to backend `users.id` rows, on any surface (mobile, web, admin), with the existing guest-login path preserved as a fallback.
