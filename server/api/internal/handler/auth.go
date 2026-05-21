@@ -237,29 +237,59 @@ func RefreshToken(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Han
 			})
 		}
 
-		// Delete old session (token rotation)
-		repository.DeleteSession(db, session.ID)
+		// Rotate session inside a single transaction so a failed insert never
+		// leaves the user with no session row. Per SECURITY-AUDIT S1-1.
+		//
+		// On any error inside the transaction (delete failure, lookup failure,
+		// token generation failure, insert failure), GORM rolls back the
+		// delete — the old session row stays in place and the user can refresh
+		// again later. The client sees a 500 and retries the refresh.
+		//
+		// All DB operations inside the closure use tx, never the outer db.
+		// Tokens are assigned to the outer-scoped variable only after the
+		// closure returns nil, so the HTTP response is only emitted when the
+		// new session row has committed.
+		var tokens *authResponse
+		err = db.Transaction(func(tx *gorm.DB) error {
+			if err := repository.DeleteSession(tx, session.ID); err != nil {
+				return fmt.Errorf("deleting old session: %w", err)
+			}
 
-		// Look up user for current tier
-		user, err := repository.FindUserByID(db, session.UserID)
-		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "user not found",
-			})
-		}
+			// Re-read the user inside the transaction so tier/role/name are
+			// consistent with the token we're about to mint.
+			user, err := repository.FindUserByID(tx, session.UserID)
+			if err != nil {
+				return fmt.Errorf("loading user: %w", err)
+			}
 
-		// Generate new token pair with current role
-		tokens, err := generateTokens(user.ID, user.SubscriptionTier, user.Role, user.FullName, cfg.JWTSecret)
+			newTokens, err := generateTokens(user.ID, user.SubscriptionTier, user.Role, user.FullName, cfg.JWTSecret)
+			if err != nil {
+				return fmt.Errorf("generating tokens: %w", err)
+			}
+
+			// storeRefreshSession accepts any *gorm.DB; tx is one. Reusing the
+			// existing helper keeps the SHA-256 hashing and expiry logic in one
+			// place. The new session row is inserted in the same tx as the
+			// delete, providing the atomicity guarantee.
+			if err := storeRefreshSession(tx, user.ID, newTokens.RefreshToken); err != nil {
+				return fmt.Errorf("storing new session: %w", err)
+			}
+
+			tokens = newTokens
+			return nil
+		})
 		if err != nil {
-			logger.Error("failed to generate tokens", zap.Error(err))
+			// Distinguish "user gone" (401 — client should re-authenticate)
+			// from other DB errors (500 — client should retry).
+			if errors.Is(err, repository.ErrNotFound) {
+				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+					"error": "user not found",
+				})
+			}
+			logger.Error("refresh rotation failed", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "internal server error",
 			})
-		}
-
-		// Store new refresh session
-		if err := storeRefreshSession(db, user.ID, tokens.RefreshToken); err != nil {
-			logger.Error("failed to store session", zap.Error(err))
 		}
 
 		return c.JSON(fiber.Map{

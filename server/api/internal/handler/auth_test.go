@@ -269,3 +269,181 @@ func TestGuestLogin_HappyPath_CreatesUserAndReturnsTokens(t *testing.T) {
 		t.Errorf("expected 1 guest user row, got %d", count)
 	}
 }
+
+// HOTFIX-05 regression tests — wrap refresh-token rotation in a single
+// db.Transaction so a failed CreateSession after DeleteSession does not leave
+// the user with no session row. See SECURITY-AUDIT S1-1 and 01-06-PLAN.md.
+
+// seedRefreshSessionForUser inserts a user and a session row whose
+// refresh_token_hash matches the SHA-256 of the returned plaintext refresh
+// token. The plaintext token need not be a real JWT — the refresh handler
+// only hashes the body field and looks up the session row by hash.
+func seedRefreshSessionForUser(t *testing.T, db *gorm.DB) (userID, refreshToken string) {
+	t.Helper()
+	if err := db.Exec(
+		`INSERT INTO users (full_name, role, subscription_tier) VALUES ('Refresh Test', 'user', 'free')`,
+	).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := db.Raw(`SELECT id FROM users WHERE full_name = 'Refresh Test' LIMIT 1`).Row().Scan(&userID); err != nil {
+		t.Fatalf("read seeded user id: %v", err)
+	}
+
+	refreshToken = "refresh-token-plaintext-for-rotation-test"
+	tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(refreshToken)))
+
+	// expires_at must be in the future so FindSessionByTokenHash returns it.
+	if err := db.Exec(
+		`INSERT INTO sessions (user_id, refresh_token_hash, expires_at)
+		 VALUES (?, ?, datetime('now', '+30 days'))`,
+		userID, tokenHash,
+	).Error; err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	return userID, refreshToken
+}
+
+// countSessions returns the number of session rows for the given user.
+func countSessions(t *testing.T, db *gorm.DB, userID string) int64 {
+	t.Helper()
+	var n int64
+	if err := db.Raw(`SELECT COUNT(*) FROM sessions WHERE user_id = ?`, userID).Scan(&n).Error; err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	return n
+}
+
+// sessionHashFor returns the (single) refresh_token_hash currently stored for
+// the given user, or "" if there is none. Used to confirm rotation actually
+// replaced the row (vs. the same row sticking around).
+func sessionHashFor(t *testing.T, db *gorm.DB, userID string) string {
+	t.Helper()
+	var hash string
+	row := db.Raw(`SELECT refresh_token_hash FROM sessions WHERE user_id = ? LIMIT 1`, userID).Row()
+	_ = row.Scan(&hash) // empty when no row
+	return hash
+}
+
+// TestRefreshToken_RollbackOnInsertFailure proves that if the CreateSession
+// call inside the rotation transaction fails, the prior DeleteSession is
+// rolled back — the original session row stays in place and the user can
+// refresh again later. Without the transaction wrap (the pre-HOTFIX-05 code
+// path), the deletion would have committed and the user would be silently
+// logged out.
+func TestRefreshToken_RollbackOnInsertFailure(t *testing.T) {
+	db := newAuthTestDB(t)
+	userID, refreshToken := seedRefreshSessionForUser(t, db)
+	originalHash := sessionHashFor(t, db, userID)
+
+	// Inject a callback that fails on every INSERT into sessions. This
+	// triggers inside the transaction at the storeRefreshSession step,
+	// AFTER DeleteSession has already removed the original row within the
+	// same tx. The transaction MUST roll back so the row reappears.
+	cbName := "hotfix05_fail_session_insert"
+	if err := db.Callback().Create().Before("gorm:create").Register(cbName, func(tx *gorm.DB) {
+		if tx.Statement.Table == "sessions" {
+			_ = tx.AddError(fmt.Errorf("forced insert failure for test"))
+		}
+	}); err != nil {
+		t.Fatalf("register callback: %v", err)
+	}
+	defer func() { _ = db.Callback().Create().Remove(cbName) }()
+
+	app := authTestApp(RefreshToken(zap.NewNop(), testAuthConfig(), db))
+	resp := doAuthRequest(t, app, map[string]string{"refresh_token": refreshToken})
+	if resp.StatusCode != fiber.StatusInternalServerError {
+		t.Fatalf("expected 500 on insert failure, got %d", resp.StatusCode)
+	}
+
+	// THE proof: the original session row is still there because the
+	// transaction rolled back. Pre-HOTFIX-05 code would leave count = 0.
+	if got := countSessions(t, db, userID); got != 1 {
+		t.Fatalf("expected 1 session row after rollback (original preserved), got %d", got)
+	}
+	if got := sessionHashFor(t, db, userID); got != originalHash {
+		t.Fatalf("expected original session hash preserved after rollback; got %q want %q", got, originalHash)
+	}
+}
+
+// TestRefreshToken_HappyPath confirms the rotation still works end-to-end:
+// the old session row is gone, exactly one new session row exists, and its
+// hash differs from the original (proving rotation occurred — not just a
+// silent no-op).
+func TestRefreshToken_HappyPath(t *testing.T) {
+	db := newAuthTestDB(t)
+	userID, refreshToken := seedRefreshSessionForUser(t, db)
+	originalHash := sessionHashFor(t, db, userID)
+
+	app := authTestApp(RefreshToken(zap.NewNop(), testAuthConfig(), db))
+	resp := doAuthRequest(t, app, map[string]string{"refresh_token": refreshToken})
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 on happy path, got %d", resp.StatusCode)
+	}
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	data, ok := body["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected 'data' object in refresh response")
+	}
+	if data["access_token"] == "" || data["access_token"] == nil {
+		t.Error("expected non-empty access_token in refresh response")
+	}
+	if data["refresh_token"] == "" || data["refresh_token"] == nil {
+		t.Error("expected non-empty refresh_token in refresh response")
+	}
+
+	// Exactly one session row, and it must be the NEW one (different hash).
+	if got := countSessions(t, db, userID); got != 1 {
+		t.Fatalf("expected 1 session row after rotation, got %d", got)
+	}
+	if got := sessionHashFor(t, db, userID); got == originalHash {
+		t.Fatal("session row did not rotate — hash unchanged after refresh")
+	}
+}
+
+// TestRefreshToken_UserDeletedDuringRotation simulates the user row
+// disappearing before the rotation completes (e.g. admin deletion racing a
+// refresh). The transaction MUST roll back so the original session row is
+// preserved, and the HTTP response MUST be 401 (not 500) so the client knows
+// to re-authenticate rather than retry.
+func TestRefreshToken_UserDeletedDuringRotation(t *testing.T) {
+	db := newAuthTestDB(t)
+	userID, refreshToken := seedRefreshSessionForUser(t, db)
+	originalHash := sessionHashFor(t, db, userID)
+
+	// Delete the user row before the refresh fires. Inside the transaction
+	// the handler calls repository.FindUserByID(tx, ...) which returns
+	// ErrNotFound. The closure returns the wrapped ErrNotFound; the outer
+	// errors.Is branch must respond 401 and the tx must roll back so the
+	// session row that the closure already deleted is restored.
+	if err := db.Exec(`DELETE FROM users WHERE id = ?`, userID).Error; err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+
+	app := authTestApp(RefreshToken(zap.NewNop(), testAuthConfig(), db))
+	resp := doAuthRequest(t, app, map[string]string{"refresh_token": refreshToken})
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("expected 401 on user-deleted-mid-rotation, got %d", resp.StatusCode)
+	}
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if msg, _ := body["error"].(string); msg != "user not found" {
+		t.Errorf("expected error 'user not found', got %q", msg)
+	}
+
+	// THE rollback proof: the original session row must still exist even
+	// though DeleteSession ran inside the closure. Without the transaction
+	// wrap this would be 0.
+	if got := countSessions(t, db, userID); got != 1 {
+		t.Fatalf("expected 1 session row after rollback (user-deleted path), got %d", got)
+	}
+	if got := sessionHashFor(t, db, userID); got != originalHash {
+		t.Fatalf("expected original session hash preserved after rollback; got %q want %q", got, originalHash)
+	}
+}
