@@ -10,7 +10,7 @@ RUN go mod tidy && go mod download
 
 # Copy source and build both the API server and the createadmin CLI.
 # createadmin is a one-shot bootstrap tool for the first admin user and is
-# invoked via `docker exec vpn-api ./createadmin -email=... -password=...`.
+# invoked via `docker exec -it vpn-api ./createadmin -email=...` (password via stdin).
 COPY . .
 RUN go mod tidy \
  && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o api-server ./cmd \
