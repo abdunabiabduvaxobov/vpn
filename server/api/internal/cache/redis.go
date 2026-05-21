@@ -60,37 +60,48 @@ func BlacklistToken(ctx context.Context, client *redis.Client, tokenHash string,
 // rateLimitKeyPrefix is the Redis key namespace for per-user/per-IP rate limits.
 const rateLimitKeyPrefix = "rate:"
 
-// IncrRateLimit increments the request counter for the given rate-limit key
-// and sets the expiry to window on the first increment only, so the window
-// does not reset on every request. Returns the current counter value after
-// incrementing.
+// rateLimitScript is the canonical atomic INCR-or-SET-with-EXPIRE pattern.
+// Increments the key by 1; on the very first increment (count == 1) sets the
+// expiry to ARGV[1] seconds. Returns the post-increment count.
+//
+// Atomic by virtue of Redis's single-threaded script execution — either both
+// INCR and EXPIRE run, or neither does. The previous pipeline implementation
+// could leave a counter without a TTL if EXPIRE failed after INCR succeeded,
+// causing permanent lockout. See CODE-REVIEW CRIT-02.
+//
+// go-redis v9's NewScript().Run() transparently uses EVALSHA after the first
+// call (the script's SHA1 is cached server-side), so the common case is a
+// single round-trip; first call after a Redis restart pays one extra EVAL.
+var rateLimitScript = redis.NewScript(`
+local n = redis.call('INCR', KEYS[1])
+if n == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return n
+`)
+
+// IncrRateLimit atomically increments the request counter for the given
+// rate-limit key and, on the very first increment, sets the TTL to window so
+// the counter cannot persist without an expiry. Returns the current counter
+// value after incrementing. Single Redis round-trip in the common case
+// (EVALSHA after the script is cached).
+//
+// Closes CODE-REVIEW CRIT-02. Implements ROADMAP §Phase 1 success criterion
+// #6 ("every IncrRateLimit call leaves the counter with a positive TTL"). The
+// pre-fix two-step pipeline (INCR then conditional EXPIRE) is replaced with a
+// Lua script so partial state — INCR succeeded but EXPIRE never ran — is
+// structurally impossible.
+//
+// Window semantics: fixed-from-first-call, NOT sliding. EXPIRE only fires
+// when n == 1, mirroring the original behaviour so existing callers in
+// middleware/ratelimit.go don't shift behaviour.
 func IncrRateLimit(ctx context.Context, client *redis.Client, key string, window time.Duration) (int64, error) {
 	fullKey := rateLimitKeyPrefix + key
+	seconds := int64(window.Seconds())
 
-	// INCR is atomic — pipeline it with nothing else so we get the count back
-	// cleanly before deciding whether to set the expiry.
-	pipe := client.Pipeline()
-	incrCmd := pipe.Incr(ctx, fullKey)
-
-	if _, err := pipe.Exec(ctx); err != nil {
-		return 0, fmt.Errorf("rate limit pipeline: %w", err)
-	}
-
-	count, err := incrCmd.Result()
+	result, err := rateLimitScript.Run(ctx, client, []string{fullKey}, seconds).Int64()
 	if err != nil {
-		return 0, fmt.Errorf("reading incr result: %w", err)
+		return 0, fmt.Errorf("rate limit script: %w", err)
 	}
-
-	// Only set the expiry on the very first increment so the window is fixed
-	// from the moment the counter was created — subsequent increments within
-	// the same window must not push the expiry forward.
-	if count == 1 {
-		if err := client.Expire(ctx, fullKey, window).Err(); err != nil {
-			// Non-fatal: counter exists, expiry failed. Log externally if needed.
-			// The key will be cleaned up by Redis eventually or on the next request.
-			return count, fmt.Errorf("setting rate limit expiry: %w", err)
-		}
-	}
-
-	return count, nil
+	return result, nil
 }

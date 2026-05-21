@@ -158,6 +158,79 @@ func TestIncrRateLimit_KeyExpiresAfterWindow(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// HOTFIX-03 regression tests — TTL invariant + no-sliding-window
+// (Task 1 stubs; bodies implemented in Task 2)
+// ---------------------------------------------------------------------------
+
+// TestIncrRateLimit_AtomicTTLSetOnFirstIncrement is the load-bearing
+// regression test for HOTFIX-03 / CRIT-02: after every IncrRateLimit call
+// the key MUST carry a positive TTL.  Before the Lua rewrite, a partial
+// failure between INCR and EXPIRE could leave the counter at 1 with TTL=-1
+// (no expiry), permanently rate-limiting that key until manual operator
+// intervention.  With the atomic Lua script that failure mode is
+// structurally impossible — both calls run inside the single-threaded
+// script engine.
+func TestIncrRateLimit_AtomicTTLSetOnFirstIncrement(t *testing.T) {
+	ctx := context.Background()
+	client, mr := newTestClient(t)
+
+	const window = 60 * time.Second
+	n, err := cache.IncrRateLimit(ctx, client, "ip:1.2.3.4", window)
+	if err != nil {
+		t.Fatalf("IncrRateLimit returned error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected first increment to return 1, got %d", n)
+	}
+
+	// The cache prefixes keys with "rate:" — must query miniredis with the
+	// fully-qualified key.
+	ttl := mr.TTL("rate:ip:1.2.3.4")
+	if ttl <= 0 {
+		t.Fatalf("expected positive TTL after first IncrRateLimit, got %v (this is the CRIT-02 regression — counter has no expiry)", ttl)
+	}
+	if ttl > window {
+		t.Fatalf("TTL %v exceeds window %v — Lua script set wrong expiry", ttl, window)
+	}
+}
+
+// TestIncrRateLimit_SubsequentIncrementsDoNotSlideWindow guards against the
+// "sliding window" misimplementation: EXPIRE must fire only on n == 1, never
+// on subsequent calls, so the window is fixed from the moment of the first
+// request rather than refreshed on every hit.
+func TestIncrRateLimit_SubsequentIncrementsDoNotSlideWindow(t *testing.T) {
+	ctx := context.Background()
+	client, mr := newTestClient(t)
+
+	const window = 60 * time.Second
+	const key = "ip:5.6.7.8"
+	const fullKey = "rate:" + key
+
+	if _, err := cache.IncrRateLimit(ctx, client, key, window); err != nil {
+		t.Fatalf("first IncrRateLimit returned error: %v", err)
+	}
+	ttl1 := mr.TTL(fullKey)
+	if ttl1 <= 0 {
+		t.Fatalf("expected positive TTL after first call, got %v", ttl1)
+	}
+
+	// Advance miniredis time so a sliding-window bug would manifest as a
+	// TTL bump back to ~60s on the second call.
+	mr.FastForward(5 * time.Second)
+
+	if _, err := cache.IncrRateLimit(ctx, client, key, window); err != nil {
+		t.Fatalf("second IncrRateLimit returned error: %v", err)
+	}
+	ttl2 := mr.TTL(fullKey)
+	if ttl2 <= 0 {
+		t.Fatalf("expected positive TTL after second call, got %v", ttl2)
+	}
+	if ttl2 > ttl1 {
+		t.Fatalf("sliding-window regression: TTL after 2nd call (%v) > TTL after 1st (%v); EXPIRE should only fire on n == 1", ttl2, ttl1)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Edge-case tests: graceful degradation when Redis is unavailable
 // ---------------------------------------------------------------------------
 
