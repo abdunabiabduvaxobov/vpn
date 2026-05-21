@@ -241,4 +241,4 @@ Updated by `gsd-roadmapper` during roadmap creation.
 
 ---
 *Requirements defined: 2026-05-22*
-*Last updated: 2026-05-22 after initial definition (derived from `docs/audit/MASTER-PLAN.md` and `docs/ADR-007-lava-sso-rework.md`)*
+*Last updated: 2026-05-22 after roadmap creation by `gsd-roadmapper` (8 phases mirroring `docs/audit/MASTER-PLAN.md` tranches 0–5; per-row traceability unchanged)*
