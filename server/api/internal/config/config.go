@@ -110,3 +110,53 @@ func getEnvInt64(key string, fallback int64) int64 {
 	}
 	return n
 }
+
+// RequireEnv reports every required environment variable that is unset or empty.
+// Returns an empty slice when all required vars are set.
+//
+// Single-pass aggregate validator (per HOTFIX-08 D-04): scans every var in one
+// call so the operator sees ALL missing keys in one error, not "fix one, restart,
+// fix the next". Called from cmd/main.go BEFORE config.Load(); a non-empty return
+// becomes a logger.Fatal which calls os.Exit(1).
+//
+// Required set is the v2.1.0 runtime-dependency core only (D-03). Stripe vars
+// are intentionally OPTIONAL (see OptionalEnvWarnings) because Stripe leaves in
+// Phase 8. LAVA_* keys will be added in Phase 3 when lava.top integration lands.
+func RequireEnv() []string {
+	required := []string{
+		"JWT_SECRET",
+		"DATABASE_URL",
+		"REDIS_URL",
+		"TUNNEL_VLESS_UUID",
+	}
+	var missing []string
+	for _, key := range required {
+		if os.Getenv(key) == "" {
+			missing = append(missing, key)
+		}
+	}
+	return missing
+}
+
+// OptionalEnvWarnings reports payment-provider env vars that are unset, empty,
+// or set to a known placeholder string. These do NOT block startup but should
+// emit a single warn-log line so misconfigured deploys are visible.
+//
+// STRIPE_* are warned because Stripe leaves in Phase 8; once gone, this list
+// shrinks. LAVA_* will move to RequireEnv in Phase 3.
+func OptionalEnvWarnings() []string {
+	optional := map[string]string{
+		"STRIPE_KEY":            "",
+		"STRIPE_WEBHOOK_SECRET": "",
+		"STRIPE_PRICE_PREMIUM":  "price_PLACEHOLDER_PREMIUM",
+		"STRIPE_PRICE_ULTIMATE": "price_PLACEHOLDER_ULTIMATE",
+	}
+	var warned []string
+	for key, placeholder := range optional {
+		val := os.Getenv(key)
+		if val == "" || (placeholder != "" && val == placeholder) {
+			warned = append(warned, key)
+		}
+	}
+	return warned
+}

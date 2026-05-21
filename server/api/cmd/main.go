@@ -31,10 +31,32 @@ func main() {
 	}
 	defer logger.Sync()
 
+	// Fail-fast aggregate env validator (HOTFIX-08 / D-04). Runs BEFORE
+	// config.Load() so the operator sees ALL missing required keys in one
+	// structured log line rather than fixing them one at a time. logger.Fatal
+	// calls os.Exit(1) internally — satisfies the D-04 single-pass contract.
+	if missing := config.RequireEnv(); len(missing) > 0 {
+		logger.Fatal("required environment variables missing",
+			zap.Strings("missing", missing),
+			zap.String("action", "set the listed variables and restart"),
+		)
+	}
+
 	// Load configuration from environment
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Fatal("failed to load config", zap.Error(err))
+	}
+
+	// Optional payment-provider env vars (HOTFIX-08 / D-03). Empty or
+	// placeholder Stripe values emit a single WARN line but do NOT block
+	// startup — Stripe leaves in Phase 8 and these will shrink to zero then.
+	// LAVA_* will be added to RequireEnv in Phase 3 when lava.top wires in.
+	if warned := config.OptionalEnvWarnings(); len(warned) > 0 {
+		logger.Warn("optional payment-provider environment variables unset or placeholder",
+			zap.Strings("vars", warned),
+			zap.String("impact", "stripe checkout will fail at runtime; lava.top not yet wired"),
+		)
 	}
 
 	// Set Stripe API key once at startup — handlers must not override this.
