@@ -152,6 +152,18 @@ func PatchAccount(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 }
 
 // ErrorHandler returns a custom Fiber error handler that logs errors.
+//
+// HOTFIX-04 (D-05/D-06): 5xx responses return a generic body
+// {"error":"internal server error","request_id":"<uuid>"} so internal error
+// chains from GORM/bcrypt/etc. never reach the client (CR CRIT-04 / S9-1).
+// 4xx responses keep their verbose err.Error() text because that surface is
+// client-UX (e.g. "email required") and not a leak surface.
+//
+// Every error — 4xx or 5xx — is logged ONCE via the zap logger with the
+// matching request_id so operators can correlate the scrubbed client response
+// to the structured log line. request_id comes from c.Locals("requestid"),
+// populated by the Fiber middleware/requestid wired in cmd/main.go BEFORE
+// recover.New() so panic-recovery paths also carry the id.
 func ErrorHandler(logger *zap.Logger) fiber.ErrorHandler {
 	return func(c *fiber.Ctx, err error) error {
 		code := fiber.StatusInternalServerError
@@ -159,12 +171,22 @@ func ErrorHandler(logger *zap.Logger) fiber.ErrorHandler {
 			code = e.Code
 		}
 
+		requestID, _ := c.Locals("requestid").(string)
+
 		logger.Error("request error",
 			zap.Int("status", code),
 			zap.String("path", c.Path()),
+			zap.String("method", c.Method()),
+			zap.String("request_id", requestID),
 			zap.Error(err),
 		)
 
+		if code >= 500 {
+			return c.Status(code).JSON(fiber.Map{
+				"error":      "internal server error",
+				"request_id": requestID,
+			})
+		}
 		return c.Status(code).JSON(fiber.Map{
 			"error": err.Error(),
 		})

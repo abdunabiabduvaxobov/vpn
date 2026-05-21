@@ -18,6 +18,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/gofiber/fiber/v2/middleware/requestid"
+	"github.com/gofiber/fiber/v2/utils"
 	stripe "github.com/stripe/stripe-go/v81"
 	"go.uber.org/zap"
 )
@@ -86,7 +88,17 @@ func main() {
 		ErrorHandler: handler.ErrorHandler(logger),
 	})
 
-	// Global middleware
+	// Global middleware.
+	//
+	// requestid MUST run BEFORE recover.New() so panic-recovery paths also
+	// carry a request_id that ErrorHandler can echo to the client and stamp
+	// onto the structured log line (HOTFIX-04 / D-05). UUIDv4 (RFC 4122
+	// random) is chosen over the default utils.UUID — the latter is faster
+	// but monotonic, leaking request count to anyone watching responses.
+	app.Use(requestid.New(requestid.Config{
+		Header:    fiber.HeaderXRequestID,
+		Generator: utils.UUIDv4,
+	}))
 	app.Use(recover.New())
 	// CORS is pinned to the admin panel origin now that it lives on its
 	// own subdomain. The port is load-bearing: browsers include :9443 in
