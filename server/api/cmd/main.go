@@ -215,7 +215,7 @@ func main() {
 	// admin action is persisted to the audit_log table on success.
 	admin := api.Group("/admin",
 		authMiddleware,
-		middleware.AdminRequired(),
+		middleware.AdminRequired(db),
 		middleware.AuditLog(db, logger),
 	)
 	admin.Get("/users", handler.AdminListUsers(logger, db))
