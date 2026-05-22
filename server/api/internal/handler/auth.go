@@ -825,7 +825,10 @@ func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model
 
 	// Step C: if a guest JWT was presented, promote that row in place.
 	if p.guestUserID != "" {
-		pErr := repository.PromoteGuestToSSO(db, p.guestUserID, p.sub, p.email, p.provider, p.isPrivateRelay)
+		// WR-04: pass p.fullName so the SSO-supplied display name reaches the
+		// users.full_name column on promotion. Empty fullName preserves the
+		// existing name (repository guard).
+		pErr := repository.PromoteGuestToSSO(db, p.guestUserID, p.sub, p.email, p.provider, p.fullName, p.isPrivateRelay)
 		if pErr == nil {
 			return repository.FindUserByID(db, p.guestUserID)
 		}
