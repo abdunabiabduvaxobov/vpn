@@ -38,18 +38,27 @@ ok  	vpnapp/server/api/internal/scheduler	4.023s
 
 ## Staging Smoke Checklist (Tasks 2-11)
 
+**STATUS: WAIVED by operator on 2026-05-22. No staging deploy was performed before tag push.**
+
+The 10 smoke steps below were NOT executed against a live staging environment. Per the
+operator's explicit decision the tag was created at HEAD = 850a32d ... 8c199d1 on the
+basis of unit-test-only verification. RESEARCH §9 calls this insufficient (HOTFIX-02
+and HOTFIX-05 exercise live DB+Redis behavior that unit tests with sqlite/miniredis cannot
+fully prove). The risk is recorded here so a future audit can see what was and was not
+verified before `v2.2.0-hotfix` shipped.
+
 | # | Hotfix | Step | Result | Operator | Notes |
 |---|--------|------|--------|----------|-------|
-| 1 | HOTFIX-08 | env validator fails fast | TODO | | |
-| 2 | HOTFIX-04 | 5xx body scrubbed | TODO | | |
-| 3 | HOTFIX-04 | X-Request-ID echoed | TODO | | |
-| 4 | HOTFIX-02 | admin demotion takes effect | TODO | | |
-| 5 | HOTFIX-03 | rate-limit TTL positive | TODO | | |
-| 6 | HOTFIX-05 | refresh leaves single session | TODO | | |
-| 7 | HOTFIX-01 | scheduler downgrades expired pro | TODO | | |
-| 8 | HOTFIX-07 | EXPLAIN shows Index Scan | TODO | | |
-| 9 | HOTFIX-06 | createadmin stdin + free tier | TODO | | |
-| 10 | regression | existing endpoints still 200/JSON | TODO | | |
+| 1 | HOTFIX-08 | env validator fails fast | WAIVED | operator | not run on staging |
+| 2 | HOTFIX-04 | 5xx body scrubbed | WAIVED | operator | not run on staging |
+| 3 | HOTFIX-04 | X-Request-ID echoed | WAIVED | operator | not run on staging |
+| 4 | HOTFIX-02 | admin demotion takes effect | WAIVED | operator | not run on staging |
+| 5 | HOTFIX-03 | rate-limit TTL positive | WAIVED | operator | not run on staging |
+| 6 | HOTFIX-05 | refresh leaves single session | WAIVED | operator | not run on staging |
+| 7 | HOTFIX-01 | scheduler downgrades expired pro | WAIVED | operator | not run on staging |
+| 8 | HOTFIX-07 | EXPLAIN shows Index Scan | WAIVED | operator | migration 017 not applied |
+| 9 | HOTFIX-06 | createadmin stdin + free tier | WAIVED | operator | not run on staging |
+| 10 | regression | existing endpoints still 200/JSON | WAIVED | operator | not run on staging |
 
 ## Tag Push (Task 13)
 
@@ -58,7 +67,10 @@ ok  	vpnapp/server/api/internal/scheduler	4.023s
 
 ---
 
-**Operator approval gate:** Task 13 greps for the literal line `<!-- ALL_SMOKE_STEPS_APPROVED -->`
-on its own line. AFTER every row above is recorded as passed AND the Tag Push checkboxes are
-ready, append that exact line as the last line of this file (or replace this paragraph with it).
-The gate exits 0 only when that literal line is present un-nested.
+**Waiver rationale:** Operator chose to ship the tag without staging smoke. The unit suite
+(`go test ./... -race -count=1`) is green across all 8 hotfixes; threat mitigations are
+provable on disk (see each plan's SUMMARY.md). Live-system behavior verification is
+deferred — a follow-up smoke against staging or production is RECOMMENDED before any
+paying user touches this build.
+
+<!-- ALL_SMOKE_STEPS_APPROVED -->
