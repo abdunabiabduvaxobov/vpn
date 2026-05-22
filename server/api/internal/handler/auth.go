@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"vpnapp/server/api/internal/auth/apple"
+	"vpnapp/server/api/internal/auth/google"
 	"vpnapp/server/api/internal/config"
 	"vpnapp/server/api/internal/model"
 	"vpnapp/server/api/internal/repository"
@@ -603,4 +606,347 @@ func generateTokens(userID, tier, role, name, secret string) (*authResponse, err
 		RefreshToken: refreshString,
 		ExpiresIn:    int(time.Until(accessExpiry).Seconds()),
 	}, nil
+}
+
+// --- Phase 2 SSO handlers (AUTH-01, AUTH-02, AUTH-04, AUTH-05, AUTH-06, AUTH-07) ---
+
+// appleVerifier is the minimal interface AppleSignIn needs from the verifier.
+// Production wires *apple.Verifier (satisfies via structural typing). Tests
+// inject a fake. (RESEARCH.md §Testing Strategy option A.)
+type appleVerifier interface {
+	Verify(ctx context.Context, identityToken string) (apple.AppleIdentity, error)
+}
+
+// googleVerifier is the matching interface for GoogleSignIn.
+type googleVerifier interface {
+	Verify(ctx context.Context, idToken string) (google.GoogleIdentity, error)
+}
+
+type appleSignInRequest struct {
+	IdentityToken     string `json:"identityToken"`
+	AuthorizationCode string `json:"authorizationCode"` // D-18: accepted, not exchanged this phase
+	FullName          string `json:"fullName"`
+	Email             string `json:"email"`
+	DeviceID          string `json:"deviceId"`
+	DeviceSecret      string `json:"deviceSecret"`
+	Platform          string `json:"platform"`
+	Model             string `json:"model"`
+}
+
+type googleSignInRequest struct {
+	IDToken      string `json:"idToken"`
+	DeviceID     string `json:"deviceId"`
+	DeviceSecret string `json:"deviceSecret"`
+	Platform     string `json:"platform"`
+	Model        string `json:"model"`
+}
+
+// parseGuestJWT decodes and verifies an optional Authorization: Bearer guest JWT.
+// Returns the guest user_id when valid, "" when the header is absent, or an
+// error when the header is present but malformed/invalid-sig (T-2-GuestJWTSpoof).
+func parseGuestJWT(authHeader, secret string) (string, error) {
+	if authHeader == "" {
+		return "", nil
+	}
+	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+	if tokenString == authHeader {
+		// Header didn't start with "Bearer " — treat as absent.
+		return "", nil
+	}
+	claims := jwt.MapClaims{}
+	_, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
+		return []byte(secret), nil
+	}, jwt.WithValidMethods([]string{"HS256"}))
+	if err != nil {
+		return "", err
+	}
+	sub, _ := claims["sub"].(string)
+	if sub == "" {
+		return "", errors.New("guest jwt: missing sub")
+	}
+	return sub, nil
+}
+
+// ssoResolveParams carries the inputs to the shared FindOrCreate-with-race-fallback
+// path used by both AppleSignIn and GoogleSignIn.
+type ssoResolveParams struct {
+	provider       string // "apple" or "google"
+	sub            string
+	email          string
+	emailVerified  bool
+	isPrivateRelay bool
+	fullName       string
+	guestUserID    string // "" if no guest-promotion attempt
+}
+
+// findUserByProviderID dispatches between FindUserByAppleID and FindUserByGoogleID.
+func findUserByProviderID(db *gorm.DB, provider, sub string) (*model.User, error) {
+	switch provider {
+	case "apple":
+		return repository.FindUserByAppleID(db, sub)
+	case "google":
+		return repository.FindUserByGoogleID(db, sub)
+	default:
+		return nil, fmt.Errorf("unknown provider %q", provider)
+	}
+}
+
+// resolveSSOUser encapsulates the FindOrCreate-with-race-fallback pattern
+// shared between Apple and Google sign-in flows. Returns the resolved user.
+//
+// Composition (per RESEARCH.md §Account-Linking Race Condition + §Guest-Promote-in-Place):
+//
+//	Step A: findByProvider(sub) — does a row already own this sub?
+//	        If yes AND guestUserID is set + different → reassign guest's devices
+//	        to the existing row and orphan the guest user, inside db.Transaction
+//	        (D-06 / B-3 fix). Return the existing row.
+//	Step B: try auto-link by verified email (D-03/D-04 — only when email_verified
+//	        AND !is_private_relay).
+//	Step C: if guestUserID set, PromoteGuestToSSO (D-06 in-place).
+//	Step D: otherwise CreateUser with the provider sub set; on ErrDuplicate
+//	        re-read via findByProvider (race lost — W-4 fallback keeps every
+//	        concurrent caller on the 200 path).
+func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model.User, error) {
+	// Step A: does a row already own this provider sub?
+	existing, err := findUserByProviderID(db, p.provider, p.sub)
+	if err != nil && !errors.Is(err, repository.ErrNotFound) {
+		return nil, err
+	}
+	if existing != nil {
+		// D-06 reassign-and-orphan branch (B-3 fix): if a guest JWT is presented
+		// alongside a sub that's already owned, move the guest's devices to the
+		// existing row and delete the (now-stale) guest user row. Both writes
+		// happen inside a single db.Transaction so neither can leak partial state.
+		if p.guestUserID != "" && p.guestUserID != existing.ID {
+			txErr := db.Transaction(func(tx *gorm.DB) error {
+				if _, rErr := repository.ReassignDevicesByUserID(tx, p.guestUserID, existing.ID); rErr != nil {
+					return fmt.Errorf("reassign devices: %w", rErr)
+				}
+				if dErr := repository.DeleteOrphanGuestUser(tx, p.guestUserID); dErr != nil &&
+					!errors.Is(dErr, repository.ErrNotFound) {
+					return fmt.Errorf("delete orphan guest: %w", dErr)
+				}
+				return nil
+			})
+			if txErr != nil {
+				logger.Error("sso: reassign-and-orphan tx failed",
+					zap.String("guest_user_id", p.guestUserID),
+					zap.String("existing_user_id", existing.ID),
+					zap.Error(txErr))
+				return nil, txErr
+			}
+		}
+		return existing, nil
+	}
+
+	// Step B: try auto-link by verified email (D-03/D-04).
+	// SECURITY: only the verifier-derived email reaches this branch — see the
+	// AppleSignIn handler's comment for the T-2-EmailBodySpoof rationale.
+	if p.email != "" && p.emailVerified && !p.isPrivateRelay {
+		linkCandidate, lerr := repository.FindUserByVerifiedEmailForLink(db, p.email)
+		if lerr != nil && !errors.Is(lerr, repository.ErrNotFound) {
+			return nil, lerr
+		}
+		if linkCandidate != nil {
+			updates := map[string]interface{}{}
+			switch p.provider {
+			case "apple":
+				updates["apple_user_id"] = p.sub
+			case "google":
+				updates["google_user_id"] = p.sub
+			}
+			updates["auth_provider"] = p.provider
+			if err := db.Model(&model.User{}).Where("id = ?", linkCandidate.ID).Updates(updates).Error; err != nil {
+				// B-2 fix: errors.Is against the public sentinel — the private
+				// repository.isDuplicateError helper is unreachable from this package.
+				if errors.Is(err, repository.ErrDuplicate) {
+					// Race — re-read.
+					return findUserByProviderID(db, p.provider, p.sub)
+				}
+				return nil, err
+			}
+			// Re-read to get the merged row.
+			return repository.FindUserByID(db, linkCandidate.ID)
+		}
+	}
+
+	// Step C: if a guest JWT was presented, promote that row in place.
+	if p.guestUserID != "" {
+		pErr := repository.PromoteGuestToSSO(db, p.guestUserID, p.sub, p.email, p.provider, p.isPrivateRelay)
+		if pErr == nil {
+			return repository.FindUserByID(db, p.guestUserID)
+		}
+		if errors.Is(pErr, repository.ErrDuplicate) {
+			// Race lost — another request grabbed this sub. Re-read.
+			return findUserByProviderID(db, p.provider, p.sub)
+		}
+		if !errors.Is(pErr, repository.ErrNotFound) {
+			return nil, pErr
+		}
+		// ErrNotFound — the guest row vanished (race with cleanup). Fall through
+		// to Step D and create a brand-new row.
+	}
+
+	// Step D: create a new SSO row.
+	newUser := &model.User{
+		FullName:            p.fullName,
+		SubscriptionTier:    "free",
+		Role:                "user",
+		AuthProvider:        p.provider,
+		EmailVerified:       p.emailVerified,
+		EmailIsPrivateRelay: p.isPrivateRelay,
+	}
+	if p.email != "" {
+		emailCopy := p.email
+		newUser.Email = &emailCopy
+	}
+	switch p.provider {
+	case "apple":
+		subCopy := p.sub
+		newUser.AppleUserID = &subCopy
+	case "google":
+		subCopy := p.sub
+		newUser.GoogleUserID = &subCopy
+	}
+	if err := repository.CreateUser(db, newUser); err != nil {
+		// W-4: every concurrent caller funnels through this branch — the
+		// re-read on ErrDuplicate is what keeps the response 200 instead of 500.
+		if errors.Is(err, repository.ErrDuplicate) {
+			return findUserByProviderID(db, p.provider, p.sub)
+		}
+		return nil, err
+	}
+	return newUser, nil
+}
+
+// AppleSignIn handles POST /api/v1/auth/apple.
+//
+// Flow per D-19 / D-20: parse → verify → resolveSSOUser → generateTokens →
+// storeRefreshSession → respond. Optional Authorization: Bearer signals
+// guest-promotion intent (D-06).
+//
+// Error mapping (D-27):
+//
+//	400 — malformed/missing identityToken
+//	401 — verifier error (any kind: sig, aud, exp, iss)
+//	403 — invalid guest JWT
+//	500 — internal (DB, generateTokens, storeRefreshSession failures)
+func AppleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier appleVerifier) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		var req appleSignInRequest
+		if err := c.BodyParser(&req); err != nil || req.IdentityToken == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "identityToken is required"})
+		}
+
+		// Optional guest-promotion JWT in Authorization header (T-2-GuestJWTSpoof).
+		guestUserID, err := parseGuestJWT(c.Get("Authorization"), cfg.JWTSecret)
+		if err != nil {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "invalid guest token"})
+		}
+
+		identity, err := verifier.Verify(c.Context(), req.IdentityToken)
+		if err != nil {
+			// HOTFIX-04 contract — single canonical error string, do not leak parser internals.
+			logger.Info("apple verify failed", zap.Error(err))
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid identity token"})
+		}
+
+		// SECURITY (T-2-EmailBodySpoof): NEVER trust the request body's `email`
+		// field as an auto-link key. Auto-link lookup uses `identity.Email` (from
+		// the verified JWT). The body `Email` is intentionally ignored for any
+		// trust-bearing lookup; it is never passed to FindUserByVerifiedEmailForLink.
+		_ = req.Email
+
+		user, err := resolveSSOUser(db, logger, ssoResolveParams{
+			provider:       "apple",
+			sub:            identity.Sub,
+			email:          identity.Email,
+			emailVerified:  identity.EmailVerified,
+			isPrivateRelay: identity.IsPrivateRelay,
+			fullName:       req.FullName,
+			guestUserID:    guestUserID,
+		})
+		if err != nil {
+			logger.Error("apple signin: resolve user", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+
+		tokens, err := generateTokens(user.ID, user.SubscriptionTier, user.Role, user.FullName, cfg.JWTSecret)
+		if err != nil {
+			logger.Error("apple signin: generate tokens", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+		if err := storeRefreshSession(db, user.ID, tokens.RefreshToken); err != nil {
+			logger.Error("apple signin: store refresh", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+
+		return c.JSON(fiber.Map{"data": ssoResponseBody(user, tokens)})
+	}
+}
+
+// GoogleSignIn handles POST /api/v1/auth/google. Same composition as AppleSignIn.
+func GoogleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier googleVerifier) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		var req googleSignInRequest
+		if err := c.BodyParser(&req); err != nil || req.IDToken == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "idToken is required"})
+		}
+
+		guestUserID, err := parseGuestJWT(c.Get("Authorization"), cfg.JWTSecret)
+		if err != nil {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "invalid guest token"})
+		}
+
+		identity, err := verifier.Verify(c.Context(), req.IDToken)
+		if err != nil {
+			logger.Info("google verify failed", zap.Error(err))
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid identity token"})
+		}
+
+		user, err := resolveSSOUser(db, logger, ssoResolveParams{
+			provider:       "google",
+			sub:            identity.Sub,
+			email:          identity.Email,
+			emailVerified:  identity.EmailVerified,
+			isPrivateRelay: false, // Google has no private-relay concept
+			guestUserID:    guestUserID,
+		})
+		if err != nil {
+			logger.Error("google signin: resolve user", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+
+		tokens, err := generateTokens(user.ID, user.SubscriptionTier, user.Role, user.FullName, cfg.JWTSecret)
+		if err != nil {
+			logger.Error("google signin: generate tokens", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+		if err := storeRefreshSession(db, user.ID, tokens.RefreshToken); err != nil {
+			logger.Error("google signin: store refresh", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+		return c.JSON(fiber.Map{"data": ssoResponseBody(user, tokens)})
+	}
+}
+
+// ssoResponseBody builds the `data` portion of the SSO response (D-21).
+// Identical shape to the existing GuestLogin/AdminLogin response payload.
+func ssoResponseBody(user *model.User, tokens *authResponse) fiber.Map {
+	email := ""
+	if user.Email != nil {
+		email = *user.Email
+	}
+	return fiber.Map{
+		"access_token":  tokens.AccessToken,
+		"refresh_token": tokens.RefreshToken,
+		"expires_in":    tokens.ExpiresIn,
+		"user": fiber.Map{
+			"id":                user.ID,
+			"auth_provider":     user.AuthProvider,
+			"email":             email,
+			"full_name":         user.FullName,
+			"subscription_tier": user.SubscriptionTier,
+		},
+	}
 }

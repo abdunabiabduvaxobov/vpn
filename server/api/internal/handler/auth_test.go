@@ -860,6 +860,16 @@ func TestAppleSignIn_InvalidGuestJWT_Returns403(t *testing.T) {
 
 func TestAppleSignIn_ConcurrentSameSub(t *testing.T) {
 	db := newAuthTestDB(t)
+	// SQLite :memory: is per-connection — under concurrent goroutines the
+	// connection pool can hand out connections backed by DIFFERENT empty
+	// databases. Clamp to a single shared connection so the partial-unique
+	// index can actually fire and the handler's ErrDuplicate-fallback path is
+	// the one being exercised (instead of a "database is locked" race).
+	sqlDB, sqlErr := db.DB()
+	if sqlErr != nil {
+		t.Fatalf("db.DB: %v", sqlErr)
+	}
+	sqlDB.SetMaxOpenConns(1)
 	cfg := testAuthConfig()
 	fv := &fakeAppleVerifier{identity: apple.AppleIdentity{
 		Sub: "AS-1", Email: "race@example.com", EmailVerified: true,
