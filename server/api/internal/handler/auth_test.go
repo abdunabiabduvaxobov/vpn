@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1210,6 +1211,63 @@ func TestGoogleSignIn_EmptySub_Returns401(t *testing.T) {
 	db.Raw("SELECT COUNT(*) FROM users WHERE google_user_id IS NOT NULL").Scan(&anyGoogleRow)
 	if anyGoogleRow != 0 {
 		t.Errorf("CRITICAL: any google_user_id row exists after empty-sub rejection. count=%d", anyGoogleRow)
+	}
+}
+
+// WR-01: parseGuestJWT must reject any token whose role claim is not empty
+// or "user". An admin token presented in the Authorization header of
+// /auth/apple or /auth/google would otherwise be silently treated as a
+// guest-promotion intent and attach the SSO sub to the admin's user row.
+// REVIEW.md WR-01.
+func TestParseGuestJWT_RejectsAdminRole(t *testing.T) {
+	secret := "test-secret-32-bytes-at-minimum!!"
+
+	mint := func(role string) string {
+		t.Helper()
+		claims := jwt.MapClaims{
+			"sub":  uuid.NewString(),
+			"tier": "free",
+			"role": role,
+			"name": "",
+			"iat":  time.Now().Unix(),
+			"exp":  time.Now().Add(5 * time.Minute).Unix(),
+		}
+		tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+		s, err := tok.SignedString([]byte(secret))
+		if err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		return s
+	}
+
+	// Admin token MUST be rejected.
+	adminTok := mint("admin")
+	if _, err := parseGuestJWT("Bearer "+adminTok, secret); err == nil {
+		t.Error("CRITICAL: parseGuestJWT accepted an admin-role token (WR-01 regression)")
+	} else if !strings.Contains(err.Error(), "non-user role not allowed for promotion") {
+		t.Errorf("expected error containing 'non-user role not allowed for promotion', got %q", err.Error())
+	}
+
+	// User role MUST still pass.
+	userTok := mint("user")
+	if sub, err := parseGuestJWT("Bearer "+userTok, secret); err != nil {
+		t.Errorf("WR-01 regression: user-role token must succeed, got error %v", err)
+	} else if sub == "" {
+		t.Errorf("user-role token: expected non-empty sub, got empty")
+	}
+
+	// Empty role MUST also still pass (backwards-compat — pre-WR-01 tokens may lack role).
+	emptyRoleTok := mint("")
+	if sub, err := parseGuestJWT("Bearer "+emptyRoleTok, secret); err != nil {
+		t.Errorf("backwards-compat: empty-role token must succeed, got error %v", err)
+	} else if sub == "" {
+		t.Errorf("empty-role token: expected non-empty sub, got empty")
+	}
+
+	// Unknown roles (e.g. "operator") MUST also be rejected.
+	otherTok := mint("operator")
+	if _, err := parseGuestJWT("Bearer "+otherTok, secret); err == nil {
+		t.Error("parseGuestJWT accepted an unknown-role token; should reject anything not empty or 'user'")
 	}
 }
 

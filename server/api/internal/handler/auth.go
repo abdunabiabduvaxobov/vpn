@@ -645,7 +645,10 @@ type googleSignInRequest struct {
 
 // parseGuestJWT decodes and verifies an optional Authorization: Bearer guest JWT.
 // Returns the guest user_id when valid, "" when the header is absent, or an
-// error when the header is present but malformed/invalid-sig (T-2-GuestJWTSpoof).
+// error when the header is present but malformed/invalid-sig (T-2-GuestJWTSpoof)
+// OR when the token's role claim is anything other than empty/"user"
+// (WR-01 — an admin token presented here would otherwise be silently treated
+// as a promotion carrier and attach a new provider sub to the admin row).
 func parseGuestJWT(authHeader, secret string) (string, error) {
 	if authHeader == "" {
 		return "", nil
@@ -665,6 +668,12 @@ func parseGuestJWT(authHeader, secret string) (string, error) {
 	sub, _ := claims["sub"].(string)
 	if sub == "" {
 		return "", errors.New("guest jwt: missing sub")
+	}
+	// WR-01: only guest/user tokens may carry a guest-promotion intent.
+	// An admin access token presented here would otherwise attach a new
+	// provider sub to the admin row, silently demoting auth_provider.
+	if role, _ := claims["role"].(string); role != "" && role != "user" {
+		return "", errors.New("guest jwt: non-user role not allowed for promotion")
 	}
 	return sub, nil
 }
