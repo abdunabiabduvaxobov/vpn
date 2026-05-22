@@ -38,7 +38,12 @@ func AdminRequired(db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		user, err := repository.FindUserByID(db, userID)
+		// Use the admin-scoped lookup so this middleware and the
+		// AdminChangePassword handler (handler/auth.go) read users
+		// through the same code path. FindUserByIDAdmin also wraps
+		// non-ErrNotFound DB errors with context, which gives operators
+		// a self-describing log line at the ErrorHandler boundary.
+		user, err := repository.FindUserByIDAdmin(db, userID)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				// User was deleted between AuthRequired's lookup and now.
