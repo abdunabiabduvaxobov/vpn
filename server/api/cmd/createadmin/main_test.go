@@ -205,6 +205,12 @@ func openSeedTestDB(t *testing.T) *gorm.DB {
 		telegram_linked_at      DATETIME,
 		telegram_username       TEXT,
 		telegram_first_name     TEXT,
+		apple_user_id           TEXT,
+		google_user_id          TEXT,
+		email                   TEXT,
+		email_verified          INTEGER NOT NULL DEFAULT 0,
+		email_is_private_relay  INTEGER NOT NULL DEFAULT 0,
+		auth_provider           TEXT NOT NULL DEFAULT 'guest',
 		created_at              DATETIME,
 		updated_at              DATETIME
 	)`

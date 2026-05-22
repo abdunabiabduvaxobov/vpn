@@ -43,7 +43,7 @@ func newAuthTestDB(t *testing.T) *gorm.DB {
 
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS users (
-			id                     TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
+			id                      TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
 			email_hash              TEXT UNIQUE,
 			password_hash           TEXT,
 			full_name               TEXT NOT NULL DEFAULT '',
@@ -54,6 +54,12 @@ func newAuthTestDB(t *testing.T) *gorm.DB {
 			telegram_linked_at      DATETIME,
 			telegram_username       TEXT,
 			telegram_first_name     TEXT,
+			apple_user_id           TEXT,
+			google_user_id          TEXT,
+			email                   TEXT,
+			email_verified          INTEGER NOT NULL DEFAULT 0,
+			email_is_private_relay  INTEGER NOT NULL DEFAULT 0,
+			auth_provider           TEXT NOT NULL DEFAULT 'guest',
 			created_at              DATETIME,
 			updated_at              DATETIME
 		)`,
@@ -90,6 +96,14 @@ func newAuthTestDB(t *testing.T) *gorm.DB {
 			created_at  DATETIME,
 			expires_at  DATETIME NOT NULL
 		)`,
+		// Partial unique indexes mirror the Postgres-side
+		// migration 018 (AUTH-03 / CONTEXT.md D-09). SQLite 3.8+
+		// supports `WHERE col IS NOT NULL` on indexes (RESEARCH.md
+		// §Existing auth_test.go SQLite Pattern A5), so the
+		// in-memory test schema enforces the same single-row-per-
+		// provider-sub invariant as production.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_user_id ON users(apple_user_id) WHERE apple_user_id IS NOT NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_user_id ON users(google_user_id) WHERE google_user_id IS NOT NULL`,
 	}
 	for _, stmt := range stmts {
 		if err := db.Exec(stmt).Error; err != nil {

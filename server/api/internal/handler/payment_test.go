@@ -48,7 +48,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS users (
-			id                     TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
+			id                      TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
 			email_hash              TEXT NOT NULL UNIQUE,
 			password_hash           TEXT NOT NULL,
 			full_name               TEXT NOT NULL DEFAULT '',
@@ -59,6 +59,12 @@ func newTestDB(t *testing.T) *gorm.DB {
 			telegram_linked_at      DATETIME,
 			telegram_username       TEXT,
 			telegram_first_name     TEXT,
+			apple_user_id           TEXT,
+			google_user_id          TEXT,
+			email                   TEXT,
+			email_verified          INTEGER NOT NULL DEFAULT 0,
+			email_is_private_relay  INTEGER NOT NULL DEFAULT 0,
+			auth_provider           TEXT NOT NULL DEFAULT 'guest',
 			created_at              DATETIME,
 			updated_at              DATETIME
 		)`,
