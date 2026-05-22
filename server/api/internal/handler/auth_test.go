@@ -936,6 +936,104 @@ func TestAppleSignIn_ConcurrentSameSub(t *testing.T) {
 	}
 }
 
+// CR-02: Step B (auto-link by verified email) was NOT transactional in the
+// initial implementation — two concurrent sign-ins for the same email but
+// different subs would race the read+update pair, and the loser's
+// ErrDuplicate fallback would re-read by the loser's sub (which no row owns)
+// and return ErrNotFound -> 500. With db.Transaction wrapping the read+write,
+// every caller now either wins or sees a transactional re-read that returns
+// the merged row with the winner's sub — both return 200.
+//
+// VERIFICATION.md truth #2; REVIEW.md CR-02.
+func TestAppleSignIn_ConcurrentAutoLinkByEmail(t *testing.T) {
+	db := newAuthTestDB(t)
+	// SQLite :memory: connection-pool clamp — same reason as TestAppleSignIn_ConcurrentSameSub.
+	sqlDB, sqlErr := db.DB()
+	if sqlErr != nil {
+		t.Fatalf("db.DB: %v", sqlErr)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	cfg := testAuthConfig()
+
+	// Seed a row that ALREADY owns google_user_id="EXISTING-G" with verified
+	// email "race@example.com". Five concurrent Apple sign-ins (each with a
+	// different sub) will race to attach apple_user_id to this same row.
+	seededID := uuid.NewString()
+	if err := db.Exec(`INSERT INTO users(id, full_name, subscription_tier, role,
+		google_user_id, email, email_verified, email_is_private_relay, auth_provider, created_at, updated_at)
+		VALUES(?, '', 'free', 'user', 'EXISTING-G', 'race@example.com', 1, 0, 'google', ?, ?)`,
+		seededID, time.Now(), time.Now()).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	type result struct {
+		statusCode int
+		userID     string
+		appleSub   string
+	}
+	var (
+		results []result
+		mu      sync.Mutex
+	)
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			sub := fmt.Sprintf("RACE-%d", idx)
+			// Each goroutine builds its OWN app with its OWN fake verifier so each
+			// presents a different Apple sub. All share the same DB.
+			fv := &fakeAppleVerifier{identity: apple.AppleIdentity{
+				Sub: sub, Email: "race@example.com", EmailVerified: true, IsPrivateRelay: false,
+			}}
+			app := newAppleApp(t, db, cfg, fv)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+				bytes.NewBufferString(`{"identityToken":"x"}`))
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := app.Test(req, -1)
+			if err != nil {
+				mu.Lock()
+				results = append(results, result{statusCode: -1, appleSub: sub})
+				mu.Unlock()
+				return
+			}
+			body, _ := io.ReadAll(resp.Body)
+			var p ssoResponse
+			_ = json.Unmarshal(body, &p)
+			mu.Lock()
+			results = append(results, result{statusCode: resp.StatusCode, userID: p.Data.User.ID, appleSub: sub})
+			mu.Unlock()
+		}(i)
+	}
+	wg.Wait()
+
+	// CR-02 invariant: every concurrent caller returns 200 (no 500 for the loser).
+	for _, r := range results {
+		if r.statusCode != http.StatusOK {
+			t.Errorf("CR-02 regression: goroutine sub=%s returned status %d (want 200)", r.appleSub, r.statusCode)
+		}
+	}
+	// AUTH-06 invariant: still exactly ONE row for the email (no duplicate auto-link).
+	var emailRowCount int64
+	db.Raw("SELECT COUNT(*) FROM users WHERE email = 'race@example.com'").Scan(&emailRowCount)
+	if emailRowCount != 1 {
+		t.Errorf("CRITICAL: more than one row owns the auto-linked email. count=%d", emailRowCount)
+	}
+	// All callers received the SAME user_id (the seeded row).
+	if len(results) == 0 {
+		t.Fatal("no results")
+	}
+	firstID := results[0].userID
+	if firstID != seededID {
+		t.Errorf("returned user.id: want seeded %q, got %q", seededID, firstID)
+	}
+	for _, r := range results {
+		if r.userID != firstID {
+			t.Errorf("cross-caller user.id mismatch: sub=%s got %q want %q", r.appleSub, r.userID, firstID)
+		}
+	}
+}
+
 func TestAppleSignIn_BodyEmailNeverUsedForAutoLink(t *testing.T) {
 	db := newAuthTestDB(t)
 	cfg := testAuthConfig()
