@@ -43,6 +43,23 @@ type Config struct {
 	// see their tuning intent was discarded instead of silently using
 	// the hard-coded default. See REVIEW.md WR-05.
 	EnvParseWarnings []string
+
+	// SSO — Apple (D-30, Phase 2 AUTH-03).
+	// Three required identifiers (TeamID, BundleID, ServiceID) are
+	// validated at startup by RequireEnv(). KeyID / PrivateKeyP8 are
+	// optional this phase — reserved for the future Apple
+	// authorizationCode exchange (D-18).
+	AppleTeamID       string
+	AppleBundleID     string
+	AppleServiceID    string
+	AppleKeyID        string // optional this phase (D-30); reserved for authorizationCode exchange
+	ApplePrivateKeyP8 string // optional this phase (D-30); reserved for authorizationCode exchange
+	// SSO — Google (D-30, Phase 2 AUTH-03). Three distinct OAuth
+	// client IDs (one per surface — iOS, Android, web) all required
+	// at startup; verifier loops them and accepts the first match.
+	GoogleClientIDIOS     string
+	GoogleClientIDAndroid string
+	GoogleClientIDWeb     string
 }
 
 // Load reads configuration from environment variables.
@@ -80,6 +97,18 @@ func Load() (*Config, error) {
 		TelegramAdminChatID: getEnvInt64("TELEGRAM_ADMIN_CHAT_ID", 0, &parseWarnings),
 	}
 	cfg.EnvParseWarnings = parseWarnings
+
+	// SSO env (D-30, Phase 2 AUTH-03). RequireEnv() (below) enforces
+	// the six required keys at boot; the two optional Apple .p8 keys
+	// surface as a single WARN line via OptionalEnvWarnings.
+	cfg.AppleTeamID = getEnv("APPLE_TEAM_ID", "")
+	cfg.AppleBundleID = getEnv("APPLE_BUNDLE_ID", "")
+	cfg.AppleServiceID = getEnv("APPLE_SERVICE_ID", "")
+	cfg.AppleKeyID = getEnv("APPLE_KEY_ID", "")
+	cfg.ApplePrivateKeyP8 = getEnv("APPLE_PRIVATE_KEY_P8", "")
+	cfg.GoogleClientIDIOS = getEnv("GOOGLE_CLIENT_ID_IOS", "")
+	cfg.GoogleClientIDAndroid = getEnv("GOOGLE_CLIENT_ID_ANDROID", "")
+	cfg.GoogleClientIDWeb = getEnv("GOOGLE_CLIENT_ID_WEB", "")
 
 	if cfg.JWTSecret == "" {
 		return nil, fmt.Errorf("JWT_SECRET is required")
@@ -154,6 +183,13 @@ func RequireEnv() []string {
 		"DATABASE_URL",
 		"REDIS_URL",
 		"TUNNEL_VLESS_UUID",
+		// SSO required (D-30, Phase 2 AUTH-03):
+		"APPLE_TEAM_ID",
+		"APPLE_BUNDLE_ID",
+		"APPLE_SERVICE_ID",
+		"GOOGLE_CLIENT_ID_IOS",
+		"GOOGLE_CLIENT_ID_ANDROID",
+		"GOOGLE_CLIENT_ID_WEB",
 	}
 	var missing []string
 	for _, key := range required {
@@ -176,6 +212,9 @@ func OptionalEnvWarnings() []string {
 		"STRIPE_WEBHOOK_SECRET": "",
 		"STRIPE_PRICE_PREMIUM":  "price_PLACEHOLDER_PREMIUM",
 		"STRIPE_PRICE_ULTIMATE": "price_PLACEHOLDER_ULTIMATE",
+		// SSO optional (D-30, Phase 2 AUTH-03) — reserved for future Apple authorizationCode exchange:
+		"APPLE_KEY_ID":         "",
+		"APPLE_PRIVATE_KEY_P8": "",
 	}
 	var warned []string
 	for key, placeholder := range optional {

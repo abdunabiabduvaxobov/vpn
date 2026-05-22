@@ -15,18 +15,26 @@ import (
 
 func TestRequireEnv_ReturnsAllMissingKeys(t *testing.T) {
 	// Force every required var to empty via t.Setenv (automatically restored
-	// after the test by Go's testing package).
+	// after the test by Go's testing package). Phase 2 (AUTH-03) extended the
+	// required set with six SSO keys (D-30); future phases will add more.
+	// Assertion is "must-contain" rather than "exact set" so adding keys in
+	// later phases doesn't regress this test. See TestRequireEnv_MissingSSOKeys_Reported
+	// below for the phase-scoped exact assertion.
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("DATABASE_URL", "")
 	t.Setenv("REDIS_URL", "")
 	t.Setenv("TUNNEL_VLESS_UUID", "")
+	t.Setenv("APPLE_TEAM_ID", "")
+	t.Setenv("APPLE_BUNDLE_ID", "")
+	t.Setenv("APPLE_SERVICE_ID", "")
+	t.Setenv("GOOGLE_CLIENT_ID_IOS", "")
+	t.Setenv("GOOGLE_CLIENT_ID_ANDROID", "")
+	t.Setenv("GOOGLE_CLIENT_ID_WEB", "")
 
 	missing := config.RequireEnv()
 
+	// Must-contain check: the four Phase 1 keys are always required (HOTFIX-08).
 	wantKeys := []string{"JWT_SECRET", "DATABASE_URL", "REDIS_URL", "TUNNEL_VLESS_UUID"}
-	if len(missing) != len(wantKeys) {
-		t.Fatalf("expected %d missing keys, got %d: %v", len(wantKeys), len(missing), missing)
-	}
 	for _, want := range wantKeys {
 		found := false
 		for _, got := range missing {
@@ -39,6 +47,10 @@ func TestRequireEnv_ReturnsAllMissingKeys(t *testing.T) {
 			t.Errorf("expected %q in missing, got %v", want, missing)
 		}
 	}
+	// Sanity floor — the slice must at least contain the Phase 1 keys.
+	if len(missing) < len(wantKeys) {
+		t.Fatalf("expected at least %d missing keys, got %d: %v", len(wantKeys), len(missing), missing)
+	}
 }
 
 func TestRequireEnv_ReturnsEmptyWhenAllSet(t *testing.T) {
@@ -46,6 +58,14 @@ func TestRequireEnv_ReturnsEmptyWhenAllSet(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost:5432/test?sslmode=disable")
 	t.Setenv("REDIS_URL", "redis://localhost:6379")
 	t.Setenv("TUNNEL_VLESS_UUID", "00000000-0000-4000-8000-000000000000")
+	// Phase 2 (AUTH-03) — every required SSO key (D-30) must also be set
+	// for RequireEnv() to return an empty slice.
+	t.Setenv("APPLE_TEAM_ID", "team-test")
+	t.Setenv("APPLE_BUNDLE_ID", "com.flawlssr.risevpn")
+	t.Setenv("APPLE_SERVICE_ID", "services.risevpn.web")
+	t.Setenv("GOOGLE_CLIENT_ID_IOS", "ios-client.apps.googleusercontent.com")
+	t.Setenv("GOOGLE_CLIENT_ID_ANDROID", "android-client.apps.googleusercontent.com")
+	t.Setenv("GOOGLE_CLIENT_ID_WEB", "web-client.apps.googleusercontent.com")
 
 	missing := config.RequireEnv()
 
@@ -132,6 +152,50 @@ func contains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestRequireEnv_MissingSSOKeys_Reported asserts the Phase 2 AUTH-03 wiring:
+// the six required SSO env keys (D-30) flow through the same HOTFIX-08
+// aggregate validator that already enforces JWT_SECRET, DATABASE_URL,
+// REDIS_URL, TUNNEL_VLESS_UUID. With the Phase 1 keys set and the six new
+// SSO keys empty, RequireEnv() must report exactly the six SSO keys —
+// nothing more, nothing less. This is the boot-time safety net that
+// prevents a deploy with APPLE_BUNDLE_ID="" from accepting any Apple
+// token (threat T-2-EnvBoot — empty audience whitelist would otherwise
+// match attacker-minted tokens). See VALIDATION.md "Operational" row.
+func TestRequireEnv_MissingSSOKeys_Reported(t *testing.T) {
+	// Phase 1 required keys all set so the missing list is purely the
+	// SSO subset.
+	t.Setenv("JWT_SECRET", "x")
+	t.Setenv("DATABASE_URL", "x")
+	t.Setenv("REDIS_URL", "x")
+	t.Setenv("TUNNEL_VLESS_UUID", "x")
+	// All six SSO required keys explicitly empty.
+	t.Setenv("APPLE_TEAM_ID", "")
+	t.Setenv("APPLE_BUNDLE_ID", "")
+	t.Setenv("APPLE_SERVICE_ID", "")
+	t.Setenv("GOOGLE_CLIENT_ID_IOS", "")
+	t.Setenv("GOOGLE_CLIENT_ID_ANDROID", "")
+	t.Setenv("GOOGLE_CLIENT_ID_WEB", "")
+
+	missing := config.RequireEnv()
+
+	want := map[string]bool{
+		"APPLE_TEAM_ID":            true,
+		"APPLE_BUNDLE_ID":          true,
+		"APPLE_SERVICE_ID":         true,
+		"GOOGLE_CLIENT_ID_IOS":     true,
+		"GOOGLE_CLIENT_ID_ANDROID": true,
+		"GOOGLE_CLIENT_ID_WEB":     true,
+	}
+	if len(missing) != len(want) {
+		t.Fatalf("expected %d missing keys, got %d: %v", len(want), len(missing), missing)
+	}
+	for _, k := range missing {
+		if !want[k] {
+			t.Errorf("unexpected key in missing: %q", k)
+		}
+	}
 }
 
 func TestOptionalEnvWarnings_FlagsPlaceholders(t *testing.T) {
