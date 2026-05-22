@@ -175,8 +175,8 @@ func main() {
 	api.Post("/auth/guest", handler.GuestLogin(logger, db, cfg))
 	api.Post("/auth/admin-login", handler.AdminLogin(logger, cfg, db))
 	// Phase 2 SSO endpoints (D-26). Public — optionally read Authorization
-	// for guest-promotion intent (D-06). Logout (AUTH-08) is owned by
-	// plan 02-06 and will mount under the protected group.
+	// for guest-promotion intent (D-06). Logout (AUTH-08) is mounted under
+	// the protected group below.
 	api.Post("/auth/apple", handler.AppleSignIn(logger, cfg, db, appleVerifier))
 	api.Post("/auth/google", handler.GoogleSignIn(logger, cfg, db, googleVerifier))
 	// /auth/link is intentionally public — the calling device is a brand-new
@@ -217,6 +217,14 @@ func main() {
 	// Protected routes (JWT required)
 	authMiddleware := middleware.AuthRequired(cfg.JWTSecret, redisClient, db)
 	protected := api.Group("", authMiddleware)
+	// Phase 2 Logout (AUTH-08, D-26). Mounted under the protected group so
+	// AuthRequired validates the JWT and sets c.Locals("user_id") before
+	// the handler runs. The middleware also already checks
+	// cache.IsTokenBlacklisted on every request — once Logout writes the
+	// token's SHA-256 hash to the blacklist (via cache.BlacklistToken with
+	// the in-tree "token:blacklist:" prefix), subsequent requests with the
+	// same access token return 401 automatically.
+	protected.Post("/auth/logout", handler.Logout(logger, redisClient, db))
 	protected.Get("/servers", handler.ListServers(logger, db))
 	protected.Get("/servers/:id/config", handler.GetServerConfig(logger, db, cfg))
 	protected.Get("/subscription", handler.GetSubscription(logger, db))
