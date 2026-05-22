@@ -5,6 +5,7 @@ status: draft
 nyquist_compliant: false
 wave_0_complete: false
 created: 2026-05-22
+revised: 2026-05-22 (W-2 / B-1 — TestTelegram added to Backcompat row, TestVerify_JWKsColdStart confirmed in plan 02)
 ---
 
 # Phase 2 — Validation Strategy
@@ -48,16 +49,17 @@ created: 2026-05-22
 | AUTH-03 | 1 | Migration `018_add_sso_columns.sql` adds six columns + partial unique indexes | T-2-Schema | Idempotent migration, `IF NOT EXISTS` on indexes | manual smoke + integration | `psql -f migrations/018_add_sso_columns.sql && psql -c '\d users'` + `go test ./internal/handler -run TestSchemaHasSSOColumns` | ❌ W0 | ⬜ pending |
 | AUTH-04 | 2 | Same Apple sub returns same `users.id` on second sign-in (cross-surface) | T-2-RaceLink | Partial unique index enforces single row per provider sub | integration (handler) | `go test ./internal/handler -run TestAppleSignIn_CrossSurfaceSameSubSameID` | ❌ W0 | ⬜ pending |
 | AUTH-05 | 2 | Guest with valid guest JWT signs in with Apple → `users.id` unchanged | T-2-Promotion | TX-wrapped UPDATE; no orphan device row | integration (handler) | `go test ./internal/handler -run TestAppleSignIn_PromoteGuestInPlace` | ❌ W0 | ⬜ pending |
+| AUTH-05 | 2 | Guest with conflicting Apple sub → devices reassigned, guest row orphaned (D-06 reassign branch — **B-3 fix**) | T-2-Promotion | `db.Transaction(ReassignDevicesByUserID + DeleteOrphanGuestUser)` | integration (handler) | `go test ./internal/handler -run TestAppleSignIn_GuestWithConflict_DevicesReassigned` | ❌ W0 | ⬜ pending |
 | AUTH-06 | 2 | Apple + Google with same verified email auto-link to same row | T-2-EmailLink | Only when `email_verified=TRUE AND email_is_private_relay=FALSE` | integration (handler) | `go test ./internal/handler -run TestAppleSignIn_AutoLinkByEmail` | ❌ W0 | ⬜ pending |
 | AUTH-06 | 2 | `@privaterelay.appleid.com` does NOT auto-link | T-2-RelaySkip | Relay address always creates new row | integration (handler) | `go test ./internal/handler -run TestAppleSignIn_PrivateRelaySkipsLink` | ❌ W0 | ⬜ pending |
 | AUTH-07 | 2 | JWT shape (sub, tier, role, name, iat, exp) identical to GuestLogin / AdminLogin output | — | HS256, 5min access / 30day refresh unchanged | regression | `go test ./internal/handler -run TestAuth_JWTShapeUnchanged` | ⚠️ extend existing | ⬜ pending |
 | AUTH-08 | 2 | `POST /auth/logout` returns 204, deletes refresh session row, blacklists access token | T-2-Logout | Blacklist key TTL clamped to access-token remaining life | integration | `go test ./internal/handler -run TestLogout_204_DeletesSession_BlacklistsToken` | ❌ W0 | ⬜ pending |
 | AUTH-08 | 2 | After logout, calling access token → 401 (until exp) | T-2-LogoutAT | Middleware checks `IsTokenBlacklisted` and returns 401 | integration (full Fiber app + miniredis) | `go test ./internal/handler -run TestLogout_AccessTokenInvalidAfterLogout` | ❌ W0 | ⬜ pending |
 | AUTH-08 | 2 | After logout, refresh token → 401 | T-2-LogoutRT | Session row deleted; `/auth/refresh` cannot find it | integration | `go test ./internal/handler -run TestLogout_RefreshTokenInvalidAfterLogout` | ❌ W0 | ⬜ pending |
-| Concurrency | 2 | Two simultaneous `/auth/apple` with same sub → same `users.id`, one row | T-2-RaceLink | INSERT then read-on-conflict via `isDuplicateError` helper | integration | `go test ./internal/handler -run TestAppleSignIn_ConcurrentSameSub -race` | ❌ W0 | ⬜ pending |
-| Backcompat | 1 | Existing `/auth/guest`, `/auth/refresh`, `/auth/admin-login`, `/auth/link`, `/auth/telegram/*` still pass | — | New columns are nullable, `auth_provider` defaults to `'guest'` | regression | `cd server/api && go test ./internal/handler -run "TestGuestLogin\|TestAdminLogin\|TestRefreshToken\|TestLinkDevice" -count=1` | ✅ existing | ⬜ pending |
+| Concurrency | 2 | Two simultaneous `/auth/apple` with same sub → same `users.id`, one row, **every response HTTP 200 (W-4)** | T-2-RaceLink | INSERT then read-on-conflict via `errors.Is(err, ErrDuplicate)` translation | integration | `go test ./internal/handler -run TestAppleSignIn_ConcurrentSameSub -race` | ❌ W0 | ⬜ pending |
+| Backcompat | 1 | Existing `/auth/guest`, `/auth/refresh`, `/auth/admin-login`, `/auth/link`, **`/auth/telegram/*`** (D-35 / W-2) still pass | — | New columns are nullable, `auth_provider` defaults to `'guest'` | regression | `cd server/api && go test ./internal/handler -run "TestGuestLogin\|TestAdminLogin\|TestRefreshToken\|TestLinkDevice\|TestTelegram" -count=1` | ✅ existing | ⬜ pending |
 | Operational | 1 | `RequireEnv()` reports missing Apple/Google keys at startup | — | Aggregate error, single log line, exit non-zero | unit | `go test ./internal/config -run TestRequireEnv_MissingSSOKeys_Reported` | ❌ W0 | ⬜ pending |
-| Operational | 1 | JWKs cold-start (Apple endpoint unreachable on boot) logs but does not panic | — | `keyfunc.NewDefaultCtx` non-blocking by default | unit | `go test ./internal/auth/apple -run TestVerify_JWKsColdStart` | ❌ W0 | ⬜ pending |
+| Operational | 1 | JWKs cold-start (Apple endpoint unreachable on boot) logs but does not panic — **B-1 fix: covered by plan 02 Task 2 `TestVerify_JWKsColdStart`** | — | `keyfunc.NewDefaultCtx` non-blocking by default; `apple.New` returns non-nil `*Verifier` even when JWKs URL unreachable | unit | `go test ./internal/auth/apple -run TestVerify_JWKsColdStart` | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -67,11 +69,11 @@ created: 2026-05-22
 
 - [ ] `cd server/api && go get github.com/MicahParks/keyfunc/v3@v3.8.0 && go get google.golang.org/api/idtoken` — module fetches MUST land before verifier packages will compile
 - [ ] `server/api/migrations/018_add_sso_columns.sql` — six columns + three indexes; idempotent
-- [ ] `server/api/internal/auth/apple/verifier_test.go` — covers AUTH-01 happy/wrong-aud/expired/sig-mismatch using a test RSA keypair + stub JWKs source
+- [ ] `server/api/internal/auth/apple/verifier_test.go` — covers AUTH-01 happy/wrong-aud/expired/sig-mismatch using a test RSA keypair + stub JWKs source **+ TestVerify_JWKsColdStart for the `Operational | JWKsColdStart` row (B-1 fix)**
 - [ ] `server/api/internal/auth/google/verifier_test.go` — covers AUTH-02 happy/wrong-aud/email-not-verified using injected `idtokenValidator` interface
 - [ ] `server/api/internal/handler/auth_test.go` — extend `newAuthTestDB` to add the six SSO columns + three partial unique indexes so existing SQLite-based tests continue to pass and new SSO/logout tests can run
-- [ ] `server/api/internal/handler/auth_test.go` — add SSO + logout tests (AUTH-04 through AUTH-08, concurrency, JWT-shape regression)
-- [ ] `server/api/internal/repository/user_repo_test.go` (new or extend existing) — covers `FindUserByAppleID`, `FindUserByGoogleID`, `FindUserByVerifiedEmailForLink` (incl. private-relay exclusion), `PromoteGuestToSSO`
+- [ ] `server/api/internal/handler/auth_test.go` — add SSO + logout tests (AUTH-04 through AUTH-08, concurrency, JWT-shape regression, **B-3 `TestAppleSignIn_GuestWithConflict_DevicesReassigned`**)
+- [ ] `server/api/internal/repository/user_repo_test.go` (new or extend existing) — covers `FindUserByAppleID`, `FindUserByGoogleID`, `FindUserByVerifiedEmailForLink` (incl. private-relay exclusion), `PromoteGuestToSSO`, **`ReassignDevicesByUserID` multi-device variant (W-1 fix)**
 - [ ] `server/api/internal/config/config_test.go` — extend to assert the new env keys (`APPLE_TEAM_ID`, `APPLE_BUNDLE_ID`, `APPLE_SERVICE_ID`, `GOOGLE_CLIENT_ID_IOS`, `GOOGLE_CLIENT_ID_ANDROID`, `GOOGLE_CLIENT_ID_WEB`) are in `RequireEnv()` output when unset, matching the existing HOTFIX-08 (Phase 1) test pattern
 
 ---
@@ -91,7 +93,7 @@ created: 2026-05-22
 
 - [ ] All tasks (when planner produces them) have `<automated>` verify command pointing at one of the rows above, OR a Wave 0 dependency
 - [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all rows marked `❌ W0` above (10 items)
+- [ ] Wave 0 covers all rows marked `❌ W0` above (11 items — JWKsColdStart confirmed in plan 02, B-3 conflict test added in plan 05)
 - [ ] No `-tags=integration` or `-skip` flags hide test cases
 - [ ] No watch-mode flags (`-watch`, `--watch`) appear in CI
 - [ ] Feedback latency < 10s per task, < 90s per wave

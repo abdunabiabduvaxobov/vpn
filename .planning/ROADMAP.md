@@ -69,7 +69,14 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
   3. A guest user who taps "Continue with Apple" keeps the same `users.id` (in-place promotion); their existing device row remains bound to that id.
   4. `POST /api/v1/auth/logout` returns 204, deletes the refresh-session row, and the calling access token returns 401 on any subsequent request until its `exp`.
   5. Apple/Google tokens with the wrong `aud` (e.g. a token issued for the iOS bundle id presented against the web service id) are rejected with 401 and never produce a backend JWT.
-**Plans**: TBD
+**Plans**: 7 plans across 4 waves (revised — plan 03 moved into Wave 1 alongside plan 02 per W-3; previously was Wave 2 / depended_on plan 02 unnecessarily)
+  - [ ] 02-01-PLAN.md (wave 1) — schema migration + GORM model + Apple/Google env vars [AUTH-03]
+  - [ ] 02-02-PLAN.md (wave 1) — Apple verifier package (JWKs + iss + aud + exp) [AUTH-01]
+  - [ ] 02-03-PLAN.md (wave 1) — Google verifier package (idtoken.Validate + email_verified gate) [AUTH-02]
+  - [ ] 02-04-PLAN.md (wave 2) — user_repo SSO functions + DeleteUserSessions + ReassignDevicesByUserID (W-1) [AUTH-04,05,06,08]
+  - [ ] 02-05-PLAN.md (wave 3) — Apple+Google signin handlers + main.go wiring [AUTH-01,02,04,05,06,07]
+  - [ ] 02-06-PLAN.md (wave 4) — Logout handler + protected-group mount [AUTH-07,08]
+  - [ ] 02-07-PLAN.md (wave 5) — docs/auth-sso-api.md API contract [AUTH-01,02,08]
 
 ### Phase 3: Lava.top + plans catalog
 **Goal**: A real card payment via lava.top sandbox grants Pro to a specific signed-in user within seconds of the webhook arriving, with strict idempotency, all plan limits and prices managed in the `plans` / `plan_offers` / `plan_servers` tables (no hardcoded `PlanLimits` map).
@@ -192,4 +199,4 @@ Phase 4  Phase 5  Phase 6  Phase 7  Phase 8
 
 ---
 *Roadmap defined: 2026-05-22*
-*Last updated: 2026-05-22 — initial roadmap from `docs/audit/MASTER-PLAN.md` (operator-approved tranche structure)*
+*Last updated: 2026-05-22 — Phase 2 plan list revised (W-3): plan 03 moved to Wave 1 (parallel with plans 01 & 02); plan 04 picks up AUTH-08 dependency + ReassignDevicesByUserID per W-1.*
