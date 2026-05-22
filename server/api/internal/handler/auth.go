@@ -709,6 +709,14 @@ func findUserByProviderID(db *gorm.DB, provider, sub string) (*model.User, error
 //	        re-read via findByProvider (race lost — W-4 fallback keeps every
 //	        concurrent caller on the 200 path).
 func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model.User, error) {
+	// CR-01 defense in depth: empty sub MUST never reach Step A's FindUserByProviderID.
+	// A "successful" verifier.Verify() can still produce an empty Sub if the JWT
+	// has no `sub` claim (claims["sub"].(string) silently yields ""). The handlers
+	// also guard at the entry point — this is the inner backstop.
+	if p.sub == "" {
+		return nil, errors.New("sso: empty provider sub")
+	}
+
 	// Step A: does a row already own this provider sub?
 	existing, err := findUserByProviderID(db, p.provider, p.sub)
 	if err != nil && !errors.Is(err, repository.ErrNotFound) {
@@ -853,6 +861,16 @@ func AppleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier a
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid identity token"})
 		}
 
+		// CR-01: a JWT can pass signature/aud/exp/iss verification yet carry no
+		// `sub` claim — Apple's JWT library type-asserts a missing claim to "",
+		// not an error. Without this guard, resolveSSOUser would create a
+		// phantom user row with apple_user_id="" that any future sub-less
+		// token would map to. Reject as 401 (same shape as a verifier failure).
+		if identity.Sub == "" {
+			logger.Warn("apple signin: token missing sub claim")
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid identity token"})
+		}
+
 		// SECURITY (T-2-EmailBodySpoof): NEVER trust the request body's `email`
 		// field as an auto-link key. Auto-link lookup uses `identity.Email` (from
 		// the verified JWT). The body `Email` is intentionally ignored for any
@@ -903,6 +921,13 @@ func GoogleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier 
 		identity, err := verifier.Verify(c.Context(), req.IDToken)
 		if err != nil {
 			logger.Info("google verify failed", zap.Error(err))
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid identity token"})
+		}
+
+		// CR-01: same empty-sub guard as AppleSignIn — see that handler's
+		// comment for the full rationale (REVIEW.md CR-01 / VERIFICATION.md truth #1).
+		if identity.Sub == "" {
+			logger.Warn("google signin: token missing sub claim")
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid identity token"})
 		}
 
