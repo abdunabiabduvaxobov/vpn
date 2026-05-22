@@ -300,3 +300,101 @@ func UpdateUserName(db *gorm.DB, userID, fullName string) error {
 	}
 	return nil
 }
+
+// --- SSO functions (Phase 2 AUTH-04, AUTH-05, AUTH-06) -----------------------
+//
+// All four functions are passive readers EXCEPT PromoteGuestToSSO, which is the
+// single TX-wrapped writer per D-29. The race-detection composition (FindOrCreate
+// then re-read on ErrDuplicate) lives in plan 05's handler, not here.
+
+// FindUserByAppleID returns the user whose apple_user_id matches sub, or
+// ErrNotFound. Used by the Apple sign-in handler to determine whether a row
+// already owns this provider sub before creating a new row.
+//
+// Parameterized — no string concatenation (T-2-SQLi mitigation).
+func FindUserByAppleID(db *gorm.DB, sub string) (*model.User, error) {
+	var user model.User
+	if err := db.Where("apple_user_id = ?", sub).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &user, nil
+}
+
+// FindUserByGoogleID is the structural twin of FindUserByAppleID for the
+// google_user_id column. See FindUserByAppleID for documentation.
+func FindUserByGoogleID(db *gorm.DB, sub string) (*model.User, error) {
+	var user model.User
+	if err := db.Where("google_user_id = ?", sub).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &user, nil
+}
+
+// FindUserByVerifiedEmailForLink returns the auto-link candidate for the given
+// email, or ErrNotFound. The WHERE clause filters email_verified=TRUE AND
+// email_is_private_relay=FALSE per D-03 and D-04 — relay addresses MUST NEVER
+// be used as an auto-link key (T-2-RelaySkip mitigation).
+//
+// The partial index idx_users_email_verified (created in migration 018) makes
+// this lookup index-supported.
+func FindUserByVerifiedEmailForLink(db *gorm.DB, email string) (*model.User, error) {
+	var user model.User
+	err := db.Where("email = ? AND email_verified = ? AND email_is_private_relay = ?",
+		email, true, false).First(&user).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &user, nil
+}
+
+// PromoteGuestToSSO updates an existing guest user row to an SSO-bound user
+// row in a single transaction (D-29). Sets the appropriate provider column
+// (apple_user_id OR google_user_id), email, email_verified=true,
+// email_is_private_relay=<isPrivateRelay>, auth_provider=<provider>.
+//
+// On UNIQUE constraint violation (the provider sub is already bound to another
+// row), returns ErrDuplicate — the handler in plan 05 detects this and falls
+// back to the "reassign devices + orphan guest" path per D-06.
+//
+// Provider MUST be "apple" or "google"; any other value returns an error
+// (defense in depth — the handler should never call this with another value
+// because it dispatches on the verifier output).
+func PromoteGuestToSSO(db *gorm.DB, guestUserID, sub, email, provider string, isPrivateRelay bool) error {
+	if provider != "apple" && provider != "google" {
+		return fmt.Errorf("PromoteGuestToSSO: invalid provider %q", provider)
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		updates := map[string]interface{}{
+			"email":                  email,
+			"email_verified":         true, // SSO providers verify; private-relay flag is separate
+			"email_is_private_relay": isPrivateRelay,
+			"auth_provider":          provider,
+		}
+		switch provider {
+		case "apple":
+			updates["apple_user_id"] = sub
+		case "google":
+			updates["google_user_id"] = sub
+		}
+		result := tx.Model(&model.User{}).Where("id = ?", guestUserID).Updates(updates)
+		if result.Error != nil {
+			if isDuplicateError(result.Error) {
+				return ErrDuplicate
+			}
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
