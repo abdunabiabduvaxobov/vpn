@@ -1038,6 +1038,83 @@ func TestAuth_JWTShapeUnchanged(t *testing.T) {
 	}
 }
 
+// CR-01: empty sub from a signed JWT MUST be rejected as 401, not silently
+// promoted to a phantom user row with apple_user_id="". See
+// .planning/phases/02-auth-sso-backend/02-VERIFICATION.md (truth #1) and
+// .planning/phases/02-auth-sso-backend/02-REVIEW.md (CR-01).
+func TestAppleSignIn_EmptySub_Returns401(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+	fv := &fakeAppleVerifier{identity: apple.AppleIdentity{
+		Sub: "", Email: "x@example.com", EmailVerified: true, IsPrivateRelay: false,
+	}}
+	app := newAppleApp(t, db, cfg, fv)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+		bytes.NewBufferString(`{"identityToken":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: want 401, got %d (body: %s)", resp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(body, []byte("invalid identity token")) {
+		t.Errorf("body should carry generic error 'invalid identity token', got %s", string(body))
+	}
+
+	// CRITICAL invariant: NO row with apple_user_id="" (phantom user) was created.
+	var phantomEmpty int64
+	db.Raw("SELECT COUNT(*) FROM users WHERE apple_user_id = ''").Scan(&phantomEmpty)
+	if phantomEmpty != 0 {
+		t.Errorf("CRITICAL: phantom user with apple_user_id='' was created (CR-01 regression). count=%d", phantomEmpty)
+	}
+	var anyAppleRow int64
+	db.Raw("SELECT COUNT(*) FROM users WHERE apple_user_id IS NOT NULL").Scan(&anyAppleRow)
+	if anyAppleRow != 0 {
+		t.Errorf("CRITICAL: any apple_user_id row exists after empty-sub rejection. count=%d", anyAppleRow)
+	}
+}
+
+func TestGoogleSignIn_EmptySub_Returns401(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+	fv := &fakeGoogleVerifier{identity: google.GoogleIdentity{
+		Sub: "", Email: "x@example.com", EmailVerified: true,
+	}}
+	app := newGoogleApp(t, db, cfg, fv)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/google",
+		bytes.NewBufferString(`{"idToken":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: want 401, got %d (body: %s)", resp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(body, []byte("invalid identity token")) {
+		t.Errorf("body should carry generic error 'invalid identity token', got %s", string(body))
+	}
+
+	var phantomEmpty int64
+	db.Raw("SELECT COUNT(*) FROM users WHERE google_user_id = ''").Scan(&phantomEmpty)
+	if phantomEmpty != 0 {
+		t.Errorf("CRITICAL: phantom user with google_user_id='' was created (CR-01 regression). count=%d", phantomEmpty)
+	}
+	var anyGoogleRow int64
+	db.Raw("SELECT COUNT(*) FROM users WHERE google_user_id IS NOT NULL").Scan(&anyGoogleRow)
+	if anyGoogleRow != 0 {
+		t.Errorf("CRITICAL: any google_user_id row exists after empty-sub rejection. count=%d", anyGoogleRow)
+	}
+}
+
 // ---- Phase 2 Logout tests (AUTH-08) ------------------------------------------
 //
 // These tests exercise POST /api/v1/auth/logout end-to-end through the real
