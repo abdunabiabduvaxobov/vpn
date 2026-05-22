@@ -29,7 +29,7 @@ RiseVPN is a consumer VPN service operating on Android (Google Play) and iOS, ba
 
 <!-- v2.2.0 milestone: "Lava.top + SSO refactor + audit fixes". Driven by docs/audit/MASTER-PLAN.md. -->
 
-- [ ] Stop-the-bleeding fixes: 8 critical bugs (subscription_expires_at persistence, AdminRequired DB re-read, atomic INCR+EXPIRE, ErrorHandler leak, transactional refresh rotation, createadmin stdin password, sessions index, payment env validation)
+- [x] Stop-the-bleeding fixes: 8 critical bugs (subscription_expires_at persistence, AdminRequired DB re-read, atomic INCR+EXPIRE, ErrorHandler leak, transactional refresh rotation, createadmin stdin password, sessions index, payment env validation) — **Phase 1 complete (v2.2.0-hotfix tagged 2026-05-22). Staging smoke WAIVED by operator; live verification deferred. See `.planning/phases/01-hotfix-audit-critical-fixes/PHASE-SUMMARY.md`.**
 - [ ] Sign in with Apple + Sign in with Google on backend (`/auth/apple`, `/auth/google`)
 - [ ] Account-linking by verified email; reject `@privaterelay.appleid.com` from linking
 - [ ] Lava.top HTTP client (`internal/lava/`) + checkout endpoint (`POST /checkout`)

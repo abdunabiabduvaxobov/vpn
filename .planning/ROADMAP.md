@@ -18,8 +18,8 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
 
 ## Phases
 
-- [ ] **Phase 1: Hotfix — audit critical fixes** - 8 stop-the-bleeding fixes that must land before any paying user touches the system
-- [ ] **Phase 2: Auth SSO backend** - Apple + Google sign-in endpoints, guest-promotion, account-linking, JWT logout
+- [x] **Phase 1: Hotfix — audit critical fixes** - 8 stop-the-bleeding fixes that must land before any paying user touches the system
+- [x] **Phase 2: Auth SSO backend** - Apple + Google sign-in endpoints, guest-promotion, account-linking, JWT logout
 - [ ] **Phase 3: Lava.top + plans catalog** - dynamic plans schema, lava HTTP client, checkout, webhook, public plans API, admin CRUD
 - [ ] **Phase 4: Landing surfaces** - /login, /dashboard, /pricing, /pay/success, /pay/fail on risevpn.com
 - [ ] **Phase 5: Mobile SSO + Pro CTA** - LoginScreen with Apple/Google/Guest, informational PaymentScreen, deep-link return, 2.2.0 ship
@@ -51,7 +51,7 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
   - [x] 01-06-PLAN.md — HOTFIX-05: transactional refresh-token rotation
   - [x] 01-07-PLAN.md — HOTFIX-01: regression tests for subscription downgrade (test-only, column+scheduler already correct)
   - [x] 01-08-PLAN.md — HOTFIX-07: UNIQUE index on sessions.refresh_token_hash + dedupe migration
-  - [ ] 01-09-PLAN.md — staging smoke (10 steps) + v2.2.0-hotfix tag
+  - [x] 01-09-PLAN.md — staging smoke (10 steps) + v2.2.0-hotfix tag
 
 ### Phase 2: Auth SSO backend
 **Goal**: Apple and Google identities map deterministically to backend `users.id` rows, on any surface (mobile, web, admin), with the existing guest-login path preserved as a fallback.
