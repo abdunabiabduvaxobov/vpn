@@ -100,7 +100,16 @@ func AdminLogin(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 		}
 
 		if err := storeRefreshSession(db, user.ID, tokens.RefreshToken); err != nil {
-			logger.Error("admin-login: failed to store session", zap.Error(err))
+			// Don't hand back a token that has no backing session row — the
+			// next /auth/refresh will 401 and the user will be silently
+			// signed out. Failing the login lets the client retry cleanly.
+			logger.Error("admin-login: failed to store session",
+				zap.String("user_id", user.ID),
+				zap.Error(err),
+			)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "internal server error",
+			})
 		}
 
 		logger.Info("admin logged in", zap.String("user_id", user.ID))
@@ -397,7 +406,20 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 							"error": "internal server error",
 						})
 					}
-					_ = storeRefreshSession(db, user.ID, tokens.RefreshToken)
+					if err := storeRefreshSession(db, user.ID, tokens.RefreshToken); err != nil {
+						// Without a session row the token we'd return is dead on
+						// arrival — the next /auth/refresh would 401. Fail the
+						// request so the client retries cleanly; the device row
+						// is unchanged so the retry hits this same fast path.
+						logger.Error("guest login: failed to store known-device session",
+							zap.String("user_id", user.ID),
+							zap.String("device_id", req.DeviceID),
+							zap.Error(err),
+						)
+						return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+							"error": "internal server error",
+						})
+					}
 					logger.Info("guest login: returning known device",
 						zap.String("user_id", user.ID),
 						zap.String("device_id", req.DeviceID),
@@ -499,7 +521,19 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 		}
 
 		if err := storeRefreshSession(db, user.ID, tokens.RefreshToken); err != nil {
-			logger.Error("failed to store guest session", zap.Error(err))
+			// User + subscription rows were just created, but without a
+			// session row the access token we'd return is dead on arrival
+			// (the next /auth/refresh would 401). Fail the request — the
+			// device row, when present, will be reused on retry so the
+			// caller is not duplicating accounts.
+			logger.Error("guest login: failed to store fresh-user session",
+				zap.String("user_id", user.ID),
+				zap.String("device_id", req.DeviceID),
+				zap.Error(err),
+			)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "internal server error",
+			})
 		}
 
 		logger.Info("guest user created",
