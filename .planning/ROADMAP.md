@@ -46,11 +46,11 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
   - [x] 01-01-PLAN.md — HOTFIX-06: createadmin reads password from stdin + seeds tier=free
   - [x] 01-02-PLAN.md — HOTFIX-08: fail-fast aggregate env validator (DB_*, REDIS_*, JWT_SECRET, TUNNEL_VLESS_UUID)
   - [x] 01-03-PLAN.md — HOTFIX-04: scrub 5xx error bodies + X-Request-ID middleware
-  - [ ] 01-04-PLAN.md — HOTFIX-02: AdminRequired re-reads role from DB on every admin request
-  - [ ] 01-05-PLAN.md — HOTFIX-03: atomic Lua INCR+EXPIRE for rate limiter
-  - [ ] 01-06-PLAN.md — HOTFIX-05: transactional refresh-token rotation
-  - [ ] 01-07-PLAN.md — HOTFIX-01: regression tests for subscription downgrade (test-only, column+scheduler already correct)
-  - [ ] 01-08-PLAN.md — HOTFIX-07: UNIQUE index on sessions.refresh_token_hash + dedupe migration
+  - [x] 01-04-PLAN.md — HOTFIX-02: AdminRequired re-reads role from DB on every admin request
+  - [x] 01-05-PLAN.md — HOTFIX-03: atomic Lua INCR+EXPIRE for rate limiter
+  - [x] 01-06-PLAN.md — HOTFIX-05: transactional refresh-token rotation
+  - [x] 01-07-PLAN.md — HOTFIX-01: regression tests for subscription downgrade (test-only, column+scheduler already correct)
+  - [x] 01-08-PLAN.md — HOTFIX-07: UNIQUE index on sessions.refresh_token_hash + dedupe migration
   - [ ] 01-09-PLAN.md — staging smoke (10 steps) + v2.2.0-hotfix tag
 
 ### Phase 2: Auth SSO backend
