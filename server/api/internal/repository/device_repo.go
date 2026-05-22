@@ -213,3 +213,27 @@ func DeleteStaleDevices(db *gorm.DB, olderThan time.Time) (int64, error) {
 	result := db.Where("last_seen_at < ?", olderThan).Delete(&model.Device{})
 	return result.RowsAffected, result.Error
 }
+
+// ReassignDevicesByUserID reassigns EVERY device row from oldUserID to newUserID
+// in a single multi-row UPDATE. This is the multi-device sibling of
+// ReassignDeviceUser (which targets a single device by device_id) — required by
+// plan 05's `resolveSSOUser` Step A reassign-and-orphan branch per D-06.
+//
+// Idempotent: if no rows match oldUserID (already reassigned by a prior call,
+// or the guest never had any devices), the function returns 0, nil. Plan 05
+// wraps this in a `db.Transaction(...)` together with `DeleteOrphanGuestUser`
+// so the two operations succeed or fail atomically.
+//
+// Parameterized — no string concatenation (T-2-SQLi defense in depth).
+func ReassignDevicesByUserID(db *gorm.DB, oldUserID, newUserID string) (int64, error) {
+	result := db.Model(&model.Device{}).
+		Where("user_id = ?", oldUserID).
+		Updates(map[string]interface{}{
+			"user_id":      newUserID,
+			"last_seen_at": time.Now(),
+		})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return result.RowsAffected, nil
+}
