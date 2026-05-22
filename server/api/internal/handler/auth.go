@@ -752,32 +752,66 @@ func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model
 	// Step B: try auto-link by verified email (D-03/D-04).
 	// SECURITY: only the verifier-derived email reaches this branch — see the
 	// AppleSignIn handler's comment for the T-2-EmailBodySpoof rationale.
+	//
+	// CR-02 fix: the FindUserByVerifiedEmailForLink + Updates pair runs inside
+	// db.Transaction so two concurrent sign-ins for the same email (e.g. Apple
+	// and Google racing) cannot both pass the read and then both attempt the
+	// write — the loser's ErrDuplicate triggers a transactional re-read by
+	// provider sub, which now consistently returns either the just-written row
+	// (if the loser's sub happens to be the same) or a clean fall-through (if
+	// the loser's sub is different — fall through to Step C/D).
 	if p.email != "" && p.emailVerified && !p.isPrivateRelay {
-		linkCandidate, lerr := repository.FindUserByVerifiedEmailForLink(db, p.email)
-		if lerr != nil && !errors.Is(lerr, repository.ErrNotFound) {
-			return nil, lerr
-		}
-		if linkCandidate != nil {
-			updates := map[string]interface{}{}
+		var linkedUser *model.User
+		txErr := db.Transaction(func(tx *gorm.DB) error {
+			linkCandidate, lerr := repository.FindUserByVerifiedEmailForLink(tx, p.email)
+			if lerr != nil {
+				if errors.Is(lerr, repository.ErrNotFound) {
+					// No candidate — leave linkedUser nil; caller falls through to Step C/D.
+					return nil
+				}
+				return lerr
+			}
+			updates := map[string]interface{}{
+				"auth_provider": p.provider,
+			}
 			switch p.provider {
 			case "apple":
 				updates["apple_user_id"] = p.sub
 			case "google":
 				updates["google_user_id"] = p.sub
 			}
-			updates["auth_provider"] = p.provider
-			if err := db.Model(&model.User{}).Where("id = ?", linkCandidate.ID).Updates(updates).Error; err != nil {
-				// B-2 fix: errors.Is against the public sentinel — the private
-				// repository.isDuplicateError helper is unreachable from this package.
+			if err := tx.Model(&model.User{}).Where("id = ?", linkCandidate.ID).Updates(updates).Error; err != nil {
 				if errors.Is(err, repository.ErrDuplicate) {
-					// Race — re-read.
-					return findUserByProviderID(db, p.provider, p.sub)
+					// Race — another caller already wrote a different sub onto
+					// this row. Re-read inside the same TX by THIS caller's sub.
+					reread, rerr := findUserByProviderID(tx, p.provider, p.sub)
+					if rerr != nil {
+						if errors.Is(rerr, repository.ErrNotFound) {
+							// Our sub doesn't own a row — fall through to Step C/D.
+							return nil
+						}
+						return rerr
+					}
+					linkedUser = reread
+					return nil
 				}
-				return nil, err
+				return err
 			}
-			// Re-read to get the merged row.
-			return repository.FindUserByID(db, linkCandidate.ID)
+			// Updates succeeded — re-read the merged row inside the TX.
+			merged, mrr := repository.FindUserByID(tx, linkCandidate.ID)
+			if mrr != nil {
+				return mrr
+			}
+			linkedUser = merged
+			return nil
+		})
+		if txErr != nil {
+			return nil, txErr
 		}
+		if linkedUser != nil {
+			return linkedUser, nil
+		}
+		// linkedUser nil: no candidate found OR race fell through — proceed to Step C/D.
 	}
 
 	// Step C: if a guest JWT was presented, promote that row in place.
