@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"vpnapp/server/api/internal/auth/apple"
+	"vpnapp/server/api/internal/auth/google"
 	"vpnapp/server/api/internal/bot"
 	"vpnapp/server/api/internal/cache"
 	"vpnapp/server/api/internal/config"
@@ -73,6 +75,24 @@ func main() {
 
 	// Set Stripe API key once at startup — handlers must not override this.
 	stripe.Key = cfg.StripeKey
+
+	// Phase 2 SSO verifier construction (D-34 — once at startup, DI into
+	// handlers). The Apple verifier launches a non-blocking JWKs refresh
+	// goroutine; the Google verifier has no init-time work. Audience
+	// whitelists are sourced from the HOTFIX-08 required env vars
+	// validated above.
+	appleVerifier, err := apple.New(apple.Options{
+		AllowedAudiences: []string{cfg.AppleBundleID, cfg.AppleServiceID},
+		AllowedIssuer:    "https://appleid.apple.com",
+	})
+	if err != nil {
+		logger.Fatal("apple verifier init", zap.Error(err))
+	}
+	googleVerifier := google.New([]string{
+		cfg.GoogleClientIDIOS,
+		cfg.GoogleClientIDAndroid,
+		cfg.GoogleClientIDWeb,
+	})
 
 	// Connect to PostgreSQL
 	db, err := repository.NewDB(cfg.DatabaseURL)
@@ -154,6 +174,11 @@ func main() {
 	api.Post("/auth/refresh", handler.RefreshToken(logger, cfg, db))
 	api.Post("/auth/guest", handler.GuestLogin(logger, db, cfg))
 	api.Post("/auth/admin-login", handler.AdminLogin(logger, cfg, db))
+	// Phase 2 SSO endpoints (D-26). Public — optionally read Authorization
+	// for guest-promotion intent (D-06). Logout (AUTH-08) is owned by
+	// plan 02-06 and will mount under the protected group.
+	api.Post("/auth/apple", handler.AppleSignIn(logger, cfg, db, appleVerifier))
+	api.Post("/auth/google", handler.GoogleSignIn(logger, cfg, db, googleVerifier))
 	// /auth/link is intentionally public — the calling device is a brand-new
 	// guest that does not yet hold a token for the target account it wants
 	// to attach to via the share code. The dedicated rate limiter caps
