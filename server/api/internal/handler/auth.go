@@ -11,6 +11,7 @@ import (
 
 	"vpnapp/server/api/internal/auth/apple"
 	"vpnapp/server/api/internal/auth/google"
+	"vpnapp/server/api/internal/cache"
 	"vpnapp/server/api/internal/config"
 	"vpnapp/server/api/internal/model"
 	"vpnapp/server/api/internal/repository"
@@ -18,6 +19,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -948,5 +950,84 @@ func ssoResponseBody(user *model.User, tokens *authResponse) fiber.Map {
 			"full_name":         user.FullName,
 			"subscription_tier": user.SubscriptionTier,
 		},
+	}
+}
+
+// --- Phase 2 Logout (AUTH-08) -----------------------------------------------
+
+// Logout handles POST /api/v1/auth/logout.
+//
+// Mounted under the protected group in cmd/main.go — the AuthRequired
+// middleware (HOTFIX-02) validates the JWT and sets c.Locals("user_id")
+// BEFORE this handler runs. The middleware also already checks
+// cache.IsTokenBlacklisted on every protected request, so the blacklist
+// SET below makes subsequent requests with the same access token return
+// 401 automatically — no middleware surgery needed.
+//
+// Behaviour (D-23, D-24):
+//  1. Delete ALL sessions for the user (Discretion default per RESEARCH.md
+//     §Open Question #1 recommendation a; matches "logout means logout").
+//  2. Blacklist the access-token's SHA-256 hash with TTL = min(exp-now, 5min).
+//  3. Return 204 No Content.
+//
+// Errors are mapped per HOTFIX-04: generic 500 on session-delete failure,
+// 204 on everything else (blacklist write is fail-open per IsTokenBlacklisted
+// contract — Redis outage does not block logout).
+//
+// Blacklist key prefix divergence: the IN-TREE prefix at
+// internal/cache/redis.go:35 is "token:blacklist:", NOT CONTEXT.md D-24's
+// proposed value. This handler calls cache.BlacklistToken so the prefix is
+// owned by ONE constant — there is no way for the writer (here) and reader
+// (middleware/auth.go's IsTokenBlacklisted call) to drift. See plan 02-06
+// objective and plan 02-07 contract doc for the documented rationale.
+func Logout(logger *zap.Logger, redisClient *redis.Client, db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userID, _ := c.Locals("user_id").(string)
+		if userID == "" {
+			// The middleware should have set this; defensive check guards
+			// against accidental mounting under the public group.
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		}
+
+		// Step 1: delete sessions. Postgres write — fails loud. Ordering
+		// matters: deleting sessions BEFORE blacklisting the access token
+		// means a partial failure leaves the user "still able to use their
+		// access token for ≤5min" rather than "still able to mint new
+		// access tokens via refresh forever" — the milder failure mode.
+		if _, err := repository.DeleteUserSessions(db, userID); err != nil {
+			logger.Error("logout: delete sessions", zap.String("user_id", userID), zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+
+		// Step 2: blacklist the access token. Redis write — fails open
+		// (per cache.IsTokenBlacklisted's fail-open contract).
+		authHeader := c.Get("Authorization")
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		if tokenString != "" && redisClient != nil {
+			// Decode claims without re-verifying — the middleware already
+			// verified the signature; we only need `exp` for TTL clamp.
+			parser := jwt.NewParser(jwt.WithoutClaimsValidation())
+			claims := jwt.MapClaims{}
+			_, _, _ = parser.ParseUnverified(tokenString, claims)
+			var ttl time.Duration
+			if exp, ok := claims["exp"].(float64); ok {
+				ttl = time.Until(time.Unix(int64(exp), 0))
+				if ttl > 5*time.Minute {
+					ttl = 5 * time.Minute // clamp per D-24
+				}
+				if ttl < 0 {
+					ttl = 0
+				}
+			}
+			if ttl > 0 {
+				tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(tokenString)))
+				if err := cache.BlacklistToken(c.Context(), redisClient, tokenHash, ttl); err != nil {
+					logger.Warn("logout: blacklist write failed (fail-open)",
+						zap.String("user_id", userID), zap.Error(err))
+				}
+			}
+		}
+
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 }
