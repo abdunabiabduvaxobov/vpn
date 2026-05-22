@@ -37,3 +37,20 @@ func DeleteExpiredSessions(db *gorm.DB) (int64, error) {
 	result := db.Where("expires_at < ?", time.Now()).Delete(&model.Session{})
 	return result.RowsAffected, result.Error
 }
+
+// DeleteUserSessions deletes every refresh-session row for the given user.
+//
+// Called by the logout handler (plan 06) per the Discretion default in
+// CONTEXT.md "Logout request body" — "delete ALL sessions for this user"
+// (RESEARCH.md §Open Question #1 recommendation (a)). Returns the count of
+// deleted rows so the handler can log how many sessions were terminated.
+//
+// Indexed by idx_sessions_user_id (created in earlier migrations). A user
+// with N active sessions sees one DELETE … WHERE user_id = $1 issued.
+func DeleteUserSessions(db *gorm.DB, userID string) (int64, error) {
+	result := db.Where("user_id = ?", userID).Delete(&model.Session{})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return result.RowsAffected, nil
+}
