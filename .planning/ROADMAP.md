@@ -19,7 +19,7 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
 ## Phases
 
 - [x] **Phase 1: Hotfix — audit critical fixes** - 8 stop-the-bleeding fixes that must land before any paying user touches the system
-- [x] **Phase 2: Auth SSO backend** - Apple + Google sign-in endpoints, guest-promotion, account-linking, JWT logout
+- [~] **Phase 2: Auth SSO backend** - Apple + Google sign-in endpoints, guest-promotion, account-linking, JWT logout (gap closure 02-08..10 pending — see VERIFICATION/REVIEW)
 - [ ] **Phase 3: Lava.top + plans catalog** - dynamic plans schema, lava HTTP client, checkout, webhook, public plans API, admin CRUD
 - [ ] **Phase 4: Landing surfaces** - /login, /dashboard, /pricing, /pay/success, /pay/fail on risevpn.com
 - [ ] **Phase 5: Mobile SSO + Pro CTA** - LoginScreen with Apple/Google/Guest, informational PaymentScreen, deep-link return, 2.2.0 ship
@@ -69,14 +69,17 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
   3. A guest user who taps "Continue with Apple" keeps the same `users.id` (in-place promotion); their existing device row remains bound to that id.
   4. `POST /api/v1/auth/logout` returns 204, deletes the refresh-session row, and the calling access token returns 401 on any subsequent request until its `exp`.
   5. Apple/Google tokens with the wrong `aud` (e.g. a token issued for the iOS bundle id presented against the web service id) are rejected with 401 and never produce a backend JWT.
-**Plans**: 7 plans across 4 waves (revised — plan 03 moved into Wave 1 alongside plan 02 per W-3; previously was Wave 2 / depended_on plan 02 unnecessarily)
-  - [ ] 02-01-PLAN.md (wave 1) — schema migration + GORM model + Apple/Google env vars [AUTH-03]
-  - [ ] 02-02-PLAN.md (wave 1) — Apple verifier package (JWKs + iss + aud + exp) [AUTH-01]
-  - [ ] 02-03-PLAN.md (wave 1) — Google verifier package (idtoken.Validate + email_verified gate) [AUTH-02]
-  - [ ] 02-04-PLAN.md (wave 2) — user_repo SSO functions + DeleteUserSessions + ReassignDevicesByUserID (W-1) [AUTH-04,05,06,08]
-  - [ ] 02-05-PLAN.md (wave 3) — Apple+Google signin handlers + main.go wiring [AUTH-01,02,04,05,06,07]
-  - [ ] 02-06-PLAN.md (wave 4) — Logout handler + protected-group mount [AUTH-07,08]
-  - [ ] 02-07-PLAN.md (wave 5) — docs/auth-sso-api.md API contract [AUTH-01,02,08]
+**Plans**: 10 plans total (7 original + 3 gap-closure plans 02-08..02-10 closing CR-01, CR-02, WR-01..WR-04, IN-01..IN-03 per 02-VERIFICATION.md + 02-REVIEW.md)
+  - [x] 02-01-PLAN.md (wave 1) — schema migration + GORM model + Apple/Google env vars [AUTH-03]
+  - [x] 02-02-PLAN.md (wave 1) — Apple verifier package (JWKs + iss + aud + exp) [AUTH-01]
+  - [x] 02-03-PLAN.md (wave 1) — Google verifier package (idtoken.Validate + email_verified gate) [AUTH-02]
+  - [x] 02-04-PLAN.md (wave 2) — user_repo SSO functions + DeleteUserSessions + ReassignDevicesByUserID (W-1) [AUTH-04,05,06,08]
+  - [x] 02-05-PLAN.md (wave 3) — Apple+Google signin handlers + main.go wiring [AUTH-01,02,04,05,06,07]
+  - [x] 02-06-PLAN.md (wave 4) — Logout handler + protected-group mount [AUTH-07,08]
+  - [x] 02-07-PLAN.md (wave 5) — docs/auth-sso-api.md API contract [AUTH-01,02,08]
+  - [ ] 02-08-PLAN.md (wave 1, gap-closure) — handler hardening: empty-sub guards [CR-01], auto-link Step B transaction [CR-02], parseGuestJWT role check [WR-01], logout ttl boundary [WR-02], free-subscription row for new SSO users [WR-03]
+  - [ ] 02-09-PLAN.md (wave 2, gap-closure, depends 02-08) — repository layer: PromoteGuestToSSO updates full_name [WR-04]
+  - [ ] 02-10-PLAN.md (wave 2, gap-closure, depends 02-08) — polish: go.mod 1.22 [IN-01], seedAdminUser tier=free [IN-02], migration 018 doc comment [IN-03]
 
 ### Phase 3: Lava.top + plans catalog
 **Goal**: A real card payment via lava.top sandbox grants Pro to a specific signed-in user within seconds of the webhook arriving, with strict idempotency, all plan limits and prices managed in the `plans` / `plan_offers` / `plan_servers` tables (no hardcoded `PlanLimits` map).
