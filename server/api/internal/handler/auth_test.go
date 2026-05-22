@@ -164,8 +164,14 @@ func seedAdminUser(t *testing.T, db *gorm.DB) (email, password string) {
 	emailHash := fmt.Sprintf("%x", sha256.Sum256([]byte(email)))
 
 	if err := db.Exec(
+		// IN-02: subscription_tier='free' matches the Phase 1 SC#8 invariant
+		// (createadmin seeds admin rows with tier='free') and the production
+		// behavior verified by cmd/createadmin/main_test.go. The previous
+		// 'ultimate' value was a test-data inconsistency; the handler only
+		// checks role='admin', so this is functionally a no-op for AdminLogin
+		// tests but eliminates the divergence.
 		`INSERT INTO users (email_hash, password_hash, full_name, role, subscription_tier)
-		 VALUES (?, ?, 'Admin', 'admin', 'ultimate')`,
+		 VALUES (?, ?, 'Admin', 'admin', 'free')`,
 		emailHash, string(hash),
 	).Error; err != nil {
 		t.Fatalf("seeding admin: %v", err)
