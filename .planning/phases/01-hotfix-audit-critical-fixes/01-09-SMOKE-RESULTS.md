@@ -62,8 +62,8 @@ verified before `v2.2.0-hotfix` shipped.
 
 ## Tag Push (Task 13)
 
-- [ ] `v2.2.0-hotfix` tag created at <commit sha>
-- [ ] Tag pushed to remote
+- [x] `v2.2.0-hotfix` annotated tag created at `eea6e25273c6907d55c4e40bc808ed98621a152d` (tag object `47f5a5c22b9c3c3383f2917170fc643e5c4a1226`)
+- [x] Tag pushed to `origin` (GitHub repo redirected to `abdunabiabduvaxobov/vpn`)
 
 ---
 
