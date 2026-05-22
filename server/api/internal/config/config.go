@@ -35,6 +35,14 @@ type Config struct {
 	RecoveryBotToken    string // @BotFather token for the recovery bot
 	RecoveryBotUsername string // without leading @, used in deep links
 	TelegramAdminChatID int64  // where to DM on tg_restore events
+
+	// EnvParseWarnings lists the tunable env vars that were set by the
+	// operator but failed to parse (e.g. STALE_CONNECTION_AFTER=3min,
+	// should be 3m). Load() populates this on each call; cmd/main.go
+	// emits a single logger.Warn line after Load() returns so operators
+	// see their tuning intent was discarded instead of silently using
+	// the hard-coded default. See REVIEW.md WR-05.
+	EnvParseWarnings []string
 }
 
 // Load reads configuration from environment variables.
@@ -43,6 +51,13 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid PORT: %w", err)
 	}
+
+	// Collect tunable-env parse failures here. The logger is not yet
+	// alive at the time these helpers run, so we stash them on the
+	// Config and let cmd/main.go emit a single warn line post-Load.
+	// See REVIEW.md WR-05 — the prior implementation silently swallowed
+	// invalid values like STALE_CONNECTION_AFTER=3min (should be 3m).
+	var parseWarnings []string
 
 	cfg := &Config{
 		Port:                 port,
@@ -56,14 +71,15 @@ func Load() (*Config, error) {
 		AppDeepLinkScheme:    getEnv("APP_DEEP_LINK", "vpnapp"),
 		TunnelVLESSUUID:      getEnv("TUNNEL_VLESS_UUID", ""),
 		MinAppVersion:        getEnv("MIN_APP_VERSION", "2.0.0"),
-		StaleConnectionAfter: getEnvDuration("STALE_CONNECTION_AFTER", 3*time.Minute),
-		StaleDeviceAfter:     getEnvDuration("STALE_DEVICE_AFTER", 30*24*time.Hour),
-		LinkCodeTTL:          getEnvDuration("LINK_CODE_TTL", 5*time.Minute),
+		StaleConnectionAfter: getEnvDuration("STALE_CONNECTION_AFTER", 3*time.Minute, &parseWarnings),
+		StaleDeviceAfter:     getEnvDuration("STALE_DEVICE_AFTER", 30*24*time.Hour, &parseWarnings),
+		LinkCodeTTL:          getEnvDuration("LINK_CODE_TTL", 5*time.Minute, &parseWarnings),
 
 		RecoveryBotToken:    getEnv("TELEGRAM_RECOVERY_BOT_TOKEN", ""),
 		RecoveryBotUsername: getEnv("TELEGRAM_RECOVERY_BOT_USERNAME", "risevp_bot"),
-		TelegramAdminChatID: getEnvInt64("TELEGRAM_ADMIN_CHAT_ID", 0),
+		TelegramAdminChatID: getEnvInt64("TELEGRAM_ADMIN_CHAT_ID", 0, &parseWarnings),
 	}
+	cfg.EnvParseWarnings = parseWarnings
 
 	if cfg.JWTSecret == "" {
 		return nil, fmt.Errorf("JWT_SECRET is required")
@@ -84,28 +100,38 @@ func getEnv(key, fallback string) string {
 }
 
 // getEnvDuration parses a Go duration string from the environment, falling
-// back to the default if the var is unset or unparseable.
-func getEnvDuration(key string, fallback time.Duration) time.Duration {
+// back to the default if the var is unset or unparseable. When a value is
+// set but fails to parse, the key (with a short reason) is appended to
+// warnings so the caller can surface the discarded operator intent.
+func getEnvDuration(key string, fallback time.Duration, warnings *[]string) time.Duration {
 	val := os.Getenv(key)
 	if val == "" {
 		return fallback
 	}
 	d, err := time.ParseDuration(val)
 	if err != nil {
+		if warnings != nil {
+			*warnings = append(*warnings, fmt.Sprintf("%s=%q (invalid duration: %v) — using default %s", key, val, err, fallback))
+		}
 		return fallback
 	}
 	return d
 }
 
 // getEnvInt64 parses a signed 64-bit integer from the environment.
-// Returns fallback when the var is missing or unparseable.
-func getEnvInt64(key string, fallback int64) int64 {
+// Returns fallback when the var is missing or unparseable. Mirrors
+// getEnvDuration's parse-warning channel so the caller can surface
+// discarded operator intent.
+func getEnvInt64(key string, fallback int64, warnings *[]string) int64 {
 	val := os.Getenv(key)
 	if val == "" {
 		return fallback
 	}
 	n, err := strconv.ParseInt(val, 10, 64)
 	if err != nil {
+		if warnings != nil {
+			*warnings = append(*warnings, fmt.Sprintf("%s=%q (invalid int64: %v) — using default %d", key, val, err, fallback))
+		}
 		return fallback
 	}
 	return n

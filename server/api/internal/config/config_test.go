@@ -54,6 +54,86 @@ func TestRequireEnv_ReturnsEmptyWhenAllSet(t *testing.T) {
 	}
 }
 
+// TestLoad_RecordsParseWarnings asserts that an invalid tunable env var
+// (set but unparseable) shows up in cfg.EnvParseWarnings rather than
+// being silently swallowed. Regression test for REVIEW.md WR-05.
+func TestLoad_RecordsParseWarnings(t *testing.T) {
+	// Required vars must be set so Load() reaches the helper calls
+	// without returning the "JWT_SECRET is required" early-out.
+	t.Setenv("JWT_SECRET", "test-secret-not-empty")
+	t.Setenv("DATABASE_URL", "postgres://localhost:5432/test?sslmode=disable")
+	t.Setenv("REDIS_URL", "redis://localhost:6379")
+	t.Setenv("TUNNEL_VLESS_UUID", "00000000-0000-4000-8000-000000000000")
+
+	// Invalid duration: "3min" is a common operator typo for "3m".
+	t.Setenv("STALE_CONNECTION_AFTER", "3min")
+	// Invalid int64: trailing letter.
+	t.Setenv("TELEGRAM_ADMIN_CHAT_ID", "12345x")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if len(cfg.EnvParseWarnings) < 2 {
+		t.Fatalf("expected >=2 parse warnings (STALE_CONNECTION_AFTER + TELEGRAM_ADMIN_CHAT_ID), got %d: %v",
+			len(cfg.EnvParseWarnings), cfg.EnvParseWarnings)
+	}
+
+	var sawDuration, sawInt64 bool
+	for _, w := range cfg.EnvParseWarnings {
+		if contains(w, "STALE_CONNECTION_AFTER") {
+			sawDuration = true
+		}
+		if contains(w, "TELEGRAM_ADMIN_CHAT_ID") {
+			sawInt64 = true
+		}
+	}
+	if !sawDuration {
+		t.Errorf("expected STALE_CONNECTION_AFTER in EnvParseWarnings, got %v", cfg.EnvParseWarnings)
+	}
+	if !sawInt64 {
+		t.Errorf("expected TELEGRAM_ADMIN_CHAT_ID in EnvParseWarnings, got %v", cfg.EnvParseWarnings)
+	}
+}
+
+// TestLoad_NoParseWarningsForValidOrUnset asserts that valid (or unset)
+// tunables produce no warnings. Companion to TestLoad_RecordsParseWarnings.
+func TestLoad_NoParseWarningsForValidOrUnset(t *testing.T) {
+	t.Setenv("JWT_SECRET", "test-secret-not-empty")
+	t.Setenv("DATABASE_URL", "postgres://localhost:5432/test?sslmode=disable")
+	t.Setenv("REDIS_URL", "redis://localhost:6379")
+	t.Setenv("TUNNEL_VLESS_UUID", "00000000-0000-4000-8000-000000000000")
+
+	// Valid duration.
+	t.Setenv("STALE_CONNECTION_AFTER", "30s")
+	// Unset (must NOT warn — operator chose the default).
+	t.Setenv("STALE_DEVICE_AFTER", "")
+	// Valid int64.
+	t.Setenv("TELEGRAM_ADMIN_CHAT_ID", "401485415")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if len(cfg.EnvParseWarnings) != 0 {
+		t.Errorf("expected 0 parse warnings for valid/unset tunables, got %d: %v",
+			len(cfg.EnvParseWarnings), cfg.EnvParseWarnings)
+	}
+}
+
+// contains is a tiny strings.Contains-free helper to keep the test file
+// import list minimal — there's no functional reason, just stylistic.
+func contains(s, substr string) bool {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 func TestOptionalEnvWarnings_FlagsPlaceholders(t *testing.T) {
 	// Clear unrelated optional vars so the assertion is precise. The
 	// placeholder for STRIPE_PRICE_PREMIUM must be flagged even though it

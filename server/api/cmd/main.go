@@ -50,6 +50,16 @@ func main() {
 		logger.Fatal("failed to load config", zap.Error(err))
 	}
 
+	// Tunable env vars that were set but failed to parse (e.g.
+	// STALE_CONNECTION_AFTER=3min should be 3m). The helpers fell back
+	// to their compiled-in default; without this log line the operator
+	// would never know their tuning intent was discarded. See WR-05.
+	if len(cfg.EnvParseWarnings) > 0 {
+		logger.Warn("tunable environment variables failed to parse — falling back to defaults",
+			zap.Strings("offenders", cfg.EnvParseWarnings),
+		)
+	}
+
 	// Optional payment-provider env vars (HOTFIX-08 / D-03). Empty or
 	// placeholder Stripe values emit a single WARN line but do NOT block
 	// startup — Stripe leaves in Phase 8 and these will shrink to zero then.
