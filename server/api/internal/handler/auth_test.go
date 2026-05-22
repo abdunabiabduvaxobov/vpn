@@ -6,16 +6,25 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
+	"vpnapp/server/api/internal/auth/apple"
+	"vpnapp/server/api/internal/auth/google"
 	"vpnapp/server/api/internal/config"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/sqlite"
@@ -459,5 +468,559 @@ func TestRefreshToken_UserDeletedDuringRotation(t *testing.T) {
 	}
 	if got := sessionHashFor(t, db, userID); got != originalHash {
 		t.Fatalf("expected original session hash preserved after rollback; got %q want %q", got, originalHash)
+	}
+}
+
+// ---- Phase 2 SSO handler tests ------------------------------------------------
+//
+// These tests cover AppleSignIn / GoogleSignIn (plan 02-05). They inject fake
+// verifiers via the handler-side interface so the verifier packages don't need
+// network access to be exercised here. The schema seeded by newAuthTestDB
+// already carries the six SSO columns + two partial unique indexes (plan 02-01
+// Task 4); these tests rely on that.
+
+type fakeAppleVerifier struct {
+	identity apple.AppleIdentity
+	err      error
+}
+
+func (f *fakeAppleVerifier) Verify(_ context.Context, _ string) (apple.AppleIdentity, error) {
+	return f.identity, f.err
+}
+
+type fakeGoogleVerifier struct {
+	identity google.GoogleIdentity
+	err      error
+}
+
+func (f *fakeGoogleVerifier) Verify(_ context.Context, _ string) (google.GoogleIdentity, error) {
+	return f.identity, f.err
+}
+
+// newAppleApp constructs a Fiber app with AppleSignIn mounted at /api/v1/auth/apple
+// using the given fake verifier.
+func newAppleApp(t *testing.T, db *gorm.DB, cfg *config.Config, fv *fakeAppleVerifier) *fiber.App {
+	t.Helper()
+	app := fiber.New()
+	app.Post("/api/v1/auth/apple", AppleSignIn(zap.NewNop(), cfg, db, fv))
+	return app
+}
+
+// newGoogleApp constructs a Fiber app with GoogleSignIn mounted at /api/v1/auth/google
+// using the given fake verifier.
+func newGoogleApp(t *testing.T, db *gorm.DB, cfg *config.Config, fv *fakeGoogleVerifier) *fiber.App {
+	t.Helper()
+	app := fiber.New()
+	app.Post("/api/v1/auth/google", GoogleSignIn(zap.NewNop(), cfg, db, fv))
+	return app
+}
+
+// mintGuestJWT returns a valid HS256 token whose sub is userID — used by
+// guest-promotion tests. Matches the claim shape of generateTokens().
+func mintGuestJWT(t *testing.T, secret, userID string) string {
+	t.Helper()
+	claims := jwt.MapClaims{
+		"sub":  userID,
+		"tier": "free",
+		"role": "user",
+		"name": "",
+		"iat":  time.Now().Unix(),
+		"exp":  time.Now().Add(5 * time.Minute).Unix(),
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	s, err := tok.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("mint guest jwt: %v", err)
+	}
+	return s
+}
+
+// ssoDecode unmarshals an SSO handler response body into a structured shape so
+// tests can assert on data.user.id, access_token, etc.
+type ssoResponse struct {
+	Data struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int    `json:"expires_in"`
+		User         struct {
+			ID               string `json:"id"`
+			AuthProvider     string `json:"auth_provider"`
+			Email            string `json:"email"`
+			FullName         string `json:"full_name"`
+			SubscriptionTier string `json:"subscription_tier"`
+		} `json:"user"`
+	} `json:"data"`
+}
+
+func TestAppleSignIn_HappyPath(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+	fv := &fakeAppleVerifier{identity: apple.AppleIdentity{
+		Sub: "AS-1", Email: "u@example.com", EmailVerified: true, IsPrivateRelay: false,
+	}}
+	app := newAppleApp(t, db, cfg, fv)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+		bytes.NewBufferString(`{"identityToken":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: want 200, got %d (body: %s)", resp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var parsed ssoResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("decode body: %v (raw: %s)", err, string(body))
+	}
+	if parsed.Data.AccessToken == "" {
+		t.Errorf("expected non-empty access_token")
+	}
+	if parsed.Data.User.AuthProvider != "apple" {
+		t.Errorf("auth_provider: want apple, got %q", parsed.Data.User.AuthProvider)
+	}
+	if parsed.Data.User.ID == "" {
+		t.Errorf("expected non-empty user.id")
+	}
+}
+
+func TestAppleSignIn_AudienceMismatch_Returns401(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+	fv := &fakeAppleVerifier{err: errors.New("apple: audience mismatch")}
+	app := newAppleApp(t, db, cfg, fv)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+		bytes.NewBufferString(`{"identityToken":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status: want 401, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(body, []byte("invalid identity token")) {
+		t.Errorf("body should carry generic error, got %s", string(body))
+	}
+}
+
+func TestAppleSignIn_CrossSurfaceSameSubSameID(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+	fv := &fakeAppleVerifier{identity: apple.AppleIdentity{
+		Sub: "AS-cross", Email: "cross@example.com", EmailVerified: true,
+	}}
+	app := newAppleApp(t, db, cfg, fv)
+
+	// First sign-in creates the row.
+	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+		bytes.NewBufferString(`{"identityToken":"x","deviceId":"d1"}`))
+	req1.Header.Set("Content-Type", "application/json")
+	resp1, _ := app.Test(req1, -1)
+	body1, _ := io.ReadAll(resp1.Body)
+	var p1 ssoResponse
+	_ = json.Unmarshal(body1, &p1)
+
+	// Second sign-in from "different device" but same sub.
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+		bytes.NewBufferString(`{"identityToken":"x","deviceId":"d2"}`))
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, _ := app.Test(req2, -1)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("second sign-in: want 200, got %d", resp2.StatusCode)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	var p2 ssoResponse
+	_ = json.Unmarshal(body2, &p2)
+
+	if p1.Data.User.ID == "" || p2.Data.User.ID == "" {
+		t.Fatalf("expected both responses to carry user.id (got %q / %q)", p1.Data.User.ID, p2.Data.User.ID)
+	}
+	if p1.Data.User.ID != p2.Data.User.ID {
+		t.Errorf("cross-surface same sub: want same user.id, got %q vs %q (AUTH-04 / ROADMAP SC#1)",
+			p1.Data.User.ID, p2.Data.User.ID)
+	}
+
+	// Only one row owns this sub.
+	var n int64
+	db.Raw("SELECT COUNT(*) FROM users WHERE apple_user_id = ?", "AS-cross").Scan(&n)
+	if n != 1 {
+		t.Errorf("users WHERE apple_user_id='AS-cross': want 1, got %d", n)
+	}
+}
+
+func TestAppleSignIn_AutoLinkByEmail(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+
+	// Seed user with google_user_id already set + matching verified email.
+	seededID := uuid.NewString()
+	if err := db.Exec(`INSERT INTO users(id, full_name, subscription_tier, role,
+		google_user_id, email, email_verified, email_is_private_relay, auth_provider, created_at, updated_at)
+		VALUES(?, '', 'free', 'user', ?, ?, 1, 0, 'google', ?, ?)`,
+		seededID, "G1", "linkme@example.com", time.Now(), time.Now()).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	fv := &fakeAppleVerifier{identity: apple.AppleIdentity{
+		Sub: "A2", Email: "linkme@example.com", EmailVerified: true, IsPrivateRelay: false,
+	}}
+	app := newAppleApp(t, db, cfg, fv)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+		bytes.NewBufferString(`{"identityToken":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := app.Test(req, -1)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: want 200, got %d (body: %s)", resp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var p ssoResponse
+	_ = json.Unmarshal(body, &p)
+
+	if p.Data.User.ID != seededID {
+		t.Errorf("auto-link: want returned user.id == seeded %q, got %q (AUTH-06)", seededID, p.Data.User.ID)
+	}
+	// Apple sub now attached to the same row.
+	var appleSub *string
+	db.Raw("SELECT apple_user_id FROM users WHERE id = ?", seededID).Scan(&appleSub)
+	if appleSub == nil || *appleSub != "A2" {
+		t.Errorf("expected apple_user_id=A2 on linked row, got %v", appleSub)
+	}
+}
+
+func TestAppleSignIn_PrivateRelaySkipsLink(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+
+	// Seed an existing verified-email row (non-relay).
+	seededID := uuid.NewString()
+	_ = db.Exec(`INSERT INTO users(id, full_name, subscription_tier, role,
+		email, email_verified, email_is_private_relay, auth_provider, created_at, updated_at)
+		VALUES(?, '', 'free', 'user', ?, 1, 0, 'apple', ?, ?)`,
+		seededID, "abc@example.com", time.Now(), time.Now()).Error
+
+	// Token claims a private-relay email that happens to share the seeded email's local part.
+	fv := &fakeAppleVerifier{identity: apple.AppleIdentity{
+		Sub: "A-relay", Email: "abc@privaterelay.appleid.com", EmailVerified: true, IsPrivateRelay: true,
+	}}
+	app := newAppleApp(t, db, cfg, fv)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+		bytes.NewBufferString(`{"identityToken":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := app.Test(req, -1)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: want 200, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var p ssoResponse
+	_ = json.Unmarshal(body, &p)
+	if p.Data.User.ID == seededID {
+		t.Errorf("CRITICAL: private-relay token must NOT auto-link to seeded row (T-2-RelaySkip / AUTH-06 exception). got same id %q", p.Data.User.ID)
+	}
+	if p.Data.User.ID == "" {
+		t.Errorf("expected fresh user.id, got empty")
+	}
+}
+
+func TestAppleSignIn_PromoteGuestInPlace(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+
+	// Seed a guest user.
+	guestID := uuid.NewString()
+	if err := db.Exec(`INSERT INTO users(id, full_name, subscription_tier, role, auth_provider, created_at, updated_at)
+		VALUES(?, '', 'free', 'user', 'guest', ?, ?)`,
+		guestID, time.Now(), time.Now()).Error; err != nil {
+		t.Fatalf("seed guest: %v", err)
+	}
+
+	fv := &fakeAppleVerifier{identity: apple.AppleIdentity{
+		Sub: "A-promote", Email: "promote@example.com", EmailVerified: true,
+	}}
+	app := newAppleApp(t, db, cfg, fv)
+
+	guestJWT := mintGuestJWT(t, cfg.JWTSecret, guestID)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+		bytes.NewBufferString(`{"identityToken":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+guestJWT)
+	resp, _ := app.Test(req, -1)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: want 200, got %d (body: %s)", resp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var p ssoResponse
+	_ = json.Unmarshal(body, &p)
+
+	if p.Data.User.ID != guestID {
+		t.Errorf("promote-in-place: want same id %q, got %q (AUTH-05)", guestID, p.Data.User.ID)
+	}
+
+	// Row's auth_provider is now apple.
+	var prov string
+	db.Raw("SELECT auth_provider FROM users WHERE id = ?", guestID).Scan(&prov)
+	if prov != "apple" {
+		t.Errorf("auth_provider after promotion: want apple, got %q", prov)
+	}
+}
+
+func TestAppleSignIn_GuestWithConflict_DevicesReassigned(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+
+	// Seed user A — already owns apple_user_id="ABC".
+	userA := uuid.NewString()
+	if err := db.Exec(`INSERT INTO users(id, full_name, subscription_tier, role,
+		apple_user_id, email, email_verified, auth_provider, created_at, updated_at)
+		VALUES(?, '', 'free', 'user', 'ABC', 'a@example.com', 1, 'apple', ?, ?)`,
+		userA, time.Now(), time.Now()).Error; err != nil {
+		t.Fatalf("seed A: %v", err)
+	}
+
+	// Seed guest G with one device D1.
+	guestG := uuid.NewString()
+	if err := db.Exec(`INSERT INTO users(id, full_name, subscription_tier, role, auth_provider, created_at, updated_at)
+		VALUES(?, '', 'free', 'user', 'guest', ?, ?)`,
+		guestG, time.Now(), time.Now()).Error; err != nil {
+		t.Fatalf("seed guest G: %v", err)
+	}
+	deviceD1 := uuid.NewString()
+	if err := db.Exec(`INSERT INTO devices(user_id, device_id, device_secret_hash, platform, model, last_seen_at, first_seen_at)
+		VALUES(?, ?, 'hash', 'ios', 'test', ?, ?)`,
+		guestG, deviceD1, time.Now(), time.Now()).Error; err != nil {
+		t.Fatalf("seed device: %v", err)
+	}
+
+	fv := &fakeAppleVerifier{identity: apple.AppleIdentity{
+		Sub: "ABC", Email: "a@example.com", EmailVerified: true,
+	}}
+	app := newAppleApp(t, db, cfg, fv)
+
+	guestJWT := mintGuestJWT(t, cfg.JWTSecret, guestG)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+		bytes.NewBufferString(`{"identityToken":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+guestJWT)
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: want 200, got %d (body: %s)", resp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var p ssoResponse
+	if err := json.Unmarshal(body, &p); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if p.Data.User.ID != userA {
+		t.Errorf("returned user.id: want %q (A), got %q (B-3 conflict branch)", userA, p.Data.User.ID)
+	}
+
+	// Device D1 reassigned to A.
+	var deviceOwner string
+	db.Raw("SELECT user_id FROM devices WHERE device_id = ?", deviceD1).Scan(&deviceOwner)
+	if deviceOwner != userA {
+		t.Errorf("device %s owner: want %q (A), got %q (B-3: ReassignDevicesByUserID failed)", deviceD1, userA, deviceOwner)
+	}
+
+	// Guest row orphaned (deleted).
+	var guestCount int64
+	db.Raw("SELECT COUNT(*) FROM users WHERE id = ?", guestG).Scan(&guestCount)
+	if guestCount != 0 {
+		t.Errorf("guest user row: want 0 (orphaned/deleted), got %d (B-3: DeleteOrphanGuestUser failed)", guestCount)
+	}
+}
+
+func TestAppleSignIn_InvalidGuestJWT_Returns403(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+	fv := &fakeAppleVerifier{identity: apple.AppleIdentity{Sub: "X"}}
+	app := newAppleApp(t, db, cfg, fv)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+		bytes.NewBufferString(`{"identityToken":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer not.a.real.token")
+	resp, _ := app.Test(req, -1)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("invalid guest jwt: want 403, got %d (T-2-GuestJWTSpoof)", resp.StatusCode)
+	}
+}
+
+func TestAppleSignIn_ConcurrentSameSub(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+	fv := &fakeAppleVerifier{identity: apple.AppleIdentity{
+		Sub: "AS-1", Email: "race@example.com", EmailVerified: true,
+	}}
+	app := newAppleApp(t, db, cfg, fv)
+
+	type result struct {
+		statusCode int
+		userID     string
+	}
+	var (
+		results []result
+		mu      sync.Mutex
+	)
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+				bytes.NewBufferString(`{"identityToken":"x"}`))
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := app.Test(req, -1)
+			if err != nil {
+				mu.Lock()
+				results = append(results, result{statusCode: -1})
+				mu.Unlock()
+				return
+			}
+			body, _ := io.ReadAll(resp.Body)
+			var p ssoResponse
+			_ = json.Unmarshal(body, &p)
+			mu.Lock()
+			results = append(results, result{statusCode: resp.StatusCode, userID: p.Data.User.ID})
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	// W-4: every concurrent response MUST be 200 — proves the ErrDuplicate
+	// translation invariant (re-read on UNIQUE collision keeps callers on the 200 path).
+	for i, r := range results {
+		if r.statusCode != http.StatusOK {
+			t.Errorf("goroutine #%d: status %d, want 200 (proves ErrDuplicate fallback)", i, r.statusCode)
+		}
+	}
+	if len(results) == 0 {
+		t.Fatalf("no results collected")
+	}
+	firstID := results[0].userID
+	for i, r := range results {
+		if r.userID != firstID {
+			t.Errorf("goroutine #%d: user.id %q, want %q (cross-surface invariant)", i, r.userID, firstID)
+		}
+	}
+
+	var n int64
+	db.Raw("SELECT COUNT(*) FROM users WHERE apple_user_id = ?", "AS-1").Scan(&n)
+	if n != 1 {
+		t.Errorf("users WHERE apple_user_id='AS-1': want 1, got %d", n)
+	}
+}
+
+func TestAppleSignIn_BodyEmailNeverUsedForAutoLink(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+
+	// Victim row that an attacker would try to hijack via body-email spoof.
+	victimID := uuid.NewString()
+	if err := db.Exec(`INSERT INTO users(id, full_name, subscription_tier, role,
+		google_user_id, email, email_verified, email_is_private_relay, auth_provider, created_at, updated_at)
+		VALUES(?, '', 'free', 'user', ?, ?, 1, 0, 'google', ?, ?)`,
+		victimID, "victim-google", "victim@example.com", time.Now(), time.Now()).Error; err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+
+	// Verifier returns empty email (subsequent Apple sign-in has no email claim);
+	// attacker tries to spoof via the request body.
+	fv := &fakeAppleVerifier{identity: apple.AppleIdentity{
+		Sub: "ATTACK", Email: "", EmailVerified: false,
+	}}
+	app := newAppleApp(t, db, cfg, fv)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+		bytes.NewBufferString(`{"identityToken":"x","email":"victim@example.com"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := app.Test(req, -1)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: want 200, got %d (body: %s)", resp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var p ssoResponse
+	_ = json.Unmarshal(body, &p)
+	if p.Data.User.ID == victimID {
+		t.Errorf("CRITICAL: body-email spoof MUST NOT link to victim (T-2-EmailBodySpoof). Got victim id %q", p.Data.User.ID)
+	}
+}
+
+func TestGoogleSignIn_HappyPath(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+	fv := &fakeGoogleVerifier{identity: google.GoogleIdentity{
+		Sub: "GS-1", Email: "g@example.com", EmailVerified: true,
+	}}
+	app := newGoogleApp(t, db, cfg, fv)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/google",
+		bytes.NewBufferString(`{"idToken":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := app.Test(req, -1)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: want 200, got %d (body: %s)", resp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var p ssoResponse
+	_ = json.Unmarshal(body, &p)
+	if p.Data.User.AuthProvider != "google" {
+		t.Errorf("auth_provider: want google, got %q", p.Data.User.AuthProvider)
+	}
+	if p.Data.AccessToken == "" {
+		t.Errorf("expected non-empty access_token")
+	}
+}
+
+func TestAuth_JWTShapeUnchanged(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+	fv := &fakeAppleVerifier{identity: apple.AppleIdentity{
+		Sub: "AS-shape", Email: "shape@example.com", EmailVerified: true,
+	}}
+	app := newAppleApp(t, db, cfg, fv)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+		bytes.NewBufferString(`{"identityToken":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := app.Test(req, -1)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: want 200, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var p ssoResponse
+	_ = json.Unmarshal(body, &p)
+
+	// Decode access_token and assert claim keys are exactly {sub, tier, role, name, iat, exp}.
+	claims := jwt.MapClaims{}
+	_, err := jwt.ParseWithClaims(p.Data.AccessToken, &claims, func(t *jwt.Token) (interface{}, error) {
+		return []byte(cfg.JWTSecret), nil
+	}, jwt.WithValidMethods([]string{"HS256"}))
+	if err != nil {
+		t.Fatalf("parse access token: %v", err)
+	}
+	want := map[string]bool{"sub": true, "tier": true, "role": true, "name": true, "iat": true, "exp": true}
+	for k := range claims {
+		if !want[k] {
+			t.Errorf("unexpected claim %q in access_token (AUTH-07 shape regression)", k)
+		}
+		delete(want, k)
+	}
+	for k := range want {
+		t.Errorf("missing claim %q in access_token (AUTH-07 shape regression)", k)
 	}
 }
