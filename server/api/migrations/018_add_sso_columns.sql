@@ -10,6 +10,25 @@
 -- the `auth_provider='guest'` default correctly classifies legacy rows.
 -- Three partial unique indexes guarantee one row per provider sub and
 -- exclude private-relay rows from the auto-link search space (D-09, D-03, D-04).
+--
+-- Migration runner / rollback semantics (IN-03):
+--
+-- This file uses the implicit transactional-DDL property of Postgres: a
+-- failure in any statement inside BEGIN; ... COMMIT; causes Postgres to
+-- automatically ROLLBACK every prior statement in the transaction.
+--
+-- The project's migration runner (golang-migrate) wraps each migration file
+-- in its own transaction by default and issues ROLLBACK on any non-zero exit
+-- — see https://github.com/golang-migrate/migrate/blob/master/database/postgres/postgres.go.
+-- A partial failure (e.g. the CHECK constraint addition below failing because
+-- a row violates it) therefore leaves the schema fully rolled back to its
+-- pre-migration state. No explicit ROLLBACK statement is required in this
+-- file. If you switch to a runner that does NOT auto-rollback on error,
+-- wrap this file in your runner's equivalent of `psql -1` (single transaction).
+--
+-- This migration is safe to re-run after a partial failure: every CREATE
+-- INDEX uses IF NOT EXISTS, and the ALTER TABLE ADD COLUMN would fail
+-- transactionally on the second run (no half-applied state to clean up).
 
 BEGIN;
 
