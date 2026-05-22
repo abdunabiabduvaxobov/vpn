@@ -1087,7 +1087,11 @@ func Logout(logger *zap.Logger, redisClient *redis.Client, db *gorm.DB) fiber.Ha
 					ttl = 0
 				}
 			}
-			if ttl > 0 {
+			// WR-02: use `ttl >= 0` so the boundary case (token expiring this
+			// exact second) still produces an audit-trail entry in Redis. Per
+			// REVIEW.md WR-02: even a near-zero TTL keeps the keyspace
+			// observer's record complete.
+			if ttl >= 0 {
 				tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(tokenString)))
 				if err := cache.BlacklistToken(c.Context(), redisClient, tokenHash, ttl); err != nil {
 					logger.Warn("logout: blacklist write failed (fail-open)",
