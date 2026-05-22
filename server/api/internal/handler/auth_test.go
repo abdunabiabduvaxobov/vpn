@@ -21,10 +21,13 @@ import (
 	"vpnapp/server/api/internal/auth/apple"
 	"vpnapp/server/api/internal/auth/google"
 	"vpnapp/server/api/internal/config"
+	"vpnapp/server/api/internal/middleware"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/sqlite"
@@ -1032,5 +1035,233 @@ func TestAuth_JWTShapeUnchanged(t *testing.T) {
 	}
 	for k := range want {
 		t.Errorf("missing claim %q in access_token (AUTH-07 shape regression)", k)
+	}
+}
+
+// ---- Phase 2 Logout tests (AUTH-08) ------------------------------------------
+//
+// These tests exercise POST /api/v1/auth/logout end-to-end through the real
+// AuthRequired middleware (HOTFIX-02) so the blacklist-check round-trip is
+// verified by the same code path production traffic uses. The blacklist key
+// prefix asserted below is `token:blacklist:` — the IN-TREE value matching
+// internal/cache/redis.go (intentionally diverging from CONTEXT.md D-24 — see
+// plan 02-06 objective for the divergence rationale).
+
+// buildLogoutTestApp wires a Fiber app with the protected middleware + Logout
+// route + a tiny test-only protected echo endpoint (used by
+// TestLogout_AccessTokenInvalidAfterLogout to confirm the blacklist works
+// end-to-end through the real middleware) + the public RefreshToken route
+// (used by TestLogout_RefreshTokenInvalidAfterLogout).
+//
+// The middleware signature is (jwtSecret, redisClient, db) — NOT
+// (logger, cfg, redisClient, db) as some draft snippets show. This matches
+// the in-tree middleware.AuthRequired contract verified at
+// internal/middleware/auth.go:43.
+func buildLogoutTestApp(t *testing.T, db *gorm.DB, cfg *config.Config, rdb *redis.Client) *fiber.App {
+	t.Helper()
+	app := fiber.New()
+
+	// Public route — refresh (used by refresh-after-logout assertion).
+	app.Post("/api/v1/auth/refresh", RefreshToken(zap.NewNop(), cfg, db))
+
+	// Protected group — mirrors main.go's pattern. HOTFIX-02 middleware
+	// re-reads user existence from DB on every request (db non-nil branch).
+	protected := app.Group("/api/v1", middleware.AuthRequired(cfg.JWTSecret, rdb, db))
+	protected.Post("/auth/logout", Logout(zap.NewNop(), rdb, db))
+	protected.Get("/me", func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
+	})
+	return app
+}
+
+// mintAccessToken returns an HS256 token with the standard claim set used by
+// the existing generateTokens function. Used by Logout tests. Distinct from
+// mintGuestJWT only in that callers control the TTL explicitly.
+func mintAccessToken(t *testing.T, secret, userID string, expIn time.Duration) string {
+	t.Helper()
+	claims := jwt.MapClaims{
+		"sub":  userID,
+		"tier": "free",
+		"role": "user",
+		"name": "",
+		"iat":  time.Now().Unix(),
+		"exp":  time.Now().Add(expIn).Unix(),
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	s, err := tok.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("mint access: %v", err)
+	}
+	return s
+}
+
+// startMiniRedis returns a miniredis-backed *redis.Client and a teardown.
+func startMiniRedis(t *testing.T) (*redis.Client, func()) {
+	t.Helper()
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	return rdb, func() {
+		_ = rdb.Close()
+		mr.Close()
+	}
+}
+
+// seedUserInAuthTestDB inserts a row into the in-memory users table with the
+// minimal columns the auth middleware reads. Reused by Logout tests.
+func seedUserInAuthTestDB(t *testing.T, db *gorm.DB, provider string) string {
+	t.Helper()
+	id := uuid.NewString()
+	if err := db.Exec(
+		`INSERT INTO users(id, full_name, subscription_tier, role, auth_provider, created_at, updated_at) VALUES(?, '', 'free', 'user', ?, ?, ?)`,
+		id, provider, time.Now(), time.Now(),
+	).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	return id
+}
+
+func TestLogout_204_DeletesSession_BlacklistsToken(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+	rdb, stop := startMiniRedis(t)
+	defer stop()
+
+	// Seed a guest user + one session.
+	userID := seedUserInAuthTestDB(t, db, "guest")
+	refreshToken := uuid.NewString()
+	refreshHash := fmt.Sprintf("%x", sha256.Sum256([]byte(refreshToken)))
+	if err := db.Exec(
+		`INSERT INTO sessions(id, user_id, refresh_token_hash, device_info, created_at, expires_at) VALUES(?, ?, ?, '', ?, ?)`,
+		uuid.NewString(), userID, refreshHash, time.Now(), time.Now().Add(30*24*time.Hour),
+	).Error; err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	accessToken := mintAccessToken(t, cfg.JWTSecret, userID, 5*time.Minute)
+	app := buildLogoutTestApp(t, db, cfg, rdb)
+
+	req := httptest.NewRequest("POST", "/api/v1/auth/logout", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != 204 {
+		t.Errorf("status: want 204, got %d", resp.StatusCode)
+	}
+
+	var n int64
+	db.Raw("SELECT COUNT(*) FROM sessions WHERE user_id = ?", userID).Scan(&n)
+	if n != 0 {
+		t.Errorf("sessions: want 0, got %d", n)
+	}
+
+	tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(accessToken)))
+	ttl, err := rdb.TTL(context.Background(), "token:blacklist:"+tokenHash).Result()
+	if err != nil {
+		t.Fatalf("rdb.TTL: %v", err)
+	}
+	if ttl <= 0 {
+		t.Errorf("blacklist key TTL: want > 0, got %v", ttl)
+	}
+}
+
+func TestLogout_AccessTokenInvalidAfterLogout(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+	rdb, stop := startMiniRedis(t)
+	defer stop()
+
+	userID := seedUserInAuthTestDB(t, db, "guest")
+	accessToken := mintAccessToken(t, cfg.JWTSecret, userID, 5*time.Minute)
+	app := buildLogoutTestApp(t, db, cfg, rdb)
+
+	// First: confirm the access token works (sanity).
+	req := httptest.NewRequest("GET", "/api/v1/me", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("pre-logout app.Test: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("pre-logout /me: want 200, got %d", resp.StatusCode)
+	}
+
+	// Logout.
+	logoutReq := httptest.NewRequest("POST", "/api/v1/auth/logout", nil)
+	logoutReq.Header.Set("Authorization", "Bearer "+accessToken)
+	logoutResp, err := app.Test(logoutReq, -1)
+	if err != nil {
+		t.Fatalf("logout app.Test: %v", err)
+	}
+	if logoutResp.StatusCode != 204 {
+		t.Fatalf("logout: want 204, got %d", logoutResp.StatusCode)
+	}
+
+	// Now the same access token must be rejected by the AuthRequired
+	// middleware (which checks cache.IsTokenBlacklisted on every request).
+	req2 := httptest.NewRequest("GET", "/api/v1/me", nil)
+	req2.Header.Set("Authorization", "Bearer "+accessToken)
+	resp2, err := app.Test(req2, -1)
+	if err != nil {
+		t.Fatalf("post-logout app.Test: %v", err)
+	}
+	if resp2.StatusCode != 401 {
+		t.Errorf("post-logout /me: want 401 (token revoked), got %d", resp2.StatusCode)
+	}
+}
+
+func TestLogout_RefreshTokenInvalidAfterLogout(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+	rdb, stop := startMiniRedis(t)
+	defer stop()
+
+	userID := seedUserInAuthTestDB(t, db, "guest")
+	// Seed two sessions (two devices) — proves the Discretion default
+	// "delete ALL sessions for the user" actually wipes every device, not
+	// just the calling device.
+	refresh1 := uuid.NewString()
+	hash1 := fmt.Sprintf("%x", sha256.Sum256([]byte(refresh1)))
+	refresh2 := uuid.NewString()
+	hash2 := fmt.Sprintf("%x", sha256.Sum256([]byte(refresh2)))
+	for _, h := range []string{hash1, hash2} {
+		if err := db.Exec(
+			`INSERT INTO sessions(id, user_id, refresh_token_hash, device_info, created_at, expires_at) VALUES(?, ?, ?, '', ?, ?)`,
+			uuid.NewString(), userID, h, time.Now(), time.Now().Add(30*24*time.Hour),
+		).Error; err != nil {
+			t.Fatalf("seed session: %v", err)
+		}
+	}
+
+	accessToken := mintAccessToken(t, cfg.JWTSecret, userID, 5*time.Minute)
+	app := buildLogoutTestApp(t, db, cfg, rdb)
+
+	logoutReq := httptest.NewRequest("POST", "/api/v1/auth/logout", nil)
+	logoutReq.Header.Set("Authorization", "Bearer "+accessToken)
+	logoutResp, err := app.Test(logoutReq, -1)
+	if err != nil {
+		t.Fatalf("logout app.Test: %v", err)
+	}
+	if logoutResp.StatusCode != 204 {
+		t.Fatalf("logout: want 204, got %d", logoutResp.StatusCode)
+	}
+
+	// Now BOTH refresh tokens must fail — RefreshToken handler looks up
+	// the session by refresh_token_hash; both rows are deleted.
+	for i, rt := range []string{refresh1, refresh2} {
+		body := bytes.NewBufferString(fmt.Sprintf(`{"refresh_token":%q}`, rt))
+		req := httptest.NewRequest("POST", "/api/v1/auth/refresh", body)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := app.Test(req, -1)
+		if err != nil {
+			t.Fatalf("refresh app.Test: %v", err)
+		}
+		if resp.StatusCode != 401 {
+			t.Errorf("refresh#%d post-logout: want 401, got %d", i, resp.StatusCode)
+		}
 	}
 }
