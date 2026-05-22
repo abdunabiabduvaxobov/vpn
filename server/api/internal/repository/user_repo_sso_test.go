@@ -187,7 +187,7 @@ func TestPromoteGuestToSSO_HappyPath_Apple(t *testing.T) {
 	db := newSSOTestDB(t)
 	guestID := seedGuestSSO(t, db)
 
-	if err := repository.PromoteGuestToSSO(db, guestID, "A123", "u@example.com", "apple", false); err != nil {
+	if err := repository.PromoteGuestToSSO(db, guestID, "A123", "u@example.com", "apple", "", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got, err := repository.FindUserByID(db, guestID)
@@ -215,7 +215,7 @@ func TestPromoteGuestToSSO_HappyPath_Google(t *testing.T) {
 	db := newSSOTestDB(t)
 	guestID := seedGuestSSO(t, db)
 
-	if err := repository.PromoteGuestToSSO(db, guestID, "G456", "u@example.com", "google", false); err != nil {
+	if err := repository.PromoteGuestToSSO(db, guestID, "G456", "u@example.com", "google", "", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got, _ := repository.FindUserByID(db, guestID)
@@ -230,7 +230,7 @@ func TestPromoteGuestToSSO_HappyPath_Google(t *testing.T) {
 func TestPromoteGuestToSSO_PrivateRelay(t *testing.T) {
 	db := newSSOTestDB(t)
 	guestID := seedGuestSSO(t, db)
-	if err := repository.PromoteGuestToSSO(db, guestID, "A999", "abc@privaterelay.appleid.com", "apple", true); err != nil {
+	if err := repository.PromoteGuestToSSO(db, guestID, "A999", "abc@privaterelay.appleid.com", "apple", "", true); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got, _ := repository.FindUserByID(db, guestID)
@@ -245,7 +245,7 @@ func TestPromoteGuestToSSO_DuplicateSub_ReturnsErrDuplicate(t *testing.T) {
 	seedSSOUser(t, db, ssoStrPtr("A123"), nil, ssoStrPtr("first@example.com"), true, false, "apple")
 	// Guest tries to promote with the same sub.
 	guestID := seedGuestSSO(t, db)
-	err := repository.PromoteGuestToSSO(db, guestID, "A123", "second@example.com", "apple", false)
+	err := repository.PromoteGuestToSSO(db, guestID, "A123", "second@example.com", "apple", "", false)
 	if !errors.Is(err, repository.ErrDuplicate) {
 		t.Errorf("want ErrDuplicate on partial-unique collision, got %v", err)
 	}
@@ -254,7 +254,7 @@ func TestPromoteGuestToSSO_DuplicateSub_ReturnsErrDuplicate(t *testing.T) {
 func TestPromoteGuestToSSO_InvalidProvider_ReturnsError(t *testing.T) {
 	db := newSSOTestDB(t)
 	guestID := seedGuestSSO(t, db)
-	err := repository.PromoteGuestToSSO(db, guestID, "A123", "u@example.com", "facebook", false)
+	err := repository.PromoteGuestToSSO(db, guestID, "A123", "u@example.com", "facebook", "", false)
 	if err == nil {
 		t.Fatal("expected error for invalid provider")
 	}
@@ -262,9 +262,56 @@ func TestPromoteGuestToSSO_InvalidProvider_ReturnsError(t *testing.T) {
 
 func TestPromoteGuestToSSO_GuestRowMissing_ReturnsErrNotFound(t *testing.T) {
 	db := newSSOTestDB(t)
-	err := repository.PromoteGuestToSSO(db, uuid.NewString(), "A123", "u@example.com", "apple", false)
+	err := repository.PromoteGuestToSSO(db, uuid.NewString(), "A123", "u@example.com", "apple", "", false)
 	if !errors.Is(err, repository.ErrNotFound) {
 		t.Errorf("want ErrNotFound for missing guest, got %v", err)
+	}
+}
+
+// WR-04: PromoteGuestToSSO MUST update users.full_name when the caller
+// passes a non-empty fullName (the SSO-supplied display name).
+// REVIEW.md WR-04 / AUTH-05 contract fidelity.
+func TestPromoteGuestToSSO_UpdatesFullName(t *testing.T) {
+	db := newSSOTestDB(t)
+	guestID := seedGuestSSO(t, db) // full_name=''
+	if err := repository.PromoteGuestToSSO(db, guestID, "A123", "u@example.com", "apple", "Alice Apple", false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, err := repository.FindUserByID(db, guestID)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if got.FullName != "Alice Apple" {
+		t.Errorf("FullName: want %q, got %q (WR-04 regression)", "Alice Apple", got.FullName)
+	}
+	// Other fields should also be set as before.
+	if got.AppleUserID == nil || *got.AppleUserID != "A123" {
+		t.Errorf("AppleUserID: want A123, got %v", got.AppleUserID)
+	}
+	if got.AuthProvider != "apple" {
+		t.Errorf("AuthProvider: want apple, got %q", got.AuthProvider)
+	}
+}
+
+// WR-04 backwards-compat: an empty fullName MUST NOT blank out an existing
+// full_name value. Guests that set a custom name out-of-band (or had their
+// name backfilled by some other path) must keep it after promotion.
+func TestPromoteGuestToSSO_EmptyFullName_PreservesExisting(t *testing.T) {
+	db := newSSOTestDB(t)
+	guestID := seedGuestSSO(t, db)
+	// Directly set the guest's full_name to "OriginalName" so we can prove
+	// it's preserved (seedGuestSSO inserts full_name='').
+	if err := db.Exec("UPDATE users SET full_name = ? WHERE id = ?", "OriginalName", guestID).Error; err != nil {
+		t.Fatalf("update full_name: %v", err)
+	}
+
+	if err := repository.PromoteGuestToSSO(db, guestID, "A123", "u@example.com", "apple", "", false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, _ := repository.FindUserByID(db, guestID)
+	if got.FullName != "OriginalName" {
+		t.Errorf("FullName: want %q (preserved), got %q (WR-04 regression — empty fullName overwrote)",
+			"OriginalName", got.FullName)
 	}
 }
 

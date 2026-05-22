@@ -361,6 +361,12 @@ func FindUserByVerifiedEmailForLink(db *gorm.DB, email string) (*model.User, err
 // (apple_user_id OR google_user_id), email, email_verified=true,
 // email_is_private_relay=<isPrivateRelay>, auth_provider=<provider>.
 //
+// fullName (WR-04): when non-empty, also updates users.full_name. Empty
+// fullName leaves the existing column value unchanged — this preserves the
+// guest's `guest_XXXXXXXX` placeholder only when the SSO provider didn't
+// supply a name (Google's idToken always carries one; Apple supplies one
+// only on the FIRST sign-in per ADR-007 §10.1).
+//
 // On UNIQUE constraint violation (the provider sub is already bound to another
 // row), returns ErrDuplicate — the handler in plan 05 detects this and falls
 // back to the "reassign devices + orphan guest" path per D-06.
@@ -368,7 +374,7 @@ func FindUserByVerifiedEmailForLink(db *gorm.DB, email string) (*model.User, err
 // Provider MUST be "apple" or "google"; any other value returns an error
 // (defense in depth — the handler should never call this with another value
 // because it dispatches on the verifier output).
-func PromoteGuestToSSO(db *gorm.DB, guestUserID, sub, email, provider string, isPrivateRelay bool) error {
+func PromoteGuestToSSO(db *gorm.DB, guestUserID, sub, email, provider, fullName string, isPrivateRelay bool) error {
 	if provider != "apple" && provider != "google" {
 		return fmt.Errorf("PromoteGuestToSSO: invalid provider %q", provider)
 	}
@@ -384,6 +390,12 @@ func PromoteGuestToSSO(db *gorm.DB, guestUserID, sub, email, provider string, is
 			updates["apple_user_id"] = sub
 		case "google":
 			updates["google_user_id"] = sub
+		}
+		// WR-04: only update full_name when the SSO claim carried one. An
+		// empty fullName must NOT overwrite a pre-existing name (e.g. a
+		// guest that already set a custom name out-of-band).
+		if fullName != "" {
+			updates["full_name"] = fullName
 		}
 		result := tx.Model(&model.User{}).Where("id = ?", guestUserID).Updates(updates)
 		if result.Error != nil {
