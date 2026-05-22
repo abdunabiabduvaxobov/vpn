@@ -22,6 +22,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -111,15 +112,19 @@ func readPassword(in *os.File, prompt *os.File) (string, error) {
 	// plaintext.
 	fmt.Fprintln(prompt, "warning: stdin is not a TTY; reading password from pipe (no echo-off)")
 	line, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil {
-		// EOF without trailing newline is acceptable — operator may pipe a
-		// password without a newline. Treat err as fatal only when we got
-		// no bytes at all.
-		if line == "" {
-			return "", fmt.Errorf("reading password from stdin: %w", err)
-		}
+	// Only io.EOF is acceptable — that's the "operator piped a password
+	// without a trailing newline" case. Any other error (closed pipe
+	// mid-read, ErrUnexpectedEOF, context cancellation) might leave us
+	// with a truncated buffer that bcrypt would happily hash; refuse it
+	// so we don't silently accept a partial password as the real one.
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("reading password from stdin: %w", err)
 	}
-	return strings.TrimRight(line, "\r\n"), nil
+	line = strings.TrimRight(line, "\r\n")
+	if line == "" {
+		return "", fmt.Errorf("reading password from stdin: empty input")
+	}
+	return line, nil
 }
 
 // createAdminUser inserts a new admin user row with the canonical defaults

@@ -144,6 +144,42 @@ func TestCreateAdmin_AcceptsPipedStdin(t *testing.T) {
 	}
 }
 
+// TestCreateAdmin_RejectsEmptyPipedStdin asserts that readPassword
+// returns an explicit error when stdin closes without any bytes — the
+// prior implementation reported "reading password from stdin: EOF",
+// but more importantly: also accepted a partial buffer when ANY error
+// was paired with at least one byte. The fix narrows the acceptable
+// error set to io.EOF only and explicitly rejects empty input.
+//
+// Regression test for REVIEW.md WR-04.
+func TestCreateAdmin_RejectsEmptyPipedStdin(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	// Close immediately with no bytes written.
+	_ = w.Close()
+
+	promptR, promptW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe (prompt): %v", err)
+	}
+	t.Cleanup(func() {
+		_ = promptR.Close()
+		_ = promptW.Close()
+	})
+	go func() { _, _ = io.Copy(io.Discard, promptR) }()
+
+	_, err = readPassword(r, promptW)
+	if err == nil {
+		t.Fatalf("readPassword on empty piped stdin: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty input") {
+		t.Errorf("readPassword on empty piped stdin: want error containing 'empty input', got %q", err.Error())
+	}
+}
+
 // openSeedTestDB opens an in-memory sqlite DB with the users table
 // schema needed for createAdminUser. Mirrors the pattern in
 // internal/repository/subscription_repo_test.go (openTestDB) so the
