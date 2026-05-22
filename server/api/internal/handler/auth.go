@@ -869,6 +869,23 @@ func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model
 		}
 		return nil, err
 	}
+	// WR-03: a brand-new SSO user (no guest-promotion path, no email-link
+	// candidate) must have an active free subscription row so GET
+	// /api/v1/subscription returns {plan:"free"} instead of 404. Mirror
+	// GuestLogin (handler/auth.go ~ line 458). Failure is non-fatal and
+	// logged at WARN — a future repair job can backfill (REVIEW.md WR-03
+	// recommended behavior).
+	subscription := model.Subscription{
+		UserID:   newUser.ID,
+		Plan:     "free",
+		IsActive: true,
+	}
+	if err := repository.CreateSubscription(db, &subscription); err != nil {
+		logger.Warn("sso: failed to create free subscription for new user (continuing)",
+			zap.String("user_id", newUser.ID),
+			zap.String("provider", p.provider),
+			zap.Error(err))
+	}
 	return newUser, nil
 }
 

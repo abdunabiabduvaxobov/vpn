@@ -1582,3 +1582,45 @@ func TestLogout_BlacklistsTokenExpiringNow(t *testing.T) {
 		}
 	}
 }
+
+// WR-03: a fresh Apple sign-in (no guest JWT, no email-link candidate)
+// MUST insert a subscriptions row with plan='free' AND is_active=1, mirroring
+// the GuestLogin pattern. Without this fix, GET /api/v1/subscription returns
+// 404 for newly-SSO'd users. REVIEW.md WR-03.
+func TestAppleSignIn_NewUser_HasSubscriptionRow(t *testing.T) {
+	db := newAuthTestDB(t)
+	cfg := testAuthConfig()
+	fv := &fakeAppleVerifier{identity: apple.AppleIdentity{
+		Sub: "BRAND-NEW", Email: "new@example.com", EmailVerified: true, IsPrivateRelay: false,
+	}}
+	app := newAppleApp(t, db, cfg, fv)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
+		bytes.NewBufferString(`{"identityToken":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: want 200, got %d (body: %s)", resp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var p ssoResponse
+	if jerr := json.Unmarshal(body, &p); jerr != nil {
+		t.Fatalf("decode: %v", jerr)
+	}
+	if p.Data.User.ID == "" {
+		t.Fatalf("expected non-empty user.id")
+	}
+
+	// WR-03 invariant: a free subscription row exists for the new SSO user.
+	var subCount int64
+	db.Raw("SELECT COUNT(*) FROM subscriptions WHERE user_id = ? AND plan = 'free' AND is_active = 1",
+		p.Data.User.ID).Scan(&subCount)
+	if subCount != 1 {
+		t.Errorf("WR-03 regression: want 1 active free subscription row for user_id=%s, got %d",
+			p.Data.User.ID, subCount)
+	}
+}
