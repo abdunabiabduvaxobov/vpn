@@ -60,6 +60,22 @@ type Config struct {
 	GoogleClientIDIOS     string
 	GoogleClientIDAndroid string
 	GoogleClientIDWeb     string
+
+	// Phase 3 lava.top payment provider (D-30, RESEARCH §13).
+	// LavaEnv selects which API key the constructed *lava.Client uses.
+	// Strict-required at startup via RequireEnv() — no defaults except LavaEnv ("production").
+	LavaEnv                   string // "sandbox" | "production" (default "production" when env unset)
+	LavaAPIKey                string // required when LavaEnv == "production"
+	LavaAPIKeySandbox         string // required when LavaEnv == "sandbox"
+	LavaWebhookSecret         string // required — X-Api-Key on inbound webhook
+	LavaWebhookSecretPrevious string // optional — set only during rotation (D-17)
+	LavaWebhookAllowedCIDRs   string // required CSV of CIDRs lava webhook sources (D-16 — strict-required per planner's pick)
+	LavaSuccessURL            string // required — https://risevpn.com/pay/success
+	LavaFailURL               string // required — https://risevpn.com/pay/fail
+	// LavaActiveAPIKey is the resolved key based on LavaEnv (populated by Load()).
+	// Consumers (lava.Client constructor in cmd/main.go) read this; they never
+	// inspect LavaAPIKey vs LavaAPIKeySandbox directly.
+	LavaActiveAPIKey string
 }
 
 // Load reads configuration from environment variables.
@@ -109,6 +125,23 @@ func Load() (*Config, error) {
 	cfg.GoogleClientIDIOS = getEnv("GOOGLE_CLIENT_ID_IOS", "")
 	cfg.GoogleClientIDAndroid = getEnv("GOOGLE_CLIENT_ID_ANDROID", "")
 	cfg.GoogleClientIDWeb = getEnv("GOOGLE_CLIENT_ID_WEB", "")
+
+	// Phase 3 lava.top (D-30).
+	cfg.LavaEnv = getEnv("LAVA_ENV", "production")
+	cfg.LavaAPIKey = getEnv("LAVA_API_KEY", "")
+	cfg.LavaAPIKeySandbox = getEnv("LAVA_API_KEY_SANDBOX", "")
+	cfg.LavaWebhookSecret = getEnv("LAVA_WEBHOOK_SECRET", "")
+	cfg.LavaWebhookSecretPrevious = getEnv("LAVA_WEBHOOK_SECRET_PREVIOUS", "")
+	cfg.LavaWebhookAllowedCIDRs = getEnv("LAVA_WEBHOOK_ALLOWED_CIDRS", "")
+	cfg.LavaSuccessURL = getEnv("LAVA_SUCCESS_URL", "")
+	cfg.LavaFailURL = getEnv("LAVA_FAIL_URL", "")
+	// Resolve active key once at startup; RequireEnv enforces non-empty.
+	switch cfg.LavaEnv {
+	case "sandbox":
+		cfg.LavaActiveAPIKey = cfg.LavaAPIKeySandbox
+	default: // "production" or anything else (RequireEnv catches invalid values)
+		cfg.LavaActiveAPIKey = cfg.LavaAPIKey
+	}
 
 	if cfg.JWTSecret == "" {
 		return nil, fmt.Errorf("JWT_SECRET is required")
@@ -174,28 +207,52 @@ func getEnvInt64(key string, fallback int64, warnings *[]string) int64 {
 // fix the next". Called from cmd/main.go BEFORE config.Load(); a non-empty return
 // becomes a logger.Fatal which calls os.Exit(1).
 //
-// Required set is the v2.1.0 runtime-dependency core only (D-03). Stripe vars
-// are intentionally OPTIONAL (see OptionalEnvWarnings) because Stripe leaves in
-// Phase 8. LAVA_* keys will be added in Phase 3 when lava.top integration lands.
+// Phase 3 (D-30): adds LAVA_* keys. Per planner's pick of strict-required
+// (RESEARCH §13.3), LAVA_WEBHOOK_ALLOWED_CIDRS has no default — the operator
+// MUST supply the CIDR list explicitly. LAVA_ENV defaults to "production"
+// when unset; the matching LAVA_API_KEY / LAVA_API_KEY_SANDBOX is then required.
 func RequireEnv() []string {
 	required := []string{
 		"JWT_SECRET",
 		"DATABASE_URL",
 		"REDIS_URL",
 		"TUNNEL_VLESS_UUID",
-		// SSO required (D-30, Phase 2 AUTH-03):
+		// SSO required (Phase 2 D-30):
 		"APPLE_TEAM_ID",
 		"APPLE_BUNDLE_ID",
 		"APPLE_SERVICE_ID",
 		"GOOGLE_CLIENT_ID_IOS",
 		"GOOGLE_CLIENT_ID_ANDROID",
 		"GOOGLE_CLIENT_ID_WEB",
+		// Phase 3 lava.top required (D-30):
+		"LAVA_WEBHOOK_SECRET",
+		"LAVA_WEBHOOK_ALLOWED_CIDRS",
+		"LAVA_SUCCESS_URL",
+		"LAVA_FAIL_URL",
 	}
 	var missing []string
 	for _, key := range required {
 		if os.Getenv(key) == "" {
 			missing = append(missing, key)
 		}
+	}
+	// LAVA_ENV + matching API key compound check. LAVA_ENV defaults to "production"
+	// when unset; values other than "sandbox"/"production" are rejected here.
+	lavaEnv := os.Getenv("LAVA_ENV")
+	if lavaEnv == "" {
+		lavaEnv = "production"
+	}
+	switch lavaEnv {
+	case "production":
+		if os.Getenv("LAVA_API_KEY") == "" {
+			missing = append(missing, "LAVA_API_KEY (required when LAVA_ENV=production)")
+		}
+	case "sandbox":
+		if os.Getenv("LAVA_API_KEY_SANDBOX") == "" {
+			missing = append(missing, "LAVA_API_KEY_SANDBOX (required when LAVA_ENV=sandbox)")
+		}
+	default:
+		missing = append(missing, fmt.Sprintf("LAVA_ENV=%q (must be 'sandbox' or 'production')", lavaEnv))
 	}
 	return missing
 }
