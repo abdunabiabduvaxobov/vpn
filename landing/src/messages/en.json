@@ -31,12 +31,36 @@
     "title": "Everything you need for a free internet",
     "subtitle": "Modern protection, all in one app",
     "items": [
-      { "icon": "Zap", "title": "Lightning speed", "description": "10 Gbps servers with WireGuard. Stream 4K without lag." },
-      { "icon": "Shield", "title": "Military-grade", "description": "AES-256, Perfect Forward Secrecy, kill switch, DNS leak protection." },
-      { "icon": "EyeOff", "title": "Zero logs", "description": "We don't store or sell your data. Verified by independent audit." },
-      { "icon": "Globe", "title": "50+ countries", "description": "Servers in Europe, the Americas and Asia. Switch with one tap." },
-      { "icon": "Unlock", "title": "Bypass blocks", "description": "Obfuscation defeats DPI and country-level censorship." },
-      { "icon": "Smartphone", "title": "5 devices", "description": "One subscription for phone, tablet, laptop, desktop and router." }
+      {
+        "icon": "Zap",
+        "title": "Lightning speed",
+        "description": "10 Gbps servers with WireGuard. Stream 4K without lag."
+      },
+      {
+        "icon": "Shield",
+        "title": "Military-grade",
+        "description": "AES-256, Perfect Forward Secrecy, kill switch, DNS leak protection."
+      },
+      {
+        "icon": "EyeOff",
+        "title": "Zero logs",
+        "description": "We don't store or sell your data. Verified by independent audit."
+      },
+      {
+        "icon": "Globe",
+        "title": "50+ countries",
+        "description": "Servers in Europe, the Americas and Asia. Switch with one tap."
+      },
+      {
+        "icon": "Unlock",
+        "title": "Bypass blocks",
+        "description": "Obfuscation defeats DPI and country-level censorship."
+      },
+      {
+        "icon": "Smartphone",
+        "title": "5 devices",
+        "description": "One subscription for phone, tablet, laptop, desktop and router."
+      }
     ]
   },
   "howItWorks": {
@@ -44,9 +68,24 @@
     "title": "Protected in 30 seconds",
     "subtitle": "From install to connect — no setup required",
     "steps": [
-      { "number": "01", "icon": "Download", "title": "Install the app", "description": "Available on iOS, Android, Windows, macOS, Linux. Setup takes 30 seconds." },
-      { "number": "02", "icon": "Server", "title": "Pick a server", "description": "Choose from 50+ locations or hit Auto for the best option." },
-      { "number": "03", "icon": "ShieldCheck", "title": "Connect", "description": "One tap and you're protected. Traffic encrypted, IP hidden, content open." }
+      {
+        "number": "01",
+        "icon": "Download",
+        "title": "Install the app",
+        "description": "Available on iOS, Android, Windows, macOS, Linux. Setup takes 30 seconds."
+      },
+      {
+        "number": "02",
+        "icon": "Server",
+        "title": "Pick a server",
+        "description": "Choose from 50+ locations or hit Auto for the best option."
+      },
+      {
+        "number": "03",
+        "icon": "ShieldCheck",
+        "title": "Connect",
+        "description": "One tap and you're protected. Traffic encrypted, IP hidden, content open."
+      }
     ]
   },
   "faq": {
@@ -54,26 +93,87 @@
     "title": "Frequently asked questions",
     "subtitle": "Didn't find an answer? Reach out <tg>on Telegram</tg>",
     "items": [
-      { "q": "What is a VPN and why do I need one?", "a": "A VPN encrypts your internet traffic and hides your real IP address. It protects you from surveillance, unlocks blocked content, and secures public Wi-Fi." },
-      { "q": "Is Rise VPN safe to use?", "a": "Yes. We use AES-256 encryption — the same standard banks and intelligence agencies rely on. Add kill switch, DNS leak protection, no-logs policy and regular independent audits." },
-      { "q": "Will Rise VPN slow my internet?", "a": "Minimally. Our 10 Gbps servers run WireGuard, which is faster than OpenVPN. Most users see less than 5% speed loss." },
-      { "q": "Can I use Rise VPN in restrictive countries?", "a": "Yes. Traffic obfuscation defeats DPI-based blocking. The service runs reliably in Russia, Belarus, Iran and China." },
-      { "q": "How many devices are supported?", "a": "Up to 5 devices on one subscription: phone, tablet, laptop, desktop and router. Perfect for the whole family." },
-      { "q": "Is there a free tier?", "a": "Yes. The free plan includes 5 GB/month and access to 3 servers — enough to try the service with zero commitment." },
-      { "q": "How do I cancel?", "a": "One click in account settings. No phone calls, no emails, no fine print. 30-day money-back guarantee, no questions asked." },
-      { "q": "Does Rise VPN work with Netflix and other streaming?", "a": "Yes. Servers are optimised for Netflix, YouTube, Disney+, HBO Max, Amazon Prime and more. 4K streaming without buffering." },
-      { "q": "Do you log my activity?", "a": "No. We don't store browsing history, IPs, sessions or bandwidth. Our no-logs policy is independently audited by PwC." },
-      { "q": "Which payment methods do you accept?", "a": "Cards (Visa, Mastercard, MIR), SBP, crypto (BTC, ETH, USDT), Apple Pay, Google Pay. For maximum privacy we recommend crypto." }
+      {
+        "q": "What is a VPN and why do I need one?",
+        "a": "A VPN encrypts your internet traffic and hides your real IP address. It protects you from surveillance, unlocks blocked content, and secures public Wi-Fi."
+      },
+      {
+        "q": "Is Rise VPN safe to use?",
+        "a": "Yes. We use AES-256 encryption — the same standard banks and intelligence agencies rely on. Add kill switch, DNS leak protection, no-logs policy and regular independent audits."
+      },
+      {
+        "q": "Will Rise VPN slow my internet?",
+        "a": "Minimally. Our 10 Gbps servers run WireGuard, which is faster than OpenVPN. Most users see less than 5% speed loss."
+      },
+      {
+        "q": "Can I use Rise VPN in restrictive countries?",
+        "a": "Yes. Traffic obfuscation defeats DPI-based blocking. The service runs reliably in Russia, Belarus, Iran and China."
+      },
+      {
+        "q": "How many devices are supported?",
+        "a": "Up to 5 devices on one subscription: phone, tablet, laptop, desktop and router. Perfect for the whole family."
+      },
+      {
+        "q": "Is there a free tier?",
+        "a": "Yes. The free plan includes 5 GB/month and access to 3 servers — enough to try the service with zero commitment."
+      },
+      {
+        "q": "How do I cancel?",
+        "a": "One click in account settings. No phone calls, no emails, no fine print. 30-day money-back guarantee, no questions asked."
+      },
+      {
+        "q": "Does Rise VPN work with Netflix and other streaming?",
+        "a": "Yes. Servers are optimised for Netflix, YouTube, Disney+, HBO Max, Amazon Prime and more. 4K streaming without buffering."
+      },
+      {
+        "q": "Do you log my activity?",
+        "a": "No. We don't store browsing history, IPs, sessions or bandwidth. Our no-logs policy is independently audited by PwC."
+      },
+      {
+        "q": "Which payment methods do you accept?",
+        "a": "Cards (Visa, Mastercard, MIR), SBP, crypto (BTC, ETH, USDT), Apple Pay, Google Pay. For maximum privacy we recommend crypto."
+      }
     ]
   },
   "footer": {
     "tagline": "Internet freedom without borders",
     "downloadCta": "Download the app",
     "columns": {
-      "product": { "title": "Product", "links": { "features": "Features", "servers": "Servers", "pricing": "Pricing", "download": "Download" } },
-      "company": { "title": "Company", "links": { "about": "About", "blog": "Blog", "careers": "Careers", "press": "Press kit" } },
-      "support": { "title": "Support", "links": { "help": "Help center", "contact": "Contact", "status": "Server status", "faq": "FAQ" } },
-      "legal": { "title": "Legal", "links": { "privacy": "Privacy", "terms": "Terms of service", "refund": "Refund policy" } }
+      "product": {
+        "title": "Product",
+        "links": {
+          "features": "Features",
+          "servers": "Servers",
+          "pricing": "Pricing",
+          "download": "Download"
+        }
+      },
+      "company": {
+        "title": "Company",
+        "links": {
+          "about": "About",
+          "blog": "Blog",
+          "careers": "Careers",
+          "press": "Press kit"
+        }
+      },
+      "support": {
+        "title": "Support",
+        "links": {
+          "help": "Help center",
+          "contact": "Contact",
+          "status": "Server status",
+          "faq": "FAQ"
+        }
+      },
+      "legal": {
+        "title": "Legal",
+        "links": {
+          "privacy": "Privacy",
+          "terms": "Terms of service",
+          "refund": "Refund policy"
+        }
+      }
     },
     "copyright": "© 2026 Rise VPN. All rights reserved."
   },
@@ -138,5 +238,96 @@
   "common": {
     "downloadCta": "Download free",
     "learnMore": "Learn more"
+  },
+  "login": {
+    "heading": "Welcome to Rise VPN",
+    "subhead": "Sign in to manage your plan",
+    "signIn": {
+      "apple": "Sign in with Apple",
+      "google": "Sign in with Google"
+    },
+    "backHome": "Back to home"
+  },
+  "dashboard": {
+    "heading": "Dashboard",
+    "email": "Email",
+    "plan": {
+      "label": "Plan",
+      "free": "Free",
+      "pro": "Pro"
+    },
+    "cta": {
+      "getPro": "Get Pro",
+      "manage": "Manage Subscription"
+    },
+    "signOut": "Sign out"
+  },
+  "pricing": {
+    "heading": "Choose your plan",
+    "subhead": "Cancel anytime. No hidden fees.",
+    "currency": {
+      "usd": "USD",
+      "eur": "EUR",
+      "rub": "RUB"
+    },
+    "period": {
+      "monthly": "/month",
+      "yearly": "/year"
+    },
+    "cta": {
+      "getPro": "Get Pro",
+      "current": "Current plan"
+    },
+    "empty": {
+      "heading": "Pricing is being updated. Check back in a minute."
+    }
+  },
+  "pay": {
+    "success": {
+      "processing": "Activating your Pro subscription…",
+      "active": "Pro is active!",
+      "continue": "Go to dashboard",
+      "takingLonger": {
+        "heading": "Still processing your payment…",
+        "body": "We're confirming with the payment provider. You'll get an email when it's active."
+      },
+      "refresh": "Refresh status",
+      "contactSupport": "Contact support"
+    },
+    "fail": {
+      "title": "Payment didn't go through",
+      "body": {
+        "default": "Your card was not charged. Please try again or use a different payment method.",
+        "declined": "Your bank declined the charge. Please try a different card or contact your bank.",
+        "cancelled": "You cancelled the payment. Pick a plan when you're ready."
+      },
+      "tryAgain": "Try again",
+      "contactSupport": "Contact support"
+    }
+  },
+  "auth": {
+    "signedOut": "Signed out.",
+    "signOut": {
+      "confirm": {
+        "title": "Sign out?",
+        "body": "You'll need to sign in again to manage your subscription.",
+        "confirm": "Sign out",
+        "cancel": "Cancel"
+      }
+    }
+  },
+  "errors": {
+    "sessionExpired": "Your session expired. Please sign in again.",
+    "network": "Couldn't reach the server. Check your connection and try again.",
+    "oauthState": "Sign-in link expired. Please try again from the start.",
+    "oauthDenied": "Sign-in was cancelled or denied."
+  },
+  "navbar": {
+    "app": {
+      "pricing": "Pricing",
+      "dashboard": "Dashboard",
+      "login": "Login",
+      "signOut": "Sign out"
+    }
   }
 }

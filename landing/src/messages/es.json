@@ -1,0 +1,333 @@
+{
+  "metadata": {
+    "title": "Rise VPN — Libertad de internet sin fronteras",
+    "description": "VPN premium con protección de grado militar. Cifrado AES-256, más de 50 servidores, evita bloqueos, sin registros. Gratis para iOS, Android, Windows y macOS.",
+    "keywords": "VPN, VPN gratis, VPN seguro, AES-256, sin registros, evitar bloqueos, Rise VPN, descargar VPN",
+    "ogTitle": "Rise VPN — Libertad de internet sin fronteras",
+    "ogDescription": "VPN premium con protección de grado militar. Más de 50 países, hasta 1 Gbps, cero registros."
+  },
+  "nav": {
+    "features": "Funciones",
+    "howItWorks": "Cómo funciona",
+    "faq": "Preguntas",
+    "download": "Descargar",
+    "menu": "Menú"
+  },
+  "hero": {
+    "eyebrow": "// confiado por más de 10M de usuarios",
+    "title": "Libertad de internet <hl>sin fronteras</hl>",
+    "subtitle": "Rise VPN desbloquea cualquier contenido con protección de grado militar. Rápido. Fiable. Cero registros.",
+    "ctaPrimary": "Descargar gratis",
+    "ctaSecondary": "Cómo funciona",
+    "trust": {
+      "encryption": "Cifrado AES-256",
+      "servers": "Más de 50 países",
+      "speed": "Hasta 1 Gbps",
+      "noLogs": "Cero registros"
+    }
+  },
+  "features": {
+    "eyebrow": "// funciones",
+    "title": "Todo lo que necesitas para un internet libre",
+    "subtitle": "Protección moderna, todo en una sola app",
+    "items": [
+      {
+        "icon": "Zap",
+        "title": "Velocidad ultrarrápida",
+        "description": "Servidores de 10 Gbps con WireGuard. Transmite en 4K sin retrasos."
+      },
+      {
+        "icon": "Shield",
+        "title": "Grado militar",
+        "description": "AES-256, Perfect Forward Secrecy, kill switch y protección contra fugas de DNS."
+      },
+      {
+        "icon": "EyeOff",
+        "title": "Cero registros",
+        "description": "No guardamos ni vendemos tus datos. Verificado por auditoría independiente."
+      },
+      {
+        "icon": "Globe",
+        "title": "Más de 50 países",
+        "description": "Servidores en Europa, América y Asia. Cambia con un solo toque."
+      },
+      {
+        "icon": "Unlock",
+        "title": "Evita bloqueos",
+        "description": "La ofuscación de tráfico vence el DPI y la censura nacional."
+      },
+      {
+        "icon": "Smartphone",
+        "title": "5 dispositivos",
+        "description": "Una suscripción para móvil, tablet, portátil, escritorio y router."
+      }
+    ]
+  },
+  "howItWorks": {
+    "eyebrow": "// tres pasos",
+    "title": "Protegido en 30 segundos",
+    "subtitle": "Desde la instalación hasta la conexión, sin configuración",
+    "steps": [
+      {
+        "number": "01",
+        "icon": "Download",
+        "title": "Instala la app",
+        "description": "Disponible en iOS, Android, Windows, macOS y Linux. La instalación toma 30 segundos."
+      },
+      {
+        "number": "02",
+        "icon": "Server",
+        "title": "Elige un servidor",
+        "description": "Escoge entre más de 50 ubicaciones o pulsa Auto para la mejor opción."
+      },
+      {
+        "number": "03",
+        "icon": "ShieldCheck",
+        "title": "Conéctate",
+        "description": "Un toque y estás protegido. Tráfico cifrado, IP oculta, contenido abierto."
+      }
+    ]
+  },
+  "faq": {
+    "eyebrow": "// FAQ",
+    "title": "Preguntas frecuentes",
+    "subtitle": "¿No encuentras la respuesta? Escríbenos <tg>por Telegram</tg>",
+    "items": [
+      {
+        "q": "¿Qué es una VPN y por qué la necesito?",
+        "a": "Una VPN cifra tu tráfico de internet y oculta tu dirección IP real. Te protege de la vigilancia, desbloquea contenido restringido y asegura las redes Wi-Fi públicas."
+      },
+      {
+        "q": "¿Es seguro usar Rise VPN?",
+        "a": "Sí. Usamos cifrado AES-256, el mismo estándar que utilizan bancos y agencias de inteligencia. Sumamos kill switch, protección contra fugas de DNS, política sin registros y auditorías independientes periódicas."
+      },
+      {
+        "q": "¿Rise VPN ralentiza mi internet?",
+        "a": "Mínimamente. Nuestros servidores de 10 Gbps ejecutan WireGuard, que es más rápido que OpenVPN. La mayoría de los usuarios ve menos de un 5% de pérdida de velocidad."
+      },
+      {
+        "q": "¿Puedo usar Rise VPN en países con restricciones?",
+        "a": "Sí. La ofuscación de tráfico vence los bloqueos basados en DPI. El servicio funciona de forma fiable en Rusia, Bielorrusia, Irán y China."
+      },
+      {
+        "q": "¿Cuántos dispositivos se pueden usar?",
+        "a": "Hasta 5 dispositivos con una sola suscripción: móvil, tablet, portátil, escritorio y router. Ideal para toda la familia."
+      },
+      {
+        "q": "¿Hay un plan gratuito?",
+        "a": "Sí. El plan gratuito incluye 5 GB al mes y acceso a 3 servidores: suficiente para probar el servicio sin compromiso."
+      },
+      {
+        "q": "¿Cómo cancelo?",
+        "a": "Un clic en la configuración de la cuenta. Sin llamadas, sin correos, sin letra pequeña. Garantía de devolución de 30 días, sin preguntas."
+      },
+      {
+        "q": "¿Funciona Rise VPN con Netflix y otros servicios de streaming?",
+        "a": "Sí. Los servidores están optimizados para Netflix, YouTube, Disney+, HBO Max, Amazon Prime y más. Streaming 4K sin almacenamiento en búfer."
+      },
+      {
+        "q": "¿Registráis mi actividad?",
+        "a": "No. No guardamos historial de navegación, IPs, sesiones ni ancho de banda. Nuestra política sin registros está auditada de forma independiente por PwC."
+      },
+      {
+        "q": "¿Qué métodos de pago aceptáis?",
+        "a": "Tarjetas (Visa, Mastercard, MIR), SBP, criptomonedas (BTC, ETH, USDT), Apple Pay y Google Pay. Para máxima privacidad recomendamos criptomonedas."
+      }
+    ]
+  },
+  "footer": {
+    "tagline": "Libertad de internet sin fronteras",
+    "downloadCta": "Descargar la app",
+    "columns": {
+      "product": {
+        "title": "Producto",
+        "links": {
+          "features": "Funciones",
+          "servers": "Servidores",
+          "pricing": "Precios",
+          "download": "Descargar"
+        }
+      },
+      "company": {
+        "title": "Empresa",
+        "links": {
+          "about": "Acerca de",
+          "blog": "Blog",
+          "careers": "Empleo",
+          "press": "Kit de prensa"
+        }
+      },
+      "support": {
+        "title": "Soporte",
+        "links": {
+          "help": "Centro de ayuda",
+          "contact": "Contacto",
+          "status": "Estado de los servidores",
+          "faq": "FAQ"
+        }
+      },
+      "legal": {
+        "title": "Legal",
+        "links": {
+          "privacy": "Privacidad",
+          "terms": "Términos del servicio",
+          "refund": "Política de reembolso"
+        }
+      }
+    },
+    "copyright": "© 2026 Rise VPN. Todos los derechos reservados."
+  },
+  "privacy": {
+    "title": "Política de privacidad",
+    "metaDescription": "Qué datos recopila Rise VPN, cómo los usamos, nuestra política sin registros y tus derechos. Lenguaje claro, sin letra pequeña.",
+    "lastUpdated": "Última actualización: 26 de abril de 2026",
+    "intro": "Rise VPN se toma la privacidad en serio. A continuación, exactamente qué recopilamos, por qué, con quién lo compartimos y cómo puedes eliminar tus datos. Lenguaje claro, sin letra pequeña.",
+    "sections": [
+      {
+        "id": "data-we-collect",
+        "title": "1. Qué datos recopilamos",
+        "body": "Recopilamos deliberadamente el mínimo necesario para ofrecer el servicio.\n\n• Datos de cuenta: ID de dispositivo e identificador de dispositivo. NO requerimos correo electrónico, contraseña ni número de teléfono. El registro ocurre automáticamente al iniciar la app por primera vez (inicio como invitado).\n\n• Datos técnicos: versión de la app, sistema operativo y dirección IP durante tu sesión activa (para autenticación y para aplicar el límite de dispositivos de tu plan). La IP se borra a los 3 minutos de la desconexión.\n\n• Datos de conexión: hora de inicio/fin de la sesión, el servidor VPN que elegiste y el volumen de tráfico (solo para aplicar la cuota del plan gratuito). NO almacenamos contenido del tráfico, sitios visitados ni consultas DNS.\n\n• Pagos: los datos de la tarjeta de suscripción los procesa Stripe. Solo vemos el estado del pago y un token de suscripción, nunca tu número de tarjeta ni el CVV."
+      },
+      {
+        "id": "how-we-use",
+        "title": "2. Cómo usamos los datos",
+        "body": "Solo para que el servicio funcione:\n\n• Conceder acceso a los servidores VPN y verificar tu suscripción activa.\n• Hacer cumplir los límites de dispositivos (1 en Gratis, 3 en Premium, 6 en Ultimate) y las cuotas de tráfico.\n• Procesar pagos y renovar suscripciones.\n• Ofrecer soporte por Telegram (solo si nos contactas).\n• Mostrar anuncios, únicamente en el plan gratuito, mediante Yandex Mobile Ads. No hay anuncios en los planes de pago.\n\nNo usamos tus datos para perfiles publicitarios ni los vendemos a terceros."
+      },
+      {
+        "id": "third-parties",
+        "title": "3. Terceros",
+        "body": "Compartimos el mínimo de datos solo con los servicios sin los que no podemos operar:\n\n• Stripe (stripe.com/privacy): procesamiento de pagos y almacenamiento de métodos de pago. Solo recibimos un token de suscripción.\n• Yandex Mobile Ads (yandex.com/legal/ads_principles): anuncios solo en el plan gratuito. Compartimos un ID publicitario anónimo y el idioma del dispositivo.\n• Google Play y Apple App Store: instalación y actualización de la app, compras dentro de la tienda cuando corresponda.\n• Hosting: los servidores están en Alemania, Países Bajos, Moldavia y Estados Unidos. Todo el tráfico entre servidores va cifrado.\n\nNo trabajamos con servicios de análisis que rastreen el comportamiento dentro de la app."
+      },
+      {
+        "id": "what-we-dont-store",
+        "title": "4. Lo que NO almacenamos",
+        "body": "Política sin registros, tomada al pie de la letra:\n\n• Historial de navegación y consultas DNS: no.\n• Contenido del tráfico VPN: no.\n• Tu IP tras la desconexión: se borra en 3 minutos.\n• Metadatos de navegación que rastreen qué sitios visitaste: no.\n\nSi las autoridades lo solicitan, físicamente no podemos entregar un registro de actividad: no existe en nuestros sistemas."
+      },
+      {
+        "id": "your-rights",
+        "title": "5. Eliminación de datos y tus derechos",
+        "body": "En cualquier momento puedes:\n\n• Solicitar una copia de tus datos. Escribe a support@vpn.mydayai.uz y la enviaremos en 14 días.\n• Eliminar tu cuenta. Escríbenos por Telegram (@flawlssr) o por correo y eliminaremos todos los datos vinculados en 30 días.\n• Cancelar tu suscripción. Un clic en los ajustes de la app. Garantía de devolución de 30 días, sin preguntas.\n• Desactivar los anuncios. Cambia a un plan de pago y se desactivan."
+      },
+      {
+        "id": "security",
+        "title": "6. Seguridad",
+        "body": "Aplicamos:\n\n• Cifrado AES-256 para todo el tráfico VPN.\n• TLS 1.3 para cada conexión entre la app y nuestros servidores.\n• Kill switch y protección contra fugas de DNS en el cliente.\n• Actualizaciones regulares de dependencias y auditorías de infraestructura.\n\nNo podemos prometer seguridad absoluta en internet, pero trabajamos para reducir los riesgos al mínimo."
+      },
+      {
+        "id": "children",
+        "title": "7. Niños",
+        "body": "El servicio no está dirigido a menores de 13 años. No recopilamos información que pueda identificar a un niño. Si crees que un niño nos proporcionó datos, escribe a support@vpn.mydayai.uz y eliminaremos la cuenta."
+      },
+      {
+        "id": "changes",
+        "title": "8. Cambios en esta política",
+        "body": "Si hacemos cambios sustanciales, te avisaremos con un banner dentro de la app y actualizaremos la fecha en la parte superior. Los cambios sustanciales que amplíen la recopilación de datos requieren tu consentimiento renovado."
+      },
+      {
+        "id": "contact",
+        "title": "9. Contáctanos",
+        "body": "Correo: support@vpn.mydayai.uz\nTelegram: @flawlssr\n\nOperado por Rise VPN. Para cualquier consulta sobre privacidad, escríbenos. Respondemos en 48 horas."
+      }
+    ]
+  },
+  "notFound": {
+    "title": "Página no encontrada",
+    "description": "Es posible que el enlace esté desactualizado o haya sido eliminado. Vuelve al inicio y sigue navegando bajo la protección de Rise VPN.",
+    "cta": "Volver al inicio"
+  },
+  "common": {
+    "downloadCta": "Descargar gratis",
+    "learnMore": "Saber más"
+  },
+  "login": {
+    "heading": "Bienvenido a Rise VPN",
+    "subhead": "Inicia sesión para gestionar tu plan",
+    "signIn": {
+      "apple": "Iniciar sesión con Apple",
+      "google": "Iniciar sesión con Google"
+    },
+    "backHome": "Volver al inicio"
+  },
+  "dashboard": {
+    "heading": "Panel",
+    "email": "Correo",
+    "plan": {
+      "label": "Plan",
+      "free": "Gratis",
+      "pro": "Pro"
+    },
+    "cta": {
+      "getPro": "Obtener Pro",
+      "manage": "Gestionar suscripción"
+    },
+    "signOut": "Cerrar sesión"
+  },
+  "pricing": {
+    "heading": "Elige tu plan",
+    "subhead": "Cancela cuando quieras. Sin cargos ocultos.",
+    "currency": {
+      "usd": "USD",
+      "eur": "EUR",
+      "rub": "RUB"
+    },
+    "period": {
+      "monthly": "/mes",
+      "yearly": "/año"
+    },
+    "cta": {
+      "getPro": "Obtener Pro",
+      "current": "Plan actual"
+    },
+    "empty": {
+      "heading": "Los precios se están actualizando. Vuelve en un minuto."
+    }
+  },
+  "pay": {
+    "success": {
+      "processing": "Activando tu suscripción Pro…",
+      "active": "¡Pro está activo!",
+      "continue": "Ir al panel",
+      "takingLonger": {
+        "heading": "El pago todavía se está procesando…",
+        "body": "Estamos confirmando con el proveedor de pagos. Te enviaremos un correo cuando se active."
+      },
+      "refresh": "Actualizar estado",
+      "contactSupport": "Contactar con soporte"
+    },
+    "fail": {
+      "title": "El pago no se completó",
+      "body": {
+        "default": "No se ha cargado nada a tu tarjeta. Inténtalo de nuevo o usa otro método de pago.",
+        "declined": "Tu banco rechazó el cargo. Prueba con otra tarjeta o contacta con tu banco.",
+        "cancelled": "Cancelaste el pago. Elige un plan cuando estés listo."
+      },
+      "tryAgain": "Intentar de nuevo",
+      "contactSupport": "Contactar con soporte"
+    }
+  },
+  "auth": {
+    "signedOut": "Sesión cerrada.",
+    "signOut": {
+      "confirm": {
+        "title": "¿Cerrar sesión?",
+        "body": "Tendrás que iniciar sesión de nuevo para gestionar tu suscripción.",
+        "confirm": "Cerrar sesión",
+        "cancel": "Cancelar"
+      }
+    }
+  },
+  "errors": {
+    "sessionExpired": "Tu sesión expiró. Inicia sesión de nuevo.",
+    "network": "No se pudo conectar con el servidor. Revisa tu conexión e inténtalo de nuevo.",
+    "oauthState": "El enlace de inicio de sesión expiró. Inténtalo de nuevo desde el principio.",
+    "oauthDenied": "El inicio de sesión fue cancelado o denegado."
+  },
+  "navbar": {
+    "app": {
+      "pricing": "Precios",
+      "dashboard": "Panel",
+      "login": "Iniciar sesión",
+      "signOut": "Cerrar sesión"
+    }
+  }
+}
