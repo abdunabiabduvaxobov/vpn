@@ -128,6 +128,19 @@ func setupWebhookTestDB(t *testing.T) *gorm.DB {
 			started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			expires_at TIMESTAMP
 		)`,
+		// CR-02: mirror the production UNIQUE rule from migration 020 + 021.
+		// Production uses COALESCE((payload->>'timestamp')::text,
+		//                          (payload->>'cancelledAt')::text,
+		//                          'no-timestamp')
+		// SQLite equivalent: COALESCE(json_extract(payload,'$.timestamp'),
+		//                             json_extract(payload,'$.cancelledAt'),
+		//                             'no-timestamp')
+		// SQLite supports CREATE UNIQUE INDEX on expressions, so we drop the
+		// inline UNIQUE on (event_type, contract_id, payload) and use a
+		// separate expression index that matches production semantics.
+		// Without this alignment, the test suite cannot regression-test the
+		// production idempotency rule (TestHandleLavaWebhook_DuplicateNoop
+		// would pass on byte-identical bodies regardless of the prod rule).
 		`CREATE TABLE lava_webhook_events (
 			id TEXT PRIMARY KEY DEFAULT ` + uuidDefault + `,
 			event_type TEXT NOT NULL,
@@ -136,9 +149,18 @@ func setupWebhookTestDB(t *testing.T) *gorm.DB {
 			payload TEXT NOT NULL,
 			received_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			processed_at TIMESTAMP,
-			error TEXT,
-			UNIQUE (event_type, contract_id, payload)
+			error TEXT
 		)`,
+		`CREATE UNIQUE INDEX idx_lava_webhook_events_natural_key
+			ON lava_webhook_events (
+				event_type,
+				contract_id,
+				COALESCE(
+					json_extract(payload, '$.timestamp'),
+					json_extract(payload, '$.cancelledAt'),
+					'no-timestamp'
+				)
+			)`,
 	}
 	for _, s := range stmts {
 		if err := db.Exec(s).Error; err != nil {
@@ -631,6 +653,80 @@ func TestHandleLavaWebhook_RecurringFailed_FlipsBothRows(t *testing.T) {
 	}
 	if subReload.IsActive {
 		t.Errorf("D-19 BLOCKER #1: subscriptions.is_active must flip to false, got true")
+	}
+}
+
+// TestHandleLavaWebhook_NaturalKey_NoTimestampCollision covers CR-02 —
+// two payloads with the SAME (event_type, contract_id) and BOTH missing
+// `timestamp` AND `cancelledAt` must dedup on the second delivery. Without
+// the migration 021 sentinel ('no-timestamp'), the COALESCE third column
+// resolves to NULL on each insert and Postgres treats NULL<>NULL in unique
+// indexes — both inserts would succeed, breaking idempotency. The SQLite
+// test schema mirrors the production COALESCE rule (see setupWebhookTestDB).
+func TestHandleLavaWebhook_NaturalKey_NoTimestampCollision(t *testing.T) {
+	db := setupWebhookTestDB(t)
+	// Seed plans/user/contract so payment.failed has an invoice to act on
+	// (handler logs Warn for missing invoice but returns nil — we just need
+	// the natural-key dedup path to fire).
+	_ = seedWebhookFixture(t, db, "alice@example.com", "ctr-nonull", "lava-off-nonull")
+
+	app := mkWebhookApp(t, db, "secret", "")
+	// Payload lacks BOTH `timestamp` AND `cancelledAt`. payment.failed branch
+	// is benign-on-missing-invoice so this exercises the dedup-only path.
+	body := `{"eventType":"payment.failed","contractId":"ctr-nonull-key","amount":5,"currency":"USD"}`
+
+	r1 := deliverWebhook(t, app, "secret", body)
+	if r1.Status != 200 {
+		t.Fatalf("first delivery expected 200, got %d body=%s", r1.Status, r1.Body)
+	}
+	r2 := deliverWebhook(t, app, "secret", body)
+	if r2.Status != 200 {
+		t.Fatalf("duplicate delivery expected 200, got %d body=%s", r2.Status, r2.Body)
+	}
+
+	// Exactly ONE event row must exist — proves the sentinel collision works.
+	var n int64
+	if err := db.Model(&model.LavaWebhookEvent{}).
+		Where("contract_id = ? AND event_type = ?", "ctr-nonull-key", "payment.failed").
+		Count(&n).Error; err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("CR-02: NULL-hole regression — expected exactly 1 row for no-timestamp payload, got %d", n)
+	}
+}
+
+// TestHandleLavaWebhook_NaturalKey_DistinctTimestampsInsertBoth covers the
+// inverse: two events sharing (event_type, contract_id) but with DIFFERENT
+// `timestamp` values must BOTH insert — proves the natural key still
+// discriminates real lava retries that carry distinct timestamps.
+func TestHandleLavaWebhook_NaturalKey_DistinctTimestampsInsertBoth(t *testing.T) {
+	db := setupWebhookTestDB(t)
+	fix := seedWebhookFixture(t, db, "alice@example.com", "ctr-distinct", "lava-off-distinct")
+	_ = fix
+
+	app := mkWebhookApp(t, db, "secret", "")
+	// First payload: payment.failed at t=10:00:00Z
+	body1 := `{"eventType":"payment.failed","contractId":"ctr-distinct-key","timestamp":"2026-05-23T10:00:00Z","amount":5,"currency":"USD"}`
+	// Second payload: SAME natural-key-prefix but timestamp differs by 1s.
+	body2 := `{"eventType":"payment.failed","contractId":"ctr-distinct-key","timestamp":"2026-05-23T10:00:01Z","amount":5,"currency":"USD"}`
+
+	if got := deliverWebhook(t, app, "secret", body1); got.Status != 200 {
+		t.Fatalf("first delivery expected 200, got %d body=%s", got.Status, got.Body)
+	}
+	if got := deliverWebhook(t, app, "secret", body2); got.Status != 200 {
+		t.Fatalf("second delivery expected 200, got %d body=%s", got.Status, got.Body)
+	}
+
+	// BOTH rows must exist — distinct timestamps are not deduplicated.
+	var n int64
+	if err := db.Model(&model.LavaWebhookEvent{}).
+		Where("contract_id = ? AND event_type = ?", "ctr-distinct-key", "payment.failed").
+		Count(&n).Error; err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("CR-02: natural-key discriminator broken — distinct timestamps must produce 2 rows, got %d", n)
 	}
 }
 

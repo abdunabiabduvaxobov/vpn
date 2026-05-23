@@ -140,9 +140,11 @@ func TestMigrations019_020(t *testing.T) {
 	}
 	sort.Strings(sqlFiles)
 	for _, name := range sqlFiles {
-		// We apply through 020 here so the final assertions see both 019 and 020 effects;
-		// the per-stage assertions break this sequence below.
-		if name == "019_plans_catalog.sql" || name == "020_lava_payments.sql" {
+		// We apply 019/020/021 explicitly below in order with per-stage assertions;
+		// skip them here so they're not applied out of band.
+		if name == "019_plans_catalog.sql" ||
+			name == "020_lava_payments.sql" ||
+			name == "021_lava_webhook_natural_key_no_null_hole.sql" {
 			continue // applied with assertions below
 		}
 		applyMigration(t, db, filepath.Join(dir, name))
@@ -238,5 +240,41 @@ func TestMigrations019_020(t *testing.T) {
 		INSERT INTO lava_webhook_events (event_type, contract_id, payload)
 		VALUES ('subscription.cancelled', 'contract-X', $1::jsonb)`, payload1); err == nil {
 		t.Errorf("D-10 COALESCE: duplicate subscription.cancelled (no timestamp) must violate unique")
+	}
+
+	// CR-02 fix: apply migration 021 and verify the NULL-hole is closed.
+	// Two payloads that lack BOTH `timestamp` AND `cancelledAt` would previously
+	// resolve to COALESCE(NULL,NULL)=NULL — and Postgres treats NULL<>NULL in
+	// unique indexes, so both inserts would succeed (idempotency lost).
+	// Migration 021 adds a 'no-timestamp' sentinel so the third column is
+	// always non-NULL → the second insert must now collide.
+	applyMigration(t, db, filepath.Join(dir, "021_lava_webhook_natural_key_no_null_hole.sql"))
+
+	noTSPayload := `{"contractId":"contract-Y"}`
+	if _, err := db.Exec(`
+		INSERT INTO lava_webhook_events (event_type, contract_id, payload)
+		VALUES ('payment.failed', 'contract-Y', $1::jsonb)`, noTSPayload); err != nil {
+		t.Fatalf("CR-02: first no-timestamp event insert: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO lava_webhook_events (event_type, contract_id, payload)
+		VALUES ('payment.failed', 'contract-Y', $1::jsonb)`, noTSPayload); err == nil {
+		t.Errorf("CR-02: duplicate no-timestamp payload must violate unique (NULL hole closed)")
+	}
+
+	// Conversely, two events with the SAME (event_type, contract_id) but
+	// DIFFERENT `timestamp` values MUST both insert — proves the natural key
+	// still discriminates real retries with distinct timestamps.
+	tsPayloadA := `{"timestamp":"2026-05-23T10:00:00Z","contractId":"contract-Z"}`
+	tsPayloadB := `{"timestamp":"2026-05-23T10:00:01Z","contractId":"contract-Z"}`
+	if _, err := db.Exec(`
+		INSERT INTO lava_webhook_events (event_type, contract_id, payload)
+		VALUES ('payment.success', 'contract-Z', $1::jsonb)`, tsPayloadA); err != nil {
+		t.Fatalf("CR-02: first distinct-timestamp insert: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO lava_webhook_events (event_type, contract_id, payload)
+		VALUES ('payment.success', 'contract-Z', $1::jsonb)`, tsPayloadB); err != nil {
+		t.Errorf("CR-02: distinct timestamps must NOT collide; got %v", err)
 	}
 }
