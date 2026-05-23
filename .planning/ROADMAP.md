@@ -77,9 +77,9 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
   - [x] 02-05-PLAN.md (wave 3) — Apple+Google signin handlers + main.go wiring [AUTH-01,02,04,05,06,07]
   - [x] 02-06-PLAN.md (wave 4) — Logout handler + protected-group mount [AUTH-07,08]
   - [x] 02-07-PLAN.md (wave 5) — docs/auth-sso-api.md API contract [AUTH-01,02,08]
-  - [ ] 02-08-PLAN.md (wave 1, gap-closure) — handler hardening: empty-sub guards [CR-01], auto-link Step B transaction [CR-02], parseGuestJWT role check [WR-01], logout ttl boundary [WR-02], free-subscription row for new SSO users [WR-03]
-  - [ ] 02-09-PLAN.md (wave 2, gap-closure, depends 02-08) — repository layer: PromoteGuestToSSO updates full_name [WR-04]
-  - [ ] 02-10-PLAN.md (wave 2, gap-closure, depends 02-08) — polish: go.mod 1.22 [IN-01], seedAdminUser tier=free [IN-02], migration 018 doc comment [IN-03]
+  - [x] 02-08-PLAN.md (wave 1, gap-closure) — handler hardening: empty-sub guards [CR-01], auto-link Step B transaction [CR-02], parseGuestJWT role check [WR-01], logout ttl boundary [WR-02], free-subscription row for new SSO users [WR-03]
+  - [x] 02-09-PLAN.md (wave 2, gap-closure, depends 02-08) — repository layer: PromoteGuestToSSO updates full_name [WR-04]
+  - [x] 02-10-PLAN.md (wave 2, gap-closure, depends 02-08) — polish: go.mod 1.22 [IN-01], seedAdminUser tier=free [IN-02], migration 018 doc comment [IN-03]
 
 ### Phase 3: Lava.top + plans catalog
 **Goal**: A real card payment via lava.top sandbox grants Pro to a specific signed-in user within seconds of the webhook arriving, with strict idempotency, all plan limits and prices managed in the `plans` / `plan_offers` / `plan_servers` tables (no hardcoded `PlanLimits` map).
