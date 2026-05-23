@@ -1148,7 +1148,10 @@ func TestAuth_JWTShapeUnchanged(t *testing.T) {
 	var p ssoResponse
 	_ = json.Unmarshal(body, &p)
 
-	// Decode access_token and assert claim keys are exactly {sub, tier, role, name, iat, exp}.
+	// Decode access_token and assert claim keys are exactly the expected set.
+	// Phase 3 D-29: `plan_id` was added so middleware-side server-access
+	// enforcement can skip a DB lookup per request. Keeping it in the canonical
+	// set so this regression guard catches any FUTURE accidental additions.
 	claims := jwt.MapClaims{}
 	_, err := jwt.ParseWithClaims(p.Data.AccessToken, &claims, func(t *jwt.Token) (interface{}, error) {
 		return []byte(cfg.JWTSecret), nil
@@ -1156,7 +1159,7 @@ func TestAuth_JWTShapeUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse access token: %v", err)
 	}
-	want := map[string]bool{"sub": true, "tier": true, "role": true, "name": true, "iat": true, "exp": true}
+	want := map[string]bool{"sub": true, "tier": true, "role": true, "name": true, "plan_id": true, "iat": true, "exp": true}
 	for k := range claims {
 		if !want[k] {
 			t.Errorf("unexpected claim %q in access_token (AUTH-07 shape regression)", k)

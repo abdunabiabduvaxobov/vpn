@@ -96,7 +96,7 @@ func AdminLogin(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 			})
 		}
 
-		tokens, err := generateTokens(user.ID, user.SubscriptionTier, user.Role, user.FullName, cfg.JWTSecret)
+		tokens, err := generateTokens(user.ID, user.SubscriptionTier, user.Role, user.FullName, user.PlanID, cfg.JWTSecret)
 		if err != nil {
 			logger.Error("admin-login: failed to generate tokens", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -276,7 +276,7 @@ func RefreshToken(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Han
 				return fmt.Errorf("loading user: %w", err)
 			}
 
-			newTokens, err := generateTokens(user.ID, user.SubscriptionTier, user.Role, user.FullName, cfg.JWTSecret)
+			newTokens, err := generateTokens(user.ID, user.SubscriptionTier, user.Role, user.FullName, user.PlanID, cfg.JWTSecret)
 			if err != nil {
 				return fmt.Errorf("generating tokens: %w", err)
 			}
@@ -404,7 +404,7 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 					)
 					// Fall through to fresh-user path so the user is not locked out.
 				} else {
-					tokens, err := generateTokens(user.ID, user.SubscriptionTier, user.Role, user.FullName, cfg.JWTSecret)
+					tokens, err := generateTokens(user.ID, user.SubscriptionTier, user.Role, user.FullName, user.PlanID, cfg.JWTSecret)
 					if err != nil {
 						logger.Error("guest login: failed to generate tokens for known device", zap.Error(err))
 						return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -517,7 +517,23 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 			}
 		}
 
-		tokens, err := generateTokens(user.ID, "free", "user", user.FullName, cfg.JWTSecret)
+		// Phase 3 D-29: assign system plan_id to the fresh guest user so their
+		// JWT carries plan_id from the very first token. Repository's
+		// FindSystemPlanID returns the UUID of the single is_system=true plan
+		// (idx_plans_one_system partial unique enforces exactly one row).
+		// Failure is non-fatal — the middleware's DB fallback path covers it.
+		if systemPlanID, sysErr := repository.FindSystemPlanID(db); sysErr == nil && systemPlanID != "" {
+			if uErr := db.Model(&model.User{}).Where("id = ?", user.ID).Update("plan_id", systemPlanID).Error; uErr != nil {
+				logger.Warn("guest login: failed to set system plan_id on fresh user (continuing)",
+					zap.String("user_id", user.ID),
+					zap.Error(uErr),
+				)
+			} else {
+				user.PlanID = systemPlanID
+			}
+		}
+
+		tokens, err := generateTokens(user.ID, "free", "user", user.FullName, user.PlanID, cfg.JWTSecret)
 		if err != nil {
 			logger.Error("failed to generate guest tokens", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -571,17 +587,23 @@ func storeRefreshSession(db *gorm.DB, userID, refreshToken string) error {
 //
 // Access token TTL is intentionally short so admin role changes take effect
 // quickly. The connection handler reads tier directly from the DB anyway.
-func generateTokens(userID, tier, role, name, secret string) (*authResponse, error) {
+//
+// Phase 3 (D-29): adds the `plan_id` claim so server-access enforcement at the
+// handler layer can skip a DB lookup per request. Backward-compat: empty
+// planID is OK — the middleware (middleware/auth.go) falls back to FindUserByID
+// for the 5-minute access-token transition window.
+func generateTokens(userID, tier, role, name, planID, secret string) (*authResponse, error) {
 	now := time.Now()
 	accessExpiry := now.Add(5 * time.Minute)
 
 	accessClaims := jwt.MapClaims{
-		"sub":  userID,
-		"tier": tier,
-		"role": role,
-		"name": name,
-		"iat":  now.Unix(),
-		"exp":  accessExpiry.Unix(),
+		"sub":     userID,
+		"tier":    tier,
+		"role":    role,
+		"name":    name,
+		"plan_id": planID,
+		"iat":     now.Unix(),
+		"exp":     accessExpiry.Unix(),
 	}
 
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
@@ -954,7 +976,23 @@ func AppleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier a
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
 
-		tokens, err := generateTokens(user.ID, user.SubscriptionTier, user.Role, user.FullName, cfg.JWTSecret)
+		// Phase 3 D-29: backfill plan_id for SSO users created without one
+		// (resolveSSOUser doesn't set it). New rows from Step D, guest-promotions,
+		// and email-auto-linked rows may all land with empty plan_id; fill from
+		// FindSystemPlanID so the JWT carries the claim. Failure is non-fatal —
+		// middleware fallback covers it.
+		if user.PlanID == "" {
+			if systemPlanID, sysErr := repository.FindSystemPlanID(db); sysErr == nil && systemPlanID != "" {
+				if uErr := db.Model(&model.User{}).Where("id = ?", user.ID).Update("plan_id", systemPlanID).Error; uErr == nil {
+					user.PlanID = systemPlanID
+				} else {
+					logger.Warn("apple signin: failed to set system plan_id (continuing)",
+						zap.String("user_id", user.ID), zap.Error(uErr))
+				}
+			}
+		}
+
+		tokens, err := generateTokens(user.ID, user.SubscriptionTier, user.Role, user.FullName, user.PlanID, cfg.JWTSecret)
 		if err != nil {
 			logger.Error("apple signin: generate tokens", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
@@ -1007,7 +1045,19 @@ func GoogleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier 
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
 
-		tokens, err := generateTokens(user.ID, user.SubscriptionTier, user.Role, user.FullName, cfg.JWTSecret)
+		// Phase 3 D-29: same plan_id backfill as AppleSignIn. See comment there.
+		if user.PlanID == "" {
+			if systemPlanID, sysErr := repository.FindSystemPlanID(db); sysErr == nil && systemPlanID != "" {
+				if uErr := db.Model(&model.User{}).Where("id = ?", user.ID).Update("plan_id", systemPlanID).Error; uErr == nil {
+					user.PlanID = systemPlanID
+				} else {
+					logger.Warn("google signin: failed to set system plan_id (continuing)",
+						zap.String("user_id", user.ID), zap.Error(uErr))
+				}
+			}
+		}
+
+		tokens, err := generateTokens(user.ID, user.SubscriptionTier, user.Role, user.FullName, user.PlanID, cfg.JWTSecret)
 		if err != nil {
 			logger.Error("google signin: generate tokens", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})

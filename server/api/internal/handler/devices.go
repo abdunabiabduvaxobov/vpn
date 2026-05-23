@@ -414,7 +414,7 @@ func LinkDevice(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 		}
 
 		// Issue tokens that authenticate the caller as the owner.
-		tokens, err := generateTokens(owner.ID, owner.SubscriptionTier, owner.Role, owner.FullName, cfg.JWTSecret)
+		tokens, err := generateTokens(owner.ID, owner.SubscriptionTier, owner.Role, owner.FullName, owner.PlanID, cfg.JWTSecret)
 		if err != nil {
 			logger.Error("link: token generation failed", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
