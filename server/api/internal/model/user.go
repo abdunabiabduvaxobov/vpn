@@ -43,6 +43,7 @@ type User struct {
 	EmailVerified       bool      `json:"email_verified" gorm:"column:email_verified;default:false"`
 	EmailIsPrivateRelay bool      `json:"-" gorm:"column:email_is_private_relay;default:false"`
 	AuthProvider        string    `json:"auth_provider" gorm:"column:auth_provider;default:guest"`
+	PlanID              string    `json:"plan_id" gorm:"column:plan_id;type:uuid;not null;index"`
 	CreatedAt           time.Time `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt           time.Time `json:"-" gorm:"autoUpdateTime"`
 }

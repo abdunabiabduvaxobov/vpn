@@ -2,36 +2,23 @@ package model
 
 import "time"
 
-// UnlimitedServers is a sentinel value for MaxServers meaning no server cap.
+// UnlimitedServers / UnlimitedDevices are sentinel values for Plan.MaxServers /
+// Plan.MaxDevices. Handlers reading plans.* check for these before applying
+// a slice or cap. Lives here for backward import compatibility — handlers
+// like connection.go, devices.go, servers.go reference model.UnlimitedDevices /
+// model.UnlimitedServers directly.
 const UnlimitedServers = -1
-
-// UnlimitedDevices is a sentinel value for MaxDevices meaning no device cap.
 const UnlimitedDevices = -1
 
-// Subscription tracks a user's payment/plan status.
+// Subscription is the canonical "current entitlement" record. Phase 3 drops
+// stripe_id (migration 020) and adds lava_contract_id. The legacy plan-limits
+// map is DELETED — limits now live in the plans table (queried via plan_repo).
 type Subscription struct {
-	ID        string     `json:"id" gorm:"primaryKey;type:uuid;default:gen_random_uuid()"`
-	UserID    string     `json:"user_id" gorm:"not null;index"`
-	Plan      string     `json:"plan" gorm:"not null;default:free"` // free, premium, ultimate
-	StripeID  string     `json:"-" gorm:"type:varchar(255)"`
-	IsActive  bool       `json:"is_active" gorm:"default:true"`
-	StartedAt time.Time  `json:"started_at" gorm:"autoCreateTime"`
-	ExpiresAt *time.Time `json:"expires_at"`
-}
-
-// PlanLimits maps subscription tier names to their resource limits.
-// Use UnlimitedServers / UnlimitedDevices (-1) for plans without a cap.
-//
-// Device counts intentionally tighten upgrade incentives:
-//   - free: 1 device — single phone, encourages upgrade for tablets/laptops.
-//   - premium: 3 devices — fits a couple sharing the plan.
-//   - ultimate: 6 devices — small family plan ceiling.
-var PlanLimits = map[string]struct {
-	MaxDevices     int
-	MaxServers     int // UnlimitedServers (-1) = no cap
-	SpeedLimitMbps int // 0 = unlimited
-}{
-	"free":     {MaxDevices: 1, MaxServers: 3, SpeedLimitMbps: 50},
-	"premium":  {MaxDevices: 3, MaxServers: UnlimitedServers, SpeedLimitMbps: 0},
-	"ultimate": {MaxDevices: 6, MaxServers: UnlimitedServers, SpeedLimitMbps: 0},
+	ID             string     `json:"id"                gorm:"primaryKey;type:uuid;default:gen_random_uuid()"`
+	UserID         string     `json:"user_id"           gorm:"not null;index"`
+	Plan           string     `json:"plan"              gorm:"not null;default:free"`
+	LavaContractID *string    `json:"-"                 gorm:"column:lava_contract_id;type:varchar(64);index"`
+	IsActive       bool       `json:"is_active"         gorm:"default:true"`
+	StartedAt      time.Time  `json:"started_at"        gorm:"autoCreateTime"`
+	ExpiresAt      *time.Time `json:"expires_at"`
 }
