@@ -321,6 +321,26 @@ func main() {
 	// via server-side API key so admin can pick lava offers from a dropdown.
 	// Inherits AuthRequired + AdminRequired + AuditLog from the admin group.
 	admin.Get("/lava/products", handler.AdminListLavaProducts(logger, lavaClient))
+	// Phase 3 admin plans CRUD (PAY-13/14/15). All routes inherit
+	// AuthRequired + AdminRequired + AuditLog from the admin group.
+	// Every write handler busts cache:plans:public:* via cache.BustPlansCache
+	// so the public /pricing page reflects admin edits within one HTTP cycle
+	// (the 60s TTL is the bounded fallback if the bust DEL fails).
+	// describeAction extension in middleware/audit.go labels these
+	// with create_plan / replace_plan_offer / etc.
+	admin.Get("/plans", handler.AdminListPlans(logger, db))
+	admin.Post("/plans", handler.AdminCreatePlan(logger, db, redisClient))
+	admin.Get("/plans/:id", handler.AdminGetPlan(logger, db))
+	admin.Patch("/plans/:id", handler.AdminUpdatePlan(logger, db, redisClient))
+	admin.Delete("/plans/:id", handler.AdminDeletePlan(logger, db, redisClient))
+	admin.Put("/plans/:id/servers", handler.AdminReplacePlanServers(logger, db, redisClient))
+	admin.Post("/plans/:id/servers/:server_id", handler.AdminAddPlanServer(logger, db, redisClient))
+	admin.Delete("/plans/:id/servers/:server_id", handler.AdminRemovePlanServer(logger, db, redisClient))
+	admin.Get("/plans/:id/offers", handler.AdminListPlanOffers(logger, db))
+	admin.Post("/plans/:id/offers", handler.AdminCreatePlanOffer(logger, db, redisClient))
+	admin.Patch("/plans/:id/offers/:offer_id", handler.AdminUpdatePlanOffer(logger, db, redisClient))
+	admin.Delete("/plans/:id/offers/:offer_id", handler.AdminDeletePlanOffer(logger, db, redisClient))
+	admin.Post("/plans/:id/offers/:offer_id/replace", handler.AdminReplacePlanOffer(logger, db, redisClient))
 	// Mounted under /admin so it's covered by the version-gate prefix
 	// skip, the AdminRequired middleware, and the audit middleware
 	// automatically. Full path: /api/v1/admin/change-password.
