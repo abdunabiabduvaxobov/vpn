@@ -243,7 +243,16 @@ func handleLavaRecurringSuccess(logger *zap.Logger, db *gorm.DB, event *lava.Web
 
 	// SetUserPlan with new expires_at (keeps same plan_id; just refreshes expiry).
 	contractID := event.ContractID
-	if err := repository.SetUserPlan(db, parent.UserID, planIDFromContract(db, parent), &contractID, &newExp); err != nil {
+	planID, planErr := planIDFromContract(db, parent)
+	if planErr != nil {
+		// WR-01: double-failure (offer gone AND system plan gone — exceedingly
+		// rare, only during a migration in-flight). Surface the error so the
+		// outer wrapper records it in lava_webhook_events.error and the
+		// operator sees the failed retries instead of fail-stuck silently
+		// returning record-not-found on every retry.
+		return fmt.Errorf("recurring.success: planIDFromContract: %w", planErr)
+	}
+	if err := repository.SetUserPlan(db, parent.UserID, planID, &contractID, &newExp); err != nil {
 		return fmt.Errorf("recurring.success: SetUserPlan: %w", err)
 	}
 
@@ -392,13 +401,31 @@ func periodicityToDuration(p string) time.Duration {
 // resolve the plan_id. RESEARCH §1.5 confirms parent.OfferID is the lava
 // offer UUID; FindOfferByLavaOfferID then resolves to local plan_id.
 //
-// Returns the system plan ID on any failure (fail-safe — never elevate).
-func planIDFromContract(db *gorm.DB, contract *model.LavaContract) string {
-	if offer, err := repository.FindOfferByLavaOfferID(db, contract.OfferID); err == nil {
-		return offer.PlanID
+// Resolution order (fail-safe — never elevates beyond the system plan):
+//  1. Offer lookup by lava_offer_id → return offer.PlanID.
+//  2. On ErrNotFound for offer: fall back to the system plan.
+//  3. On ErrNotFound for system plan too: return a structured error.
+//  4. On any non-NotFound DB error from either step: return the wrapped error
+//     immediately (don't paper over a DB outage as "fall back to free").
+//
+// WR-01: previously this returned "" on any failure, which the caller
+// silently forwarded to SetUserPlan — producing record-not-found, a 500,
+// and a lava retry-storm that hits the same condition forever. The error
+// return lets the caller log loudly and the event row carry the cause.
+func planIDFromContract(db *gorm.DB, contract *model.LavaContract) (string, error) {
+	offer, oerr := repository.FindOfferByLavaOfferID(db, contract.OfferID)
+	if oerr == nil {
+		return offer.PlanID, nil
 	}
-	if sid, err := repository.FindSystemPlanID(db); err == nil {
-		return sid
+	if !errors.Is(oerr, repository.ErrNotFound) {
+		return "", fmt.Errorf("planIDFromContract: lookup offer %q: %w", contract.OfferID, oerr)
 	}
-	return ""
+	sid, serr := repository.FindSystemPlanID(db)
+	if serr == nil {
+		return sid, nil
+	}
+	if errors.Is(serr, repository.ErrNotFound) {
+		return "", fmt.Errorf("planIDFromContract: offer %q not found AND no system plan exists", contract.OfferID)
+	}
+	return "", fmt.Errorf("planIDFromContract: lookup system plan: %w", serr)
 }
