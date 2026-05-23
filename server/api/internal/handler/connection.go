@@ -94,11 +94,44 @@ func RegisterConnection(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		// Enforce device limit using an atomic INSERT … SELECT so that the
 		// count check and the row insertion happen in a single statement,
 		// eliminating the TOCTOU race between COUNT and INSERT.
-		limits, ok := legacyPlanLimits[tier]
-		if !ok {
-			// Unknown tier — fall back to the free plan limits.
-			limits = legacyPlanLimits["free"]
+		//
+		// Read device limit from the plan row via plan_id (PAY-11 / D-24).
+		// resolveUserPlanID handles the JWT-claim-vs-DB-fallback during the
+		// plan 03-07 backward-compat window.
+		planID, perr := resolveUserPlanID(c, db)
+		if perr != nil {
+			logger.Error("failed to resolve plan_id for RegisterConnection",
+				zap.String("user_id", userID), zap.Error(perr))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "internal server error",
+			})
 		}
+		plan, perr := repository.FindPlanByID(db, planID)
+		if perr != nil {
+			// Fallback to system plan limits on a stale-plan_id row — fail safe.
+			logger.Warn("FindPlanByID failed; falling back to system plan",
+				zap.String("plan_id", planID), zap.Error(perr))
+			systemPlanID, sperr := repository.FindSystemPlanID(db)
+			if sperr != nil {
+				logger.Error("FindSystemPlanID failed", zap.Error(sperr))
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "internal server error",
+				})
+			}
+			plan, sperr = repository.FindPlanByID(db, systemPlanID)
+			if sperr != nil {
+				logger.Error("FindPlanByID(system) failed", zap.Error(sperr))
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "internal server error",
+				})
+			}
+		}
+		// Compose a "limits" struct that the existing code below can keep using.
+		limits := struct {
+			MaxDevices int
+			MaxServers int
+		}{MaxDevices: plan.MaxDevices, MaxServers: plan.MaxServers}
+		_ = tier // tier retained as a log-context variable
 
 		conn := model.Connection{
 			UserID:   userID,

@@ -98,14 +98,30 @@ func CreateShareCode(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.
 				"error": "internal server error",
 			})
 		}
-		tier := user.SubscriptionTier
-		if tier == "" {
-			tier = "free"
+		// PAY-11 / D-24: read device cap from the plan row via the user's plan_id.
+		plan, perr := repository.FindPlanByID(db, user.PlanID)
+		if perr != nil {
+			logger.Warn("CreateShareCode: FindPlanByID failed; falling back to system plan",
+				zap.String("plan_id", user.PlanID), zap.Error(perr))
+			systemPlanID, sperr := repository.FindSystemPlanID(db)
+			if sperr != nil {
+				logger.Error("CreateShareCode: FindSystemPlanID failed", zap.Error(sperr))
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "internal server error",
+				})
+			}
+			plan, sperr = repository.FindPlanByID(db, systemPlanID)
+			if sperr != nil {
+				logger.Error("CreateShareCode: FindPlanByID(system) failed", zap.Error(sperr))
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "internal server error",
+				})
+			}
 		}
-		limits, ok := legacyPlanLimits[tier]
-		if !ok {
-			limits = legacyPlanLimits["free"]
-		}
+		limits := struct {
+			MaxDevices int
+			MaxServers int
+		}{MaxDevices: plan.MaxDevices, MaxServers: plan.MaxServers}
 		if limits.MaxDevices != model.UnlimitedDevices {
 			deviceCount, err := repository.CountDevicesByUser(db, userID)
 			if err != nil {
@@ -250,14 +266,24 @@ func LinkDevice(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 			}
 			owner = loaded
 
-			tier := owner.SubscriptionTier
-			if tier == "" {
-				tier = "free"
+			// PAY-11 / D-24: read device cap from the owner's plan row via the tx.
+			plan, perr := repository.FindPlanByID(tx, owner.PlanID)
+			if perr != nil {
+				logger.Warn("LinkDevice: FindPlanByID failed; falling back to system plan",
+					zap.String("plan_id", owner.PlanID), zap.Error(perr))
+				systemPlanID, sperr := repository.FindSystemPlanID(tx)
+				if sperr != nil {
+					return fmt.Errorf("link: find system plan: %w", sperr)
+				}
+				plan, sperr = repository.FindPlanByID(tx, systemPlanID)
+				if sperr != nil {
+					return fmt.Errorf("link: find system plan row: %w", sperr)
+				}
 			}
-			limits, ok := legacyPlanLimits[tier]
-			if !ok {
-				limits = legacyPlanLimits["free"]
-			}
+			limits := struct {
+				MaxDevices int
+				MaxServers int
+			}{MaxDevices: plan.MaxDevices, MaxServers: plan.MaxServers}
 
 			// 3. Capacity check inside the transaction. The redeeming
 			//    device is treated as already-counted if it is currently
