@@ -134,12 +134,25 @@ func AdminUpdateUser(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 
 		updates := make(map[string]interface{})
 		if req.SubscriptionTier != "" {
-			if _, ok := legacyPlanLimits[req.SubscriptionTier]; !ok {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-					"error": "subscription_tier must be one of: free, premium, ultimate",
+			// PAY-11 / D-24: validate tier against the plans table (no hardcoded enum).
+			// Lookup BY CODE — both active and inactive plans resolve so admins can
+			// re-attach a user to a soft-deleted plan if needed (grandfathering use case).
+			plan, perr := repository.FindPlanByCode(db, req.SubscriptionTier)
+			if perr != nil {
+				if errors.Is(perr, repository.ErrNotFound) {
+					return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+						"error": "subscription_tier must match an existing plan code",
+					})
+				}
+				logger.Error("AdminUpdateUser: FindPlanByCode failed",
+					zap.String("code", req.SubscriptionTier), zap.Error(perr))
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "internal server error",
 				})
 			}
 			updates["subscription_tier"] = req.SubscriptionTier
+			// Keep users.plan_id in sync with the denormalised tier string.
+			updates["plan_id"] = plan.ID
 		}
 		if req.Role != "" {
 			if req.Role != "user" && req.Role != "admin" {
