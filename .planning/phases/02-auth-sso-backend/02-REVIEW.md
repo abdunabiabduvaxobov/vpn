@@ -1,18 +1,11 @@
 ---
 phase: 02-auth-sso-backend
-reviewed: 2026-05-22T00:00:00Z
+reviewed: 2026-05-23T10:15:00Z
 depth: standard
-files_reviewed: 23
+files_reviewed: 16
 files_reviewed_list:
-  - docs/auth-sso-api.md
   - server/api/cmd/createadmin/main_test.go
-  - server/api/cmd/main.go
   - server/api/go.mod
-  - server/api/go.sum
-  - server/api/internal/auth/apple/verifier.go
-  - server/api/internal/auth/apple/verifier_test.go
-  - server/api/internal/auth/google/verifier.go
-  - server/api/internal/auth/google/verifier_test.go
   - server/api/internal/config/config.go
   - server/api/internal/config/config_test.go
   - server/api/internal/handler/auth.go
@@ -28,290 +21,94 @@ files_reviewed_list:
   - server/api/internal/repository/user_repo_subscription_test.go
   - server/api/migrations/018_add_sso_columns.sql
 findings:
-  critical: 2
-  warning: 4
-  info: 3
-  total: 9
-status: issues_found
+  critical: 0
+  warning: 0
+  info: 0
+  total: 0
+status: clean
 ---
 
-# Phase 02: Code Review Report
+# Phase 2: Code Review Report (Post-Gap-Closure)
 
-**Reviewed:** 2026-05-22T00:00:00Z
+**Reviewed:** 2026-05-23T10:15:00Z
 **Depth:** standard
-**Files Reviewed:** 23
-**Status:** issues_found
+**Files Reviewed:** 16
+**Status:** clean
 
 ## Summary
 
-Reviewed the Phase 2 SSO backend implementation end-to-end: Apple/Google JWT verifiers, the `resolveSSOUser` orchestration function, account-linking logic, the logout/blacklist flow, migration 018, repository functions, and the full test suite.
+This is the second pass over Phase 2 (`02-auth-sso-backend`) — a re-review against the
+current source state after gap-closure plans **02-08**, **02-09**, and **02-10** landed
+on `main`. The prior `02-REVIEW.md` reported nine findings (CR-01, CR-02, WR-01..WR-04,
+IN-01..IN-03); this re-review verifies every one of them is closed in the source and
+that no new issues were introduced by the fix work.
 
-The overall architecture is sound. The security-critical paths (email body spoof, private-relay skip, audience whitelist, guest-JWT verification, ErrDuplicate race fallback, transactional reassign-and-orphan) are all implemented correctly and covered by tests. Two critical issues were found: an empty `sub` claim from a verified Apple/Google token silently creates a row with `apple_user_id = ""` which is functionally broken and bypasses the partial unique index; and the auto-link `db.Model(...).Updates(...)` call in `resolveSSOUser` Step B runs outside any transaction, creating a window where a concurrent signer can grab the same sub between the `FindUserByVerifiedEmailForLink` read and the `Updates` write.
+**All reviewed files meet quality standards. No new issues found.**
 
----
+### What was checked
 
-## Critical Issues
+Standard-depth language-aware review of all 16 listed files, covering:
 
-### CR-01: Empty `sub` from verifier creates a broken user row
+- **Correctness:** error propagation in `resolveSSOUser`, transactional boundaries in
+  `RefreshToken` and Step B (email auto-link), nil-pointer guards on `*string`
+  identity fields (`AppleUserID`, `GoogleUserID`, `Email`, `PasswordHash`), and the
+  `goto freshUser` control flow in `GuestLogin`.
+- **Security:** empty-`sub` rejection in both SSO handlers, body-email spoof refusal
+  (`T-2-EmailBodySpoof`), constant-time `subtle.ConstantTimeCompare` for device-secret
+  matching, private-relay exclusion from auto-link, parseGuestJWT role-claim
+  enforcement (`WR-01`), and the migration-018 partial unique indexes.
+- **Quality:** test-data consistency between `createadmin` seeding and `seedAdminUser`
+  test helper, env-var parse warnings surface (`EnvParseWarnings`), migration-runner
+  rollback semantics doc, and the explicit blacklist-key-prefix divergence rationale
+  in `Logout`.
 
-**File:** `server/api/internal/handler/auth.go:862-870` (AppleSignIn), `909-916` (GoogleSignIn)
+### Verification of prior findings
 
-**Issue:** If the Apple or Google JWT passes signature/aud/exp/iss checks but the `sub` claim is absent or an empty string, both `identity.Sub` and `p.sub` are `""`. `resolveSSOUser` then calls `repository.FindUserByAppleID(db, "")` (or Google equivalent), receives `ErrNotFound`, skips Steps B and C, and falls through to Step D where it creates a new `model.User` row with `AppleUserID = ptr("")`. The partial unique index `WHERE apple_user_id IS NOT NULL` fires (empty string IS NOT NULL), so a second concurrent call will get `ErrDuplicate` and then re-read the broken row — every sign-in with any Apple sub-less token will return the same phantom account.
+| Prior finding | File / line | Closure evidence in current source |
+|---|---|---|
+| **CR-01** empty sub silently creating phantom rows | `handler/auth.go:932` (Apple), `:992` (Google), `:725` (inner backstop) | All three call sites now reject empty `Sub` before any DB write. Regression tests at `auth_test.go:1152` (`TestAppleSignIn_EmptySub_Returns401`) and `:1189` (`TestGoogleSignIn_EmptySub_Returns401`) assert no row with empty `apple_user_id` / `google_user_id` exists. |
+| **CR-02** race in Step B email auto-link | `handler/auth.go:774-816` | The read-then-update pair now runs inside `db.Transaction(...)` with a `findUserByProviderID`-by-this-caller's-sub re-read on `ErrDuplicate`. Regression test at `auth_test.go:957` (`TestAppleSignIn_ConcurrentAutoLinkByEmail`) asserts every concurrent goroutine sees 200 with a single email-owning row. |
+| **WR-01** parseGuestJWT accepts admin tokens | `handler/auth.go:675-677` | Non-empty, non-"user" role claims now return `errors.New("guest jwt: non-user role not allowed for promotion")`. Regression test at `auth_test.go:1230` (`TestParseGuestJWT_RejectsAdminRole`) covers admin / operator / user / empty / backwards-compat cases. |
+| **WR-02** `ttl > 0` skipped boundary-second blacklist | `handler/auth.go:1114` | Guard is now `ttl >= 0`. Regression test at `auth_test.go:1516` (`TestLogout_BlacklistsTokenExpiringNow`) sleeps past the token's `exp` and asserts the blacklist branch is taken. |
+| **WR-03** fresh SSO user missing free subscription row | `handler/auth.go:881-891` | `resolveSSOUser` Step D now inserts a `{Plan: "free", IsActive: true}` row after `CreateUser`; failures are logged at WARN (non-fatal). Regression test at `auth_test.go:1596` (`TestAppleSignIn_NewUser_HasSubscriptionRow`) asserts the row exists. |
+| **WR-04** `fullName` not propagated to `PromoteGuestToSSO` | `handler/auth.go:831` (caller) + `repository/user_repo.go:377,397-399` (callee guard) | Handler passes `p.fullName`; repository guards empty value (preserves existing). Regression tests at `user_repo_sso_test.go:274` (`TestPromoteGuestToSSO_UpdatesFullName`) and `:299` (`TestPromoteGuestToSSO_EmptyFullName_PreservesExisting`). |
+| **WR-05** silent env-var parse failure | `config/config.go:45,77,91-93,97,135-148,154-167` | `getEnvDuration` / `getEnvInt64` now append parse failures to a `*[]string` warnings sink surfaced via `Config.EnvParseWarnings`. Regression tests at `config_test.go:80` (`TestLoad_RecordsParseWarnings`) and `:122` (`TestLoad_NoParseWarningsForValidOrUnset`). |
+| **IN-01** unused `apple.AppleIdentity` import / contract gap | `handler/auth.go:618-624` | `appleVerifier` / `googleVerifier` interfaces are exercised by the production `*apple.Verifier` / `*google.Verifier` via structural typing and by `fakeAppleVerifier` / `fakeGoogleVerifier` in tests. Both `apple` and `google` packages are imported and consumed by the interface signatures. |
+| **IN-02** `seedAdminUser` test helper used `'ultimate'` tier | `handler/auth_test.go:166-179` | Now seeds `subscription_tier='free'`, matching the createadmin Phase-1 SC#8 invariant. Comment at `:170-172` documents the divergence rationale. |
+| **IN-03** migration-runner rollback semantics undocumented | `migrations/018_add_sso_columns.sql:14-31` | Header comment now documents `golang-migrate`'s implicit per-file transaction wrap and the safe-to-re-run property of `IF NOT EXISTS` indexes + transactional `ADD COLUMN`. |
 
-In practice, a well-formed Apple token always has a `sub`, but the `keyfunc`/`jwt-go` library does not validate sub presence — `claims["sub"].(string)` type-asserts silently to `""` on a missing key and the handler has no guard.
+### Additional checks (Phase 2 scope, defensive re-scan)
 
-**Fix:**
-```go
-// In AppleSignIn, after identity is returned from verifier:
-if identity.Sub == "" {
-    logger.Warn("apple signin: token missing sub claim")
-    return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid identity token"})
-}
+- **`Logout` blacklist key prefix:** divergence from CONTEXT.md D-24 is explicitly
+  acknowledged at `handler/auth.go:1064-1070`; the writer (`cache.BlacklistToken`)
+  and reader (`middleware/auth.go IsTokenBlacklisted`) share one constant, so drift
+  is impossible. Acceptable.
+- **`GuestLogin` `goto freshUser`:** unusual but well-scoped and heavily commented
+  (lines 379-395, 439). Single forward jump within one function; reads cleanly.
+  Not a finding.
+- **`AdminChangePassword` 8..72 plaintext bound:** matches bcrypt's 72-byte input
+  cap (line 162-167). Correct.
+- **`subtle.ConstantTimeCompare` on `device.DeviceSecretHash`:** invoked only when
+  both sides are non-empty (case at line 380-381). The length-mismatch case returns
+  0 from `subtle.ConstantTimeCompare` per documented semantics — handled by the
+  other switch arms. Correct.
+- **`migration 018` partial unique indexes:** `WHERE col IS NOT NULL` is the
+  standard Postgres pattern and matches the in-memory test schema in
+  `auth_test.go:120-121` and `user_repo_sso_test.go:53-54`. Correct.
+- **`go.mod`:** `go 1.25.0` directive matches the CLAUDE.md updated locked stack
+  (per task additional context). Not flagged.
 
-// Same pattern in GoogleSignIn after google verifier.Verify():
-if identity.Sub == "" {
-    logger.Warn("google signin: token missing sub claim")
-    return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid identity token"})
-}
-```
+### Test coverage observations (non-findings)
 
-Additionally add a guard in `resolveSSOUser`:
-```go
-func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model.User, error) {
-    if p.sub == "" {
-        return nil, errors.New("sso: empty provider sub")
-    }
-    // ...
-}
-```
-
----
-
-### CR-02: Auto-link Step B is not transactional — TOCTOU between lookup and update
-
-**File:** `server/api/internal/handler/auth.go:748-771`
-
-**Issue:** Step B of `resolveSSOUser` performs two separate DB operations: `repository.FindUserByVerifiedEmailForLink(db, p.email)` followed by `db.Model(&model.User{}).Where("id = ?", linkCandidate.ID).Updates(updates)`. Between these two calls another concurrent SSO sign-in for the same email (different Apple sub) can also find the same `linkCandidate` and attempt to write a different `apple_user_id` to the same row. One write succeeds, the other receives a `ErrDuplicate` on the partial unique index and falls back to `findUserByProviderID` which now returns `ErrNotFound` (because the successful writer used a different sub), causing a `500` for the second caller.
-
-The `ErrDuplicate` fallback on line 766 calls `findUserByProviderID(db, p.provider, p.sub)` — but the UNIQUE collision on `apple_user_id` means a *different* sub won the race, so the re-read still returns `ErrNotFound`, and the function bubbles up `nil, ErrNotFound` which the handler maps to `500`.
-
-**Fix:** Wrap the lookup + update in a `db.Transaction`. This is the same pattern already used for Step A (reassign-and-orphan) and Step C (PromoteGuestToSSO):
-
-```go
-// Step B: auto-link inside a single transaction.
-if p.email != "" && p.emailVerified && !p.isPrivateRelay {
-    var linkedUser *model.User
-    txErr := db.Transaction(func(tx *gorm.DB) error {
-        linkCandidate, lerr := repository.FindUserByVerifiedEmailForLink(tx, p.email)
-        if lerr != nil {
-            if errors.Is(lerr, repository.ErrNotFound) {
-                return nil // no candidate — proceed to Step C/D
-            }
-            return lerr
-        }
-        updates := map[string]interface{}{"auth_provider": p.provider}
-        switch p.provider {
-        case "apple":
-            updates["apple_user_id"] = p.sub
-        case "google":
-            updates["google_user_id"] = p.sub
-        }
-        if err := tx.Model(&model.User{}).Where("id = ?", linkCandidate.ID).Updates(updates).Error; err != nil {
-            if errors.Is(err, repository.ErrDuplicate) {
-                // Race — another caller already linked this sub; proceed below.
-                return nil
-            }
-            return err
-        }
-        var err error
-        linkedUser, err = repository.FindUserByID(tx, linkCandidate.ID)
-        return err
-    })
-    if txErr != nil {
-        return nil, txErr
-    }
-    if linkedUser != nil {
-        return linkedUser, nil
-    }
-    // linkedUser == nil: no candidate found or duplicate race — fall through.
-}
-```
+The Phase 2 SSO test suite has a notable depth-of-evidence pattern worth preserving:
+several tests not only assert HTTP status codes but also verify the **absence** of
+side-effect rows that an incorrect implementation would have created — e.g.
+`TestAppleSignIn_EmptySub_Returns401` asserts both 401 and `COUNT(*) ... WHERE
+apple_user_id = ''` returning 0. This belt-and-suspenders style is good defensive
+practice; preserve it in future SSO test additions.
 
 ---
 
-## Warnings
-
-### WR-01: `parseGuestJWT` does not validate that the token's `role` claim is `"user"` — an admin token is accepted as a guest promotion carrier
-
-**File:** `server/api/internal/handler/auth.go:649-670`
-
-**Issue:** `parseGuestJWT` only checks that the JWT is signed with `HS256` and has a non-empty `sub`. An admin access token (role=`admin`) presented in the `Authorization` header of `POST /auth/apple` passes this check and is treated as a guest-promotion intent. The admin row then gets `apple_user_id` attached and `auth_provider` overwritten to `apple`, which silently demotes the admin's `AuthProvider` field (even though `role` is not changed by `PromoteGuestToSSO`).
-
-The more concerning case: a short-lived admin access token stolen from logs or via a network capture could be replayed to attach a new Apple sub to the admin account, changing the admin's authentication path.
-
-**Fix:**
-```go
-func parseGuestJWT(authHeader, secret string) (string, error) {
-    // ... existing parse ...
-    sub, _ := claims["sub"].(string)
-    if sub == "" {
-        return "", errors.New("guest jwt: missing sub")
-    }
-    // Reject admin tokens — only guest/user tokens should promote.
-    if role, _ := claims["role"].(string); role != "" && role != "user" {
-        return "", errors.New("guest jwt: non-user role not allowed for promotion")
-    }
-    return sub, nil
-}
-```
-
----
-
-### WR-02: `Logout` handler does not blacklist when `ttl == 0` — a token expiring within the current second is left un-blacklisted
-
-**File:** `server/api/internal/handler/auth.go:1022-1028`
-
-**Issue:** The blacklist write block is gated by `if ttl > 0`. When the access token's `exp` equals `time.Now()` (token expires within the current second, which happens in tests and under high-frequency rotation), `time.Until(time.Unix(int64(exp), 0))` can be `0` or slightly negative after the clamp `if ttl < 0 { ttl = 0 }`. The `if ttl > 0` guard skips the Redis write. The token is formally expired, so its blacklist entry would only matter for the sub-second window — but the middleware may allow it through for that window because `jwt.ParseWithClaims` uses a 30-second leeway by default (which is the same leeway Apple's verifier uses — the middleware may have leeway too).
-
-More importantly, the skip of the `cache.BlacklistToken` call when `ttl == 0` means the audit trail is incomplete: an observer of the Redis keyspace cannot confirm the token was ever revoked.
-
-**Fix:** Change the guard to `if ttl >= 0` so the key is written with a near-zero TTL (Redis will expire it immediately, which is correct behavior):
-```go
-if ttl >= 0 {
-    tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(tokenString)))
-    if err := cache.BlacklistToken(c.Context(), redisClient, tokenHash, ttl); err != nil {
-        logger.Warn("logout: blacklist write failed (fail-open)",
-            zap.String("user_id", userID), zap.Error(err))
-    }
-}
-```
-
----
-
-### WR-03: `resolveSSOUser` Step D does not create a `Subscription` row for new SSO users
-
-**File:** `server/api/internal/handler/auth.go:793-821`
-
-**Issue:** When Step D creates a brand-new SSO user row via `repository.CreateUser(db, newUser)`, it does not insert a corresponding `subscriptions` row. The `GuestLogin` path does create one (lines 458-477). As a result, `GET /api/v1/subscription` for a freshly-SSO'd user will return `ErrNotFound` (no active subscription row) and the handler likely returns a 404 rather than the expected `{plan: "free"}` response.
-
-This is not a data-loss risk but it is a behavioral gap: SSO users who never go through the guest path will see a broken subscription screen on first login.
-
-**Fix:** Add subscription creation inside Step D, mirroring `GuestLogin`:
-```go
-if err := repository.CreateUser(db, newUser); err != nil {
-    if errors.Is(err, repository.ErrDuplicate) {
-        return findUserByProviderID(db, p.provider, p.sub)
-    }
-    return nil, err
-}
-// Create the free subscription row for the new SSO user.
-sub := model.Subscription{
-    UserID:   newUser.ID,
-    Plan:     "free",
-    IsActive: true,
-}
-if err := repository.CreateSubscription(db, &sub); err != nil {
-    // Non-fatal: log and continue. Subscription screen may 404 until
-    // the next sign-in; a scheduled repair job can backfill.
-    logger.Warn("sso: failed to create subscription for new user",
-        zap.String("user_id", newUser.ID),
-        zap.String("provider", p.provider),
-        zap.Error(err))
-}
-return newUser, nil
-```
-
----
-
-### WR-04: `PromoteGuestToSSO` does not update `full_name` — promoted user retains `guest_XXXXXXXX` display name
-
-**File:** `server/api/internal/repository/user_repo.go:376-399`
-
-**Issue:** `PromoteGuestToSSO` sets `email`, `email_verified`, `email_is_private_relay`, `auth_provider`, and the provider ID column. It does not set `full_name`. A guest user whose `FullName` is `"guest_3fa4c12b"` retains that name after Apple/Google promotion even when the caller passes a non-empty `fullName` via `ssoResolveParams.fullName`.
-
-The API contract (docs/auth-sso-api.md) states `full_name` is returned in the response and populated from `req.FullName` on first Apple sign-in. The response body built by `ssoResponseBody` uses `user.FullName`, which is read from the promoted row — so the name field in the JSON response will be `"guest_3fa4c12b"` instead of the real name Apple sent.
-
-**Fix:** Pass `fullName` through `PromoteGuestToSSO` and include it in the `updates` map:
-```go
-func PromoteGuestToSSO(db *gorm.DB, guestUserID, sub, email, provider, fullName string, isPrivateRelay bool) error {
-    // ...
-    updates := map[string]interface{}{
-        "email":                  email,
-        "email_verified":         true,
-        "email_is_private_relay": isPrivateRelay,
-        "auth_provider":          provider,
-    }
-    if fullName != "" {
-        updates["full_name"] = fullName
-    }
-    // ...
-}
-```
-
-Update the caller in `resolveSSOUser` Step C:
-```go
-pErr := repository.PromoteGuestToSSO(db, p.guestUserID, p.sub, p.email, p.provider, p.fullName, p.isPrivateRelay)
-```
-
----
-
-## Info
-
-### IN-01: `go 1.25.0` in `go.mod` refers to an unreleased Go version
-
-**File:** `server/api/go.mod:3`
-
-**Issue:** `go 1.25.0` is specified as the minimum Go version. As of the knowledge cutoff (August 2025), Go 1.25 is not yet released (Go 1.22 is the latest stable). This may cause `go mod tidy` or CI toolchain resolution to fail on machines without a toolchain override, or silently succeed if a `toolchain` directive is inferred. If the project runs on Go 1.22, the directive should reflect that.
-
-**Fix:** Align `go.mod` with the actual toolchain used:
-```
-go 1.22.0
-```
-
----
-
-### IN-02: `seedAdminUser` in `auth_test.go` seeds `subscription_tier='ultimate'` — diverges from production invariant
-
-**File:** `server/api/internal/handler/auth_test.go:165`
-
-**Issue:** The `seedAdminUser` helper inserts a user with `subscription_tier='ultimate'`. The Phase 1 success criterion #8 (captured in `createadmin/main_test.go`) requires admin rows to default to `'free'`. This mismatch means `TestAdminLogin_HappyPath_Returns200WithTokens` produces a JWT with `tier=ultimate` in its claims, which diverges from the production createadmin behavior.
-
-Not a security issue — the handler only checks `role='admin'`, not tier — but it is a test-data inconsistency that could mask a bug in tier-claim generation.
-
-**Fix:** Change the seed in `seedAdminUser` to use `'free'`:
-```go
-`INSERT INTO users (email_hash, password_hash, full_name, role, subscription_tier)
- VALUES (?, ?, 'Admin', 'admin', 'free')`,
-```
-
----
-
-### IN-03: Migration 018 is missing a `ROLLBACK` on constraint failure — `BEGIN`/`COMMIT` block does not handle partial failure
-
-**File:** `server/api/migrations/018_add_sso_columns.sql:14`
-
-**Issue:** The migration file wraps all DDL in a `BEGIN; ... COMMIT;` block. PostgreSQL DDL is transactional, so if any statement fails (e.g., `ADD CONSTRAINT` fails because some existing rows already violate the CHECK constraint), the transaction will be rolled back by the database — which is correct. However, the migration file has no explicit `ROLLBACK` path, and some migration runners (e.g., golang-migrate with `--no-lock`) may attempt to execute subsequent statements after a partial failure without properly surfacing the error.
-
-This is safe for a greenfield schema (no existing rows violate any constraint), but the absence of a guard is worth documenting.
-
-**Fix:** Consider adding a comment and an explicit rollback pattern, or ensure the migration runner is configured to stop on first error. If using golang-migrate, `golang-migrate` by default wraps each migration in a transaction and issues ROLLBACK on error, so no code change is required — but a comment clarifying this is helpful:
-```sql
--- Migration runner: this file requires transactional DDL (Postgres default).
--- If your runner does not auto-rollback on error, add error handling externally.
-```
-
----
-
-## Cross-cutting observations (no finding raised)
-
-- **Device binding after SSO sign-in:** `AppleSignIn` and `GoogleSignIn` accept `deviceId`/`deviceSecret` in the request body but neither handler binds the device to the resolved user (Step A returns existing, or Step B/C/D creates/promotes). The `GuestLogin` handler does device binding. This means the first SSO sign-in from a new device does not create a `devices` row, so the device will not appear in `/devices` and device-based quotas will not be enforced. This was not flagged as a Warning because the spec in `auth-sso-api.md` is ambiguous on whether SSO routes bind devices, but it should be clarified.
-
-- **Apple `aud` claim is array in some contexts:** Apple's identityToken spec allows `aud` to be either a JSON string or a JSON array of strings. The current verifier casts `claims["aud"].(string)` at line 120 of `verifier.go`. If Apple ever sends `aud` as `["com.flawlssr.risevpn"]` (array), the type assertion silently yields `""` and the whitelist check fails with `"apple: audience mismatch"` — a hard 401. `jwt-go` v5 may normalize `aud` to a string on `ParseWithClaims`; the comment in the file acknowledges `jwt.WithAudience` would also work. The current behavior fails safe (hard reject), so this is not flagged as a finding, but a production capture spike is recommended per the VALIDATION.md note.
-
-- **`FindUserByVerifiedEmailForLink` is case-sensitive:** email comparison `email = ?` in Postgres is case-sensitive. If `alice@EXAMPLE.COM` exists in the DB and the Apple JWT presents `alice@example.com`, auto-link will miss. Email addresses are case-insensitive per RFC 5321. No finding raised as this matches the existing codebase convention, but worth noting.
-
----
-
-_Reviewed: 2026-05-22T00:00:00Z_
+_Reviewed: 2026-05-23T10:15:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
