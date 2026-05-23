@@ -82,8 +82,28 @@ func newHandlerTestDB(t *testing.T) *gorm.DB {
 			telegram_linked_at      DATETIME,
 			telegram_username       TEXT,
 			telegram_first_name     TEXT,
+			plan_id                 TEXT NOT NULL DEFAULT '',
 			created_at              DATETIME,
 			updated_at              DATETIME
+		);
+		CREATE TABLE IF NOT EXISTS plans (
+			id                TEXT PRIMARY KEY,
+			code              TEXT NOT NULL UNIQUE,
+			name              TEXT NOT NULL,
+			description       TEXT NOT NULL DEFAULT '',
+			max_devices       INTEGER NOT NULL,
+			max_servers       INTEGER NOT NULL,
+			speed_limit_mbps  INTEGER NOT NULL DEFAULT 0,
+			is_active         INTEGER NOT NULL DEFAULT 1,
+			is_system         INTEGER NOT NULL DEFAULT 0,
+			sort_order        INTEGER NOT NULL DEFAULT 0,
+			created_at        DATETIME,
+			updated_at        DATETIME
+		);
+		CREATE TABLE IF NOT EXISTS plan_servers (
+			plan_id   TEXT NOT NULL,
+			server_id TEXT NOT NULL,
+			PRIMARY KEY (plan_id, server_id)
 		);
 	`
 	if err := db.Exec(ddl).Error; err != nil {
@@ -115,20 +135,75 @@ func seedActiveServer(t *testing.T, db *gorm.DB) *model.VPNServer {
 	return srv
 }
 
+// seedPlansOnce seeds free + premium + pro + ultimate rows in the plans
+// table (idempotent — INSERT OR IGNORE keyed by code). Returns the plan_id
+// matching `tier`. After plan 03-04 every handler reads MaxDevices/MaxServers
+// via repository.FindPlanByID(planID) instead of the deleted PlanLimits map,
+// so tests must populate the plans table before invoking those handlers.
+//
+// Limits mirror the previous PlanLimits constants so existing test assertions
+// (e.g. "free has 1 device cap", "premium has 3 device cap") keep working
+// without rewriting every test body.
+func seedPlansOnce(t *testing.T, db *gorm.DB, tier string) string {
+	t.Helper()
+	if tier == "" {
+		tier = "free"
+	}
+	specs := []struct {
+		code, name                                string
+		maxDevices, maxServers, speedLimitMbps int
+		isSystem                                  bool
+	}{
+		{"free", "Free", 1, 3, 50, true},
+		{"premium", "Premium", 3, -1, 0, false},
+		{"ultimate", "Ultimate", 6, -1, 0, false},
+		{"pro", "Pro", 3, -1, 0, false},
+	}
+	for _, s := range specs {
+		id := "plan-" + s.code
+		isSys := 0
+		if s.isSystem {
+			isSys = 1
+		}
+		if err := db.Exec(
+			`INSERT OR IGNORE INTO plans
+			 (id, code, name, description, max_devices, max_servers, speed_limit_mbps, is_active, is_system, sort_order, created_at, updated_at)
+			 VALUES (?, ?, ?, '', ?, ?, ?, 1, ?, 0, datetime('now'), datetime('now'))`,
+			id, s.code, s.name, s.maxDevices, s.maxServers, s.speedLimitMbps, isSys,
+		).Error; err != nil {
+			t.Fatalf("seedPlansOnce(%s): %v", s.code, err)
+		}
+	}
+	return "plan-" + tier
+}
+
 // seedUserRow inserts a users row with the given id and tier so that
 // RegisterConnection's live tier read finds something. The row is inserted
 // idempotently so callers can call this multiple times for the same user.
+//
+// PAY-11: also seeds the plans table and sets users.plan_id to the row
+// matching the requested tier; handlers now read MaxDevices via
+// repository.FindPlanByID(user.PlanID) rather than the deleted PlanLimits map.
 func seedUserRow(t *testing.T, db *gorm.DB, userID, tier string) {
 	t.Helper()
 	if tier == "" {
 		tier = "free"
 	}
+	planID := seedPlansOnce(t, db, tier)
 	if err := db.Exec(
-		`INSERT OR IGNORE INTO users (id, full_name, subscription_tier, role)
-		 VALUES (?, ?, ?, 'user')`,
-		userID, "test_"+userID[:6], tier,
+		`INSERT OR IGNORE INTO users (id, full_name, subscription_tier, role, plan_id)
+		 VALUES (?, ?, ?, 'user', ?)`,
+		userID, "test_"+userID[:6], tier, planID,
 	).Error; err != nil {
 		t.Fatalf("seedUserRow: %v", err)
+	}
+	// In case the user already existed (idempotent path), keep plan_id in sync
+	// with the requested tier so re-buildApp calls don't drift.
+	if err := db.Exec(
+		`UPDATE users SET plan_id = ?, subscription_tier = ? WHERE id = ?`,
+		planID, tier, userID,
+	).Error; err != nil {
+		t.Fatalf("seedUserRow update: %v", err)
 	}
 }
 

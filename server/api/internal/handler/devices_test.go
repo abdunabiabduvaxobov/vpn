@@ -46,15 +46,60 @@ func authedApp(h fiber.Handler, userID string) *fiber.App {
 	return app
 }
 
+// seedPlansForDevicesTests seeds free + premium + pro + ultimate rows in the
+// plans table (idempotent). Returns the plan_id matching `tier`. Plan 03-04
+// rewires CreateShareCode + LinkDevice to FindPlanByID(user.PlanID) instead
+// of the deleted PlanLimits map, so device-cap tests must populate the plans
+// table before exercising those handlers.
+//
+// Limits mirror the previous PlanLimits constants so existing test
+// assertions ("premium has 3 device cap") keep working as-is.
+func seedPlansForDevicesTests(t *testing.T, db *gorm.DB, tier string) string {
+	t.Helper()
+	if tier == "" {
+		tier = "free"
+	}
+	specs := []struct {
+		code, name                                string
+		maxDevices, maxServers, speedLimitMbps int
+		isSystem                                  bool
+	}{
+		{"free", "Free", 1, 3, 50, true},
+		{"premium", "Premium", 3, -1, 0, false},
+		{"ultimate", "Ultimate", 6, -1, 0, false},
+		{"pro", "Pro", 3, -1, 0, false},
+	}
+	for _, s := range specs {
+		id := "plan-" + s.code
+		isSys := 0
+		if s.isSystem {
+			isSys = 1
+		}
+		if err := db.Exec(
+			`INSERT OR IGNORE INTO plans
+			 (id, code, name, description, max_devices, max_servers, speed_limit_mbps, is_active, is_system, sort_order, created_at, updated_at)
+			 VALUES (?, ?, ?, '', ?, ?, ?, 1, ?, 0, datetime('now'), datetime('now'))`,
+			id, s.code, s.name, s.maxDevices, s.maxServers, s.speedLimitMbps, isSys,
+		).Error; err != nil {
+			t.Fatalf("seedPlansForDevicesTests(%s): %v", s.code, err)
+		}
+	}
+	return "plan-" + tier
+}
+
 // seedGuestUserWithTier inserts a free/premium/ultimate user row and
 // returns its UUID. Used to set up an "owner" before a sharing test.
+//
+// PAY-11: also seeds the plans table and writes the matching plan_id onto
+// the new row so handlers' FindPlanByID(user.PlanID) resolves.
 func seedGuestUserWithTier(t *testing.T, db *gorm.DB, tier string) string {
 	t.Helper()
+	planID := seedPlansForDevicesTests(t, db, tier)
 	id := fmt.Sprintf("user-%d-%s", time.Now().UnixNano(), tier)
 	if err := db.Exec(
-		`INSERT INTO users (id, full_name, subscription_tier, role)
-		 VALUES (?, ?, ?, 'user')`,
-		id, "guest", tier,
+		`INSERT INTO users (id, full_name, subscription_tier, role, plan_id)
+		 VALUES (?, ?, ?, 'user', ?)`,
+		id, "guest", tier, planID,
 	).Error; err != nil {
 		t.Fatalf("seedGuestUserWithTier: %v", err)
 	}

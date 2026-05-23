@@ -112,6 +112,28 @@ func newAuthTestDB(t *testing.T) *gorm.DB {
 			created_at  DATETIME,
 			expires_at  DATETIME NOT NULL
 		)`,
+		// PAY-11: plans + plan_servers added in plan 03-04 so handlers'
+		// FindPlanByID / FindPlanByCode / FindSystemPlanID lookups work
+		// against the in-memory test DB. Mirror of migration 019's schema.
+		`CREATE TABLE IF NOT EXISTS plans (
+			id                TEXT PRIMARY KEY,
+			code              TEXT NOT NULL UNIQUE,
+			name              TEXT NOT NULL,
+			description       TEXT NOT NULL DEFAULT '',
+			max_devices       INTEGER NOT NULL,
+			max_servers       INTEGER NOT NULL,
+			speed_limit_mbps  INTEGER NOT NULL DEFAULT 0,
+			is_active         INTEGER NOT NULL DEFAULT 1,
+			is_system         INTEGER NOT NULL DEFAULT 0,
+			sort_order        INTEGER NOT NULL DEFAULT 0,
+			created_at        DATETIME,
+			updated_at        DATETIME
+		)`,
+		`CREATE TABLE IF NOT EXISTS plan_servers (
+			plan_id   TEXT NOT NULL,
+			server_id TEXT NOT NULL,
+			PRIMARY KEY (plan_id, server_id)
+		)`,
 		// Partial unique indexes mirror the Postgres-side
 		// migration 018 (AUTH-03 / CONTEXT.md D-09). SQLite 3.8+
 		// supports `WHERE col IS NOT NULL` on indexes (RESEARCH.md
