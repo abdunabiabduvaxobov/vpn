@@ -53,13 +53,13 @@ export async function generateMetadata({
       languages: {
         ru: "/ru/",
         en: "/en/",
-        uz: "/uz/",
+        es: "/es/",
         "x-default": "/ru/",
       },
     },
     openGraph: {
       type: "website",
-      locale: locale === "ru" ? "ru_RU" : locale === "uz" ? "uz_UZ" : "en_US",
+      locale: locale === "ru" ? "ru_RU" : locale === "es" ? "es_ES" : "en_US",
       url: `${siteUrl}/${locale}/`,
       siteName: "Rise VPN",
       title: t("ogTitle"),
