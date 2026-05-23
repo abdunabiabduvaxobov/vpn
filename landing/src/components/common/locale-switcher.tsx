@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "@/i18n/navigation";
 import { routing, type Locale } from "@/i18n/routing";
 import { useLocale } from "next-intl";
 
-const LABELS: Record<Locale, string> = { ru: "RU", en: "EN", uz: "UZ" };
+const LABELS: Record<Locale, string> = { ru: "RU", en: "EN", es: "ES" };
 
 /**
  * Locale switcher rendered as three text buttons. Clicking re-pushes the
