@@ -212,9 +212,20 @@ func CancelSubscription(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lav
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "user has no email"})
 		}
 
-		// Find the most recent active lava_contracts row for this user.
+		// WR-07: match the most recent contract whose access window is still
+		// open (expires_at in the future, OR NULL == never-expires), regardless
+		// of is_active. After D-19 BLOCKER #1, recurring.payment.failed flips
+		// is_active=false immediately but the user keeps Pro until expires_at
+		// lapses — so a user who sees "Pro active" in the app and taps Cancel
+		// would previously hit a 404 on a "no active subscription" lookup.
+		// The lava-side state may also still be live (lava hasn't yet sent
+		// subscription.cancelled), so a DELETE to lava is still needed to
+		// prevent the next retry from re-attempting the failed payment.
 		var contract model.LavaContract
-		findErr := db.Where("user_id = ? AND is_active = ?", userID, true).Order("started_at DESC").First(&contract).Error
+		findErr := db.Where(
+			"user_id = ? AND (expires_at IS NULL OR expires_at > ?)",
+			userID, time.Now(),
+		).Order("started_at DESC").First(&contract).Error
 		if findErr != nil {
 			if errors.Is(findErr, gorm.ErrRecordNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "no active subscription"})
