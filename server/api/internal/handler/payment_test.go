@@ -65,17 +65,18 @@ func newTestDB(t *testing.T) *gorm.DB {
 			email_verified          INTEGER NOT NULL DEFAULT 0,
 			email_is_private_relay  INTEGER NOT NULL DEFAULT 0,
 			auth_provider           TEXT NOT NULL DEFAULT 'guest',
+			plan_id                 TEXT NOT NULL DEFAULT '',
 			created_at              DATETIME,
 			updated_at              DATETIME
 		)`,
 		`CREATE TABLE IF NOT EXISTS subscriptions (
-			id         TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
-			user_id    TEXT NOT NULL,
-			plan       TEXT NOT NULL DEFAULT 'free',
-			stripe_id  TEXT,
-			is_active  INTEGER NOT NULL DEFAULT 1,
-			started_at DATETIME,
-			expires_at DATETIME
+			id               TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
+			user_id          TEXT NOT NULL,
+			plan             TEXT NOT NULL DEFAULT 'free',
+			lava_contract_id TEXT,
+			is_active        INTEGER NOT NULL DEFAULT 1,
+			started_at       DATETIME,
+			expires_at       DATETIME
 		)`,
 	}
 
@@ -104,14 +105,21 @@ func seedUser(t *testing.T, db *gorm.DB, tier string) *model.User {
 }
 
 // seedSubscription inserts a subscription row and returns it.
+// Phase 3 (D-11): stripeID is now stored in LavaContractID for backward-compat
+// of test call sites; the legacy Stripe paths exercised here are skipped via
+// t.Skip in their test bodies and will be removed in plan 03-05.
 func seedSubscription(t *testing.T, db *gorm.DB, userID, plan, stripeID string, active bool) *model.Subscription {
 	t.Helper()
+	var lavaContractID *string
+	if stripeID != "" {
+		lavaContractID = &stripeID
+	}
 	sub := &model.Subscription{
-		UserID:    userID,
-		Plan:      plan,
-		StripeID:  stripeID,
-		IsActive:  active,
-		StartedAt: time.Now(),
+		UserID:         userID,
+		Plan:           plan,
+		LavaContractID: lavaContractID,
+		IsActive:       active,
+		StartedAt:      time.Now(),
 	}
 	if err := db.Create(sub).Error; err != nil {
 		t.Fatalf("failed to seed subscription: %v", err)
@@ -324,6 +332,7 @@ func TestCancelSubscription_NoSubscription(t *testing.T) {
 }
 
 func TestCancelSubscription_NoStripeID(t *testing.T) {
+	t.Skip("Stripe path deleted in 03-05 — see Phase 8 HARD-01 for full removal")
 	logger := zap.NewNop()
 	db := newTestDB(t)
 	cfg := &config.Config{StripeKey: "sk_test_placeholder"}
@@ -437,6 +446,7 @@ func TestHandleCheckoutCompleted_CreatesSubscription(t *testing.T) {
 // ---- handleSubscriptionDeleted (internal) ----
 
 func TestHandleSubscriptionDeleted_UnknownStripeID(t *testing.T) {
+	t.Skip("Stripe path deleted in 03-05 — see Phase 8 HARD-01 for full removal")
 	db := newTestDB(t)
 	logger := zap.NewNop()
 

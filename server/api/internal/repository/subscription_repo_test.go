@@ -12,6 +12,10 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 )
 
+// ptr returns a pointer to v — used to populate the nullable LavaContractID
+// column without per-test boilerplate.
+func ptr[T any](v T) *T { return &v }
+
 // openTestDB opens an in-memory SQLite database with the tables needed for
 // subscription repository tests.
 func openTestDB(t *testing.T) *gorm.DB {
@@ -42,17 +46,18 @@ func openTestDB(t *testing.T) *gorm.DB {
 			email_verified          INTEGER NOT NULL DEFAULT 0,
 			email_is_private_relay  INTEGER NOT NULL DEFAULT 0,
 			auth_provider           TEXT NOT NULL DEFAULT 'guest',
+			plan_id                 TEXT NOT NULL DEFAULT '',
 			created_at              DATETIME,
 			updated_at              DATETIME
 		)`,
 		`CREATE TABLE IF NOT EXISTS subscriptions (
-			id         TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-			user_id    TEXT NOT NULL,
-			plan       TEXT NOT NULL DEFAULT 'free',
-			stripe_id  TEXT,
-			is_active  INTEGER NOT NULL DEFAULT 1,
-			started_at DATETIME,
-			expires_at DATETIME
+			id               TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			user_id          TEXT NOT NULL,
+			plan             TEXT NOT NULL DEFAULT 'free',
+			lava_contract_id TEXT,
+			is_active        INTEGER NOT NULL DEFAULT 1,
+			started_at       DATETIME,
+			expires_at       DATETIME
 		)`,
 	}
 	for _, stmt := range stmts {
@@ -97,7 +102,7 @@ func TestFindSubscriptionByUserID_ReturnsActiveSub(t *testing.T) {
 
 	sub := &model.Subscription{
 		UserID:    user.ID,
-		Plan:      "premium",
+		Plan:      "pro",
 		IsActive:  true,
 		StartedAt: time.Now(),
 	}
@@ -109,8 +114,8 @@ func TestFindSubscriptionByUserID_ReturnsActiveSub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if found.Plan != "premium" {
-		t.Errorf("expected plan=premium, got %q", found.Plan)
+	if found.Plan != "pro" {
+		t.Errorf("expected plan=pro, got %q", found.Plan)
 	}
 }
 
@@ -122,7 +127,7 @@ func TestFindSubscriptionByUserID_SkipsInactiveSub(t *testing.T) {
 	// GORM does not skip the false value as a zero-value field on Create.
 	sub := &model.Subscription{
 		UserID:    user.ID,
-		Plan:      "premium",
+		Plan:      "pro",
 		IsActive:  true,
 		StartedAt: time.Now(),
 	}
@@ -139,40 +144,6 @@ func TestFindSubscriptionByUserID_SkipsInactiveSub(t *testing.T) {
 	}
 }
 
-// ---- FindSubscriptionByStripeID ----
-
-func TestFindSubscriptionByStripeID_NotFound(t *testing.T) {
-	db := openTestDB(t)
-	_, err := repository.FindSubscriptionByStripeID(db, "sub_nonexistent")
-	if err != repository.ErrNotFound {
-		t.Errorf("expected ErrNotFound, got: %v", err)
-	}
-}
-
-func TestFindSubscriptionByStripeID_Found(t *testing.T) {
-	db := openTestDB(t)
-	user := seedTestUser(t, db)
-
-	sub := &model.Subscription{
-		UserID:    user.ID,
-		Plan:      "ultimate",
-		StripeID:  "sub_abc123",
-		IsActive:  true,
-		StartedAt: time.Now(),
-	}
-	if err := db.Create(sub).Error; err != nil {
-		t.Fatalf("failed to seed subscription: %v", err)
-	}
-
-	found, err := repository.FindSubscriptionByStripeID(db, "sub_abc123")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if found.UserID != user.ID {
-		t.Errorf("expected user_id=%q, got %q", user.ID, found.UserID)
-	}
-}
-
 // ---- CreateSubscription ----
 
 func TestCreateSubscription_InsertsRow(t *testing.T) {
@@ -181,7 +152,7 @@ func TestCreateSubscription_InsertsRow(t *testing.T) {
 
 	sub := &model.Subscription{
 		UserID:    user.ID,
-		Plan:      "premium",
+		Plan:      "pro",
 		IsActive:  true,
 		StartedAt: time.Now(),
 	}
@@ -200,11 +171,11 @@ func TestCreateOrUpdateSubscription_CreatesWhenNoneExist(t *testing.T) {
 	user := seedTestUser(t, db)
 
 	sub := &model.Subscription{
-		UserID:    user.ID,
-		Plan:      "premium",
-		StripeID:  "sub_new",
-		IsActive:  true,
-		StartedAt: time.Now(),
+		UserID:         user.ID,
+		Plan:           "pro",
+		LavaContractID: ptr("contract_new"),
+		IsActive:       true,
+		StartedAt:      time.Now(),
 	}
 	if err := repository.CreateOrUpdateSubscription(db, sub); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -223,23 +194,23 @@ func TestCreateOrUpdateSubscription_UpdatesExistingActiveSub(t *testing.T) {
 
 	// Create initial subscription.
 	initial := &model.Subscription{
-		UserID:    user.ID,
-		Plan:      "premium",
-		StripeID:  "sub_old",
-		IsActive:  true,
-		StartedAt: time.Now(),
+		UserID:         user.ID,
+		Plan:           "pro",
+		LavaContractID: ptr("contract_old"),
+		IsActive:       true,
+		StartedAt:      time.Now(),
 	}
 	if err := db.Create(initial).Error; err != nil {
 		t.Fatalf("failed to seed subscription: %v", err)
 	}
 
-	// Upsert with upgraded plan.
+	// Upsert with updated contract.
 	updated := &model.Subscription{
-		UserID:    user.ID,
-		Plan:      "ultimate",
-		StripeID:  "sub_new",
-		IsActive:  true,
-		StartedAt: time.Now(),
+		UserID:         user.ID,
+		Plan:           "pro",
+		LavaContractID: ptr("contract_new"),
+		IsActive:       true,
+		StartedAt:      time.Now(),
 	}
 	if err := repository.CreateOrUpdateSubscription(db, updated); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -254,11 +225,11 @@ func TestCreateOrUpdateSubscription_UpdatesExistingActiveSub(t *testing.T) {
 
 	var found model.Subscription
 	db.Where("user_id = ?", user.ID).First(&found)
-	if found.Plan != "ultimate" {
-		t.Errorf("expected plan=ultimate after update, got %q", found.Plan)
+	if found.Plan != "pro" {
+		t.Errorf("expected plan=pro after update, got %q", found.Plan)
 	}
-	if found.StripeID != "sub_new" {
-		t.Errorf("expected stripe_id=sub_new after update, got %q", found.StripeID)
+	if found.LavaContractID == nil || *found.LavaContractID != "contract_new" {
+		t.Errorf("expected lava_contract_id=contract_new after update, got %v", found.LavaContractID)
 	}
 }
 
@@ -270,7 +241,7 @@ func TestDeactivateSubscription_SetsIsActiveFalse(t *testing.T) {
 
 	sub := &model.Subscription{
 		UserID:    user.ID,
-		Plan:      "premium",
+		Plan:      "pro",
 		IsActive:  true,
 		StartedAt: time.Now(),
 	}
