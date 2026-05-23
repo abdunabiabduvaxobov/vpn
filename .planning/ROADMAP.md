@@ -117,7 +117,15 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
   4. `/pay/success?invoiceId=X` polls `/api/v1/invoices/{id}` and shows a success state within ~2 seconds of the webhook landing; if the webhook is delayed, it shows a clear "we'll email you" message after 30s of polling instead of hanging silently.
   5. The `/pricing` page renders in EN, RU, and ES from `messages/{en,ru,es}.json` with currency derived from the active locale, and on-demand ISR revalidates after an admin updates a plan (no manual rebuild needed).
   6. Navbar exposes "Pricing" and "Login" when logged out; exposes "Pricing", "Dashboard", and "Sign out" when logged in.
-**Plans**: TBD
+**Plans**: 8 plans
+  - [ ] 04-01-foundation-i18n-standalone-PLAN.md (wave 1) — next.config standalone + locale ru/en/es + env loader [WEB-08]
+  - [ ] 04-02-app-shell-navbar-primitives-PLAN.md (wave 2, depends 04-01) — Card/Skeleton/Toast/TierBadge primitives + NavbarApp with server-side cookie branching + brand-mark SVGs [WEB-09]
+  - [ ] 04-03-node-proxy-cookies-refresh-PLAN.md (wave 2, depends 04-01) — /api/[...path] catch-all proxy + 401→refresh→retry + HttpOnly cookie helpers + /api/auth/logout [WEB-02]
+  - [ ] 04-04-login-oauth-callback-PLAN.md (wave 3, depends 04-02+04-03) — /<locale>/login with Apple+Google buttons + /auth/callback CSRF + id_token exchange + session cookie set [WEB-01, WEB-02]
+  - [ ] 04-05-pricing-plans-isr-revalidate-PLAN.md (wave 3, depends 04-02+04-03) — /<locale>/pricing dynamic + CurrencySwitcher + /api/revalidate-pricing tag-bust endpoint [WEB-04, WEB-08]
+  - [ ] 04-06-dashboard-signout-PLAN.md (wave 3, depends 04-02+04-03) — /<locale>/dashboard server-gated + DashboardCard + SignOutButton with destructive confirm [WEB-03, WEB-09]
+  - [ ] 04-07-checkout-pay-success-fail-PLAN.md (wave 4, depends 04-04+04-05) — checkout flow (auto-resume after sign-in) + /pay/success polling (D-21 contract) + /pay/fail reason-aware [WEB-05, WEB-06, WEB-07]
+  - [ ] 04-08-deploy-smoke-tests-PLAN.md (wave 5, depends 04-04+04-05+04-06+04-07) — Dockerfile + compose overlay + nginx routing + Playwright E2E covering all 6 SCs and WEB-01..WEB-09 [WEB-01..WEB-09]
 **UI hint**: yes
 
 ### Phase 5: Mobile SSO + Pro CTA
@@ -205,7 +213,7 @@ Phase 4  Phase 5  Phase 6  Phase 7  Phase 8
 | 1. Hotfix — audit critical fixes | 0/? | Not started | - |
 | 2. Auth SSO backend | 0/? | Not started | - |
 | 3. Lava.top + plans catalog | 0/? | Not started | - |
-| 4. Landing surfaces | 0/? | Not started | - |
+| 4. Landing surfaces | 0/8 | Not started | - |
 | 5. Mobile SSO + Pro CTA | 0/? | Not started | - |
 | 6. Performance & scalability | 0/? | Not started | - |
 | 7. Admin panel overhaul | 0/? | Not started | - |
