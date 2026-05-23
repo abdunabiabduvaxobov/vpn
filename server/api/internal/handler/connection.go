@@ -94,10 +94,10 @@ func RegisterConnection(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		// Enforce device limit using an atomic INSERT … SELECT so that the
 		// count check and the row insertion happen in a single statement,
 		// eliminating the TOCTOU race between COUNT and INSERT.
-		limits, ok := model.PlanLimits[tier]
+		limits, ok := legacyPlanLimits[tier]
 		if !ok {
 			// Unknown tier — fall back to the free plan limits.
-			limits = model.PlanLimits["free"]
+			limits = legacyPlanLimits["free"]
 		}
 
 		conn := model.Connection{

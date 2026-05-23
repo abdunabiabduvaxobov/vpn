@@ -102,9 +102,9 @@ func CreateShareCode(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.
 		if tier == "" {
 			tier = "free"
 		}
-		limits, ok := model.PlanLimits[tier]
+		limits, ok := legacyPlanLimits[tier]
 		if !ok {
-			limits = model.PlanLimits["free"]
+			limits = legacyPlanLimits["free"]
 		}
 		if limits.MaxDevices != model.UnlimitedDevices {
 			deviceCount, err := repository.CountDevicesByUser(db, userID)
@@ -254,9 +254,9 @@ func LinkDevice(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 			if tier == "" {
 				tier = "free"
 			}
-			limits, ok := model.PlanLimits[tier]
+			limits, ok := legacyPlanLimits[tier]
 			if !ok {
-				limits = model.PlanLimits["free"]
+				limits = legacyPlanLimits["free"]
 			}
 
 			// 3. Capacity check inside the transaction. The redeeming

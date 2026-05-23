@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"vpnapp/server/api/internal/model"
 	"vpnapp/server/api/internal/repository"
 
 	"github.com/gofiber/fiber/v2"
@@ -42,7 +41,7 @@ func GetSubscription(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 					"data": fiber.Map{
 						"plan":        "free",
 						"is_active":   true,
-						"max_devices": model.PlanLimits["free"].MaxDevices,
+						"max_devices": legacyPlanLimits["free"].MaxDevices,
 					},
 				})
 			}
@@ -52,7 +51,7 @@ func GetSubscription(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		limits := model.PlanLimits[sub.Plan]
+		limits := legacyPlanLimits[sub.Plan]
 
 		return c.JSON(fiber.Map{
 			"data": fiber.Map{

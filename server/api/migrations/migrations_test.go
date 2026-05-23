@@ -31,16 +31,58 @@ func migrationsDir(t *testing.T) string {
 }
 
 // applyMigration reads a single .sql file and executes it. Postgres
-// supports the multi-statement BEGIN; ... COMMIT; blocks we use directly.
+// supports the multi-statement BEGIN; ... COMMIT; blocks we use directly,
+// except for statements that explicitly cannot run inside a transaction
+// (e.g. CREATE INDEX CONCURRENTLY in migration 017). For those we split the
+// file at statement boundaries and exec each segment separately.
 func applyMigration(t *testing.T, db *sql.DB, path string) {
 	t.Helper()
 	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	if _, err := db.Exec(string(body)); err != nil {
+	src := string(body)
+	if strings.Contains(strings.ToUpper(src), "CONCURRENTLY") {
+		// Run each statement on its own connection so CREATE INDEX
+		// CONCURRENTLY isn't placed inside an implicit transaction.
+		for _, stmt := range splitSQLStatements(src) {
+			if strings.TrimSpace(stmt) == "" {
+				continue
+			}
+			if _, err := db.Exec(stmt); err != nil {
+				t.Fatalf("apply %s (stmt): %v", filepath.Base(path), err)
+			}
+		}
+		return
+	}
+	if _, err := db.Exec(src); err != nil {
 		t.Fatalf("apply %s: %v", filepath.Base(path), err)
 	}
+}
+
+// splitSQLStatements naively splits SQL source on semicolons, stripping
+// single-line `-- comments` and blank lines first. Sufficient for the
+// hand-authored migration files in this repo (none use dollar-quoted
+// function bodies or semicolons inside literals).
+func splitSQLStatements(src string) []string {
+	var cleaned strings.Builder
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+		cleaned.WriteString(line)
+		cleaned.WriteString("\n")
+	}
+	parts := strings.Split(cleaned.String(), ";")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 func TestMigrations019_020(t *testing.T) {

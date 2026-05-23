@@ -8,6 +8,27 @@ import (
 	"gorm.io/gorm"
 )
 
+// FindSubscriptionByStripeID is a TEMPORARY backward-compat shim for handler
+// code that has not yet been migrated off the Stripe-era field name. Phase 3
+// migration 020 renamed `stripe_id` to `lava_contract_id`; the legacy Stripe
+// webhook handlers in `handler/payment.go` still look up subscriptions by the
+// provider-side identifier and will be rewritten in plan 03-05 to use a
+// dedicated `FindSubscriptionByLavaContractID` query. Once payment.go is
+// rewritten this shim MUST be deleted (tracked in 03-01 SUMMARY "Deferred").
+//
+// Deprecated: use FindSubscriptionByLavaContractID (added in plan 03-05).
+func FindSubscriptionByStripeID(db *gorm.DB, stripeID string) (*model.Subscription, error) {
+	var sub model.Subscription
+	result := db.Where("lava_contract_id = ?", stripeID).First(&sub)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, result.Error
+	}
+	return &sub, nil
+}
+
 // FindSubscriptionByUserID returns the most recent active subscription for a user.
 func FindSubscriptionByUserID(db *gorm.DB, userID string) (*model.Subscription, error) {
 	var sub model.Subscription

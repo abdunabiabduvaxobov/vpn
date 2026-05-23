@@ -75,17 +75,18 @@ func newAuthTestDB(t *testing.T) *gorm.DB {
 			email_verified          INTEGER NOT NULL DEFAULT 0,
 			email_is_private_relay  INTEGER NOT NULL DEFAULT 0,
 			auth_provider           TEXT NOT NULL DEFAULT 'guest',
+			plan_id                 TEXT NOT NULL DEFAULT '',
 			created_at              DATETIME,
 			updated_at              DATETIME
 		)`,
 		`CREATE TABLE IF NOT EXISTS subscriptions (
-			id         TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
-			user_id    TEXT NOT NULL,
-			plan       TEXT NOT NULL DEFAULT 'free',
-			stripe_id  TEXT,
-			is_active  INTEGER NOT NULL DEFAULT 1,
-			started_at DATETIME,
-			expires_at DATETIME
+			id               TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
+			user_id          TEXT NOT NULL,
+			plan             TEXT NOT NULL DEFAULT 'free',
+			lava_contract_id TEXT,
+			is_active        INTEGER NOT NULL DEFAULT 1,
+			started_at       DATETIME,
+			expires_at       DATETIME
 		)`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			id                  TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),

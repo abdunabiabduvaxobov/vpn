@@ -179,7 +179,8 @@ func CancelSubscription(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fib
 			})
 		}
 
-		if sub.StripeID == "" {
+		stripeID := legacyStripeID(sub)
+		if stripeID == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "subscription has no associated Stripe ID",
 			})
@@ -190,11 +191,11 @@ func CancelSubscription(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fib
 			InvoiceNow: stripe.Bool(false),
 			Prorate:    stripe.Bool(false),
 		}
-		_, err = stripesub.Cancel(sub.StripeID, cancelParams)
+		_, err = stripesub.Cancel(stripeID, cancelParams)
 		if err != nil {
 			logger.Error("failed to cancel stripe subscription",
 				zap.String("user_id", userID),
-				zap.String("stripe_id", sub.StripeID),
+				zap.String("stripe_id", stripeID),
 				zap.Error(err),
 			)
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -222,7 +223,7 @@ func CancelSubscription(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fib
 
 		logger.Info("subscription cancelled",
 			zap.String("user_id", userID),
-			zap.String("stripe_id", sub.StripeID),
+			zap.String("stripe_id", stripeID),
 		)
 
 		return c.JSON(fiber.Map{
@@ -269,12 +270,16 @@ func handleCheckoutCompleted(logger *zap.Logger, db *gorm.DB, raw json.RawMessag
 	}
 
 	now := time.Now()
+	var legacyStripeIDPtr *string
+	if stripeSubID != "" {
+		legacyStripeIDPtr = &stripeSubID
+	}
 	sub := &model.Subscription{
-		UserID:    userID,
-		Plan:      plan,
-		StripeID:  stripeSubID,
-		IsActive:  true,
-		StartedAt: now,
+		UserID:         userID,
+		Plan:           plan,
+		LavaContractID: legacyStripeIDPtr,
+		IsActive:       true,
+		StartedAt:      now,
 	}
 
 	if err := repository.CreateOrUpdateSubscription(db, sub); err != nil {

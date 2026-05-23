@@ -47,6 +47,7 @@ func newSSOTestDB(t *testing.T) *gorm.DB {
 			email_verified          INTEGER NOT NULL DEFAULT 0,
 			email_is_private_relay  INTEGER NOT NULL DEFAULT 0,
 			auth_provider           TEXT NOT NULL DEFAULT 'guest',
+			plan_id                 TEXT NOT NULL DEFAULT '',
 			created_at              DATETIME,
 			updated_at              DATETIME
 		)`,

@@ -111,7 +111,7 @@ func ListServers(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 
 		// Apply tier-based limit: free users see fewer servers.
 		// MaxServers == UnlimitedServers (-1) means no cap — skip slicing.
-		if limits, ok := model.PlanLimits[tier]; ok && limits.MaxServers != model.UnlimitedServers {
+		if limits, ok := legacyPlanLimits[tier]; ok && limits.MaxServers != model.UnlimitedServers {
 			if len(servers) > limits.MaxServers {
 				servers = servers[:limits.MaxServers]
 			}
