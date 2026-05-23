@@ -58,6 +58,12 @@ func ListPlansPublic(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 			currency = deriveCurrencyFromAcceptLanguage(c.Get("Accept-Language"))
 		}
 		if _, ok := allowedPublicCurrencies[currency]; !ok {
+			// WR-03: log rejected currencies at Debug so abuse / probing for
+			// extra currency support is detectable without spamming Info.
+			logger.Debug("/plans: invalid currency rejected",
+				zap.String("currency", currency),
+				zap.String("accept_language", c.Get("Accept-Language")),
+			)
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid currency"})
 		}
 
