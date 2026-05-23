@@ -125,6 +125,36 @@ func describeAction(method, path string) string {
 		return "update_server"
 	case method == fiber.MethodPost && strings.HasPrefix(stripped, "/admin/servers"):
 		return "create_server"
+
+	// --- Plan-CRUD (Phase 3 PAY-13/14/15). ---
+	// More-specific URLs (sub-resources, /replace) come BEFORE shorter
+	// /admin/plans matches so the switch resolves to the correct label.
+	//
+	// /replace is the price-versioning sub-resource (ADR §19.10 / PAY-15).
+	case method == fiber.MethodPost && strings.Contains(stripped, "/admin/plans/") && strings.HasSuffix(stripped, "/replace"):
+		return "replace_plan_offer"
+	// Plan-offers sub-resource. Order: more-specific (offer_id segment) before less.
+	case method == fiber.MethodPatch && strings.Contains(stripped, "/admin/plans/") && strings.Contains(stripped, "/offers/"):
+		return "update_plan_offer"
+	case method == fiber.MethodDelete && strings.Contains(stripped, "/admin/plans/") && strings.Contains(stripped, "/offers/"):
+		return "delete_plan_offer"
+	case method == fiber.MethodPost && strings.Contains(stripped, "/admin/plans/") && strings.HasSuffix(stripped, "/offers"):
+		return "create_plan_offer"
+	// Plan-servers sub-resource.
+	case method == fiber.MethodPut && strings.Contains(stripped, "/admin/plans/") && strings.HasSuffix(stripped, "/servers"):
+		return "replace_plan_servers"
+	case method == fiber.MethodPost && strings.Contains(stripped, "/admin/plans/") && strings.Contains(stripped, "/servers/"):
+		return "add_plan_server"
+	case method == fiber.MethodDelete && strings.Contains(stripped, "/admin/plans/") && strings.Contains(stripped, "/servers/"):
+		return "remove_plan_server"
+	// Top-level plans CRUD. These must come AFTER the sub-resource cases
+	// because /admin/plans/:id/offers also has the /admin/plans/ prefix.
+	case method == fiber.MethodPost && stripped == "/admin/plans":
+		return "create_plan"
+	case method == fiber.MethodPatch && strings.HasPrefix(stripped, "/admin/plans/"):
+		return "update_plan"
+	case method == fiber.MethodDelete && strings.HasPrefix(stripped, "/admin/plans/"):
+		return "delete_plan"
 	}
 	// Fallback: sanitise the path into a snake_case action name so the
 	// audit_log.action column (VARCHAR(64)) can't overflow on deep URLs
