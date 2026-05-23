@@ -95,13 +95,29 @@ type WebSocketClientConfig struct {
 }
 
 // ListServers handles GET /servers.
-// Returns active VPN servers from the database, limited by subscription tier.
+// Returns active VPN servers limited by the user's plan.
+// Admins bypass the plan filter and see all active servers (PAY-11, D-21).
 func ListServers(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		userID := c.Locals("user_id").(string)
-		tier := c.Locals("tier").(string)
+		userID, _ := c.Locals("user_id").(string)
+		role, _ := c.Locals("role").(string)
 
-		servers, err := repository.ListActiveServers(db)
+		var servers []model.VPNServer
+		var err error
+		if role == "admin" {
+			// Admin bypass — sees all active servers regardless of plan.
+			servers, err = repository.ListActiveServers(db)
+		} else {
+			planID, perr := resolveUserPlanID(c, db)
+			if perr != nil {
+				logger.Error("failed to resolve plan_id for ListServers",
+					zap.String("user_id", userID), zap.Error(perr))
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "internal server error",
+				})
+			}
+			servers, err = repository.ListServersForPlan(db, planID)
+		}
 		if err != nil {
 			logger.Error("failed to list servers", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -109,20 +125,11 @@ func ListServers(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		// Apply tier-based limit: free users see fewer servers.
-		// MaxServers == UnlimitedServers (-1) means no cap — skip slicing.
-		if limits, ok := legacyPlanLimits[tier]; ok && limits.MaxServers != model.UnlimitedServers {
-			if len(servers) > limits.MaxServers {
-				servers = servers[:limits.MaxServers]
-			}
-		}
-
 		logger.Debug("listing servers",
 			zap.String("user_id", userID),
-			zap.String("tier", tier),
+			zap.String("role", role),
 			zap.Int("count", len(servers)),
 		)
-
 		return c.JSON(fiber.Map{
 			"data": servers,
 		})
@@ -135,6 +142,36 @@ func GetServerConfig(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.
 	return func(c *fiber.Ctx) error {
 		serverID := c.Params("id")
 		userID := c.Locals("user_id").(string)
+		role, _ := c.Locals("role").(string)
+
+		// PAY-11 / D-22: enforce server-access at the handler layer before
+		// fetching the server. Admins bypass. Returns 404 (NOT 403) on denial
+		// so a lower-tier user can't enumerate paid-tier server UUIDs.
+		if role != "admin" {
+			planID, perr := resolveUserPlanID(c, db)
+			if perr != nil {
+				logger.Error("failed to resolve plan_id for GetServerConfig",
+					zap.String("user_id", userID), zap.Error(perr))
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "internal server error",
+				})
+			}
+			allowed, aerr := repository.IsServerAllowedForPlan(db, planID, serverID)
+			if aerr != nil {
+				logger.Error("failed to check plan-server pairing",
+					zap.String("plan_id", planID), zap.String("server_id", serverID), zap.Error(aerr))
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "internal server error",
+				})
+			}
+			if !allowed {
+				logger.Info("server not allowed for plan — returning 404 (defence in depth)",
+					zap.String("user_id", userID), zap.String("plan_id", planID), zap.String("server_id", serverID))
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+					"error": "server not found",
+				})
+			}
+		}
 
 		server, err := repository.FindServerByID(db, serverID)
 		if err != nil {
@@ -312,4 +349,30 @@ func protocolPriorityForRegion(region string, cfg ServerConfig) []string {
 	}
 
 	return available
+}
+
+// resolveUserPlanID returns the plan_id for the authenticated user.
+//
+// Until plan 03-07 (JWT plan_id claim) lands, c.Locals("plan_id") is unset —
+// fall back to a single DB lookup via FindUserByID. The 5-min access TTL
+// bound after 03-07 ships eventually makes the DB fallback dead code, but
+// the cost is one indexed PK lookup (~0.5ms) and structurally safer than
+// failing 500 on missing claim.
+//
+// IMPORTANT: after plan 03-07 ships and operators have rolled the JWT shape,
+// this helper continues to work — claims.PlanID populates c.Locals via the
+// amended middleware. No further code change in this file needed at that point.
+func resolveUserPlanID(c *fiber.Ctx, db *gorm.DB) (string, error) {
+	if planID, ok := c.Locals("plan_id").(string); ok && planID != "" {
+		return planID, nil
+	}
+	userID, _ := c.Locals("user_id").(string)
+	if userID == "" {
+		return "", fiber.ErrUnauthorized
+	}
+	user, err := repository.FindUserByID(db, userID)
+	if err != nil {
+		return "", err
+	}
+	return user.PlanID, nil
 }
