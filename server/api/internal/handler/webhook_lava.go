@@ -115,14 +115,31 @@ func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lava
 				zap.String("contract_id", contractID),
 			)
 			// Unknown but valid signature — record received and return 200.
-			_ = repository.MarkWebhookProcessed(db, rec.ID, nil)
+			// WR-06: log MarkWebhookProcessed failures at Warn so an apparent
+			// stale forensic record (processed_at IS NULL on a 200 path) is
+			// correlatable to the actual repo error.
+			if merr := repository.MarkWebhookProcessed(db, rec.ID, nil); merr != nil {
+				logger.Warn("webhook: MarkWebhookProcessed failed (forensic record will be stale)",
+					zap.String("event_id", rec.ID),
+					zap.String("event_type", event.EventType),
+					zap.String("contract_id", contractID),
+					zap.Error(merr),
+				)
+			}
 			return c.SendStatus(fiber.StatusOK)
 		}
 
 		// 5. Record outcome.
 		if processErr != nil {
 			errStr := processErr.Error()
-			_ = repository.MarkWebhookProcessed(db, rec.ID, &errStr)
+			if merr := repository.MarkWebhookProcessed(db, rec.ID, &errStr); merr != nil {
+				logger.Warn("webhook: MarkWebhookProcessed failed (forensic record will be stale)",
+					zap.String("event_id", rec.ID),
+					zap.String("event_type", event.EventType),
+					zap.String("contract_id", contractID),
+					zap.Error(merr),
+				)
+			}
 			logger.Error("webhook: processing failed",
 				zap.String("event_type", event.EventType),
 				zap.String("contract_id", contractID),
@@ -132,7 +149,14 @@ func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lava
 			// can correlate the retry.
 			return c.SendStatus(fiber.StatusInternalServerError)
 		}
-		_ = repository.MarkWebhookProcessed(db, rec.ID, nil)
+		if merr := repository.MarkWebhookProcessed(db, rec.ID, nil); merr != nil {
+			logger.Warn("webhook: MarkWebhookProcessed failed (forensic record will be stale)",
+				zap.String("event_id", rec.ID),
+				zap.String("event_type", event.EventType),
+				zap.String("contract_id", contractID),
+				zap.Error(merr),
+			)
+		}
 		return c.SendStatus(fiber.StatusOK)
 	}
 }
