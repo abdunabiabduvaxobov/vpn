@@ -13,6 +13,7 @@ import (
 	"vpnapp/server/api/internal/cache"
 	"vpnapp/server/api/internal/config"
 	"vpnapp/server/api/internal/handler"
+	"vpnapp/server/api/internal/lava"
 	"vpnapp/server/api/internal/middleware"
 	"vpnapp/server/api/internal/repository"
 	"vpnapp/server/api/internal/scheduler"
@@ -22,7 +23,6 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/gofiber/fiber/v2/utils"
-	stripe "github.com/stripe/stripe-go/v81"
 	"go.uber.org/zap"
 )
 
@@ -73,9 +73,6 @@ func main() {
 		)
 	}
 
-	// Set Stripe API key once at startup — handlers must not override this.
-	stripe.Key = cfg.StripeKey
-
 	// Phase 2 SSO verifier construction (D-34 — once at startup, DI into
 	// handlers). The Apple verifier launches a non-blocking JWKs refresh
 	// goroutine; the Google verifier has no init-time work. Audience
@@ -93,6 +90,13 @@ func main() {
 		cfg.GoogleClientIDAndroid,
 		cfg.GoogleClientIDWeb,
 	})
+
+	// Phase 3 lava.top client (D-14). Constructed once at startup with the
+	// active API key (selected by LAVA_ENV — config.go resolves into LavaActiveAPIKey).
+	// SSRF mitigation: BaseURL is hardcoded in internal/lava/client.go (D-15);
+	// API key never logged or echoed in error paths (D-32 §3).
+	lavaClient := lava.New(cfg.LavaActiveAPIKey)
+	logger.Info("lava client constructed", zap.String("env", cfg.LavaEnv))
 
 	// Connect to PostgreSQL
 	db, err := repository.NewDB(cfg.DatabaseURL)
@@ -154,7 +158,6 @@ func main() {
 		cfg.MinAppVersion,
 		logger,
 		middleware.SkipRule{Method: fiber.MethodGet, Path: "/api/v1/health"},
-		middleware.SkipRule{Method: fiber.MethodPost, Path: "/api/v1/webhook/stripe"},
 		middleware.SkipRule{Method: fiber.MethodPost, Path: "/api/v1/auth/admin-login"},
 		// The web admin panel does not send X-App-Version. Both the refresh
 		// endpoint (called whenever the 5-min access token expires) and the
@@ -191,8 +194,9 @@ func main() {
 	)
 	api.Get("/health", handler.Health())
 
-	// Stripe webhook — public route, authenticated via Stripe-Signature header.
-	api.Post("/webhook/stripe", handler.HandleStripeWebhook(logger, cfg, db))
+	// Phase 3 NOTE: the lava webhook (POST /webhook/lava) lands in plan 03-06
+	// with the dedicated IP-allowlist middleware. The old Stripe webhook route
+	// has been removed (D-02).
 
 	// Debug endpoint — logs only the "error" and "action" fields from
 	// client-side error reports. The body is intentionally NOT logged in
@@ -234,8 +238,13 @@ func main() {
 	protected.Delete("/connections/:id", handler.UnregisterConnection(logger, db))
 	protected.Get("/connections", handler.ListActiveConnections(logger, db))
 	protected.Patch("/connections/:id/heartbeat", handler.HeartbeatConnection(logger, db))
-	protected.Post("/subscription/checkout", handler.CreateCheckoutSession(logger, cfg, db))
-	protected.Post("/subscription/cancel", handler.CancelSubscription(logger, cfg, db))
+	// Phase 3 lava endpoints (D-02). /checkout supersedes the legacy
+	// Stripe-era subscription/checkout path.
+	// All three are PROTECTED (JWT required) — guest users get 403 from the handler
+	// itself (CreateCheckoutSession checks user.Email presence).
+	protected.Post("/checkout", handler.CreateCheckoutSession(logger, cfg, db, lavaClient))
+	protected.Post("/subscription/cancel", handler.CancelSubscription(logger, cfg, db, lavaClient))
+	protected.Get("/invoices/:id", handler.GetInvoice(logger, cfg, db, lavaClient))
 	// Plan sharing — owner generates a code, friend's device redeems it via /auth/link.
 	protected.Post("/devices/share-code", handler.CreateShareCode(logger, cfg, db))
 	protected.Get("/devices", handler.ListMyDevices(logger, db))
@@ -275,6 +284,10 @@ func main() {
 	admin.Delete("/users/:id/devices/:device_id", handler.AdminDeleteUserDevice(logger, db))
 	admin.Get("/users/:id/connections", handler.AdminListUserConnections(logger, db))
 	admin.Get("/audit-log", handler.AdminGetAuditLog(logger, db))
+	// Phase 3 lava admin endpoint (D-12 Option B). Proxies /api/v2/products
+	// via server-side API key so admin can pick lava offers from a dropdown.
+	// Inherits AuthRequired + AdminRequired + AuditLog from the admin group.
+	admin.Get("/lava/products", handler.AdminListLavaProducts(logger, lavaClient))
 	// Mounted under /admin so it's covered by the version-gate prefix
 	// skip, the AdminRequired middleware, and the audit middleware
 	// automatically. Full path: /api/v1/admin/change-password.
