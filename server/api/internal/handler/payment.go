@@ -1,368 +1,346 @@
 package handler
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"vpnapp/server/api/internal/config"
+	"vpnapp/server/api/internal/lava"
 	"vpnapp/server/api/internal/model"
 	"vpnapp/server/api/internal/repository"
 
 	"github.com/gofiber/fiber/v2"
-	stripe "github.com/stripe/stripe-go/v81"
-	"github.com/stripe/stripe-go/v81/checkout/session"
-	stripewebhook "github.com/stripe/stripe-go/v81/webhook"
-	stripesub "github.com/stripe/stripe-go/v81/subscription"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
+// allowedCurrencies enumerates the lava-supported currencies. Mirrors the
+// CHECK constraint in migration 019 + 020.
+var allowedCurrencies = map[string]struct{}{
+	"USD": {}, "EUR": {}, "RUB": {},
+}
+
+// allowedPeriodicities enumerates the lava-supported periodicities. Mirrors
+// the CHECK constraint in migration 019.
+var allowedPeriodicities = map[string]struct{}{
+	"ONE_TIME":        {},
+	"MONTHLY":         {},
+	"PERIOD_90_DAYS":  {},
+	"PERIOD_180_DAYS": {},
+	"PERIOD_YEAR":     {},
+}
+
+// checkoutRequest is the POST /checkout body (ADR §10.3).
 type checkoutRequest struct {
-	Plan string `json:"plan"`
+	PlanCode    string            `json:"plan_code"`
+	Periodicity string            `json:"periodicity"`
+	Currency    string            `json:"currency"`
+	ClientUtm   map[string]string `json:"clientUtm,omitempty"`
 }
 
+// checkoutResponse is the POST /checkout response.
 type checkoutResponse struct {
-	SessionID string `json:"session_id"`
-	URL       string `json:"url"`
+	InvoiceID     string  `json:"invoice_id"`
+	LavaInvoiceID string  `json:"lava_invoice_id"`
+	PaymentURL    string  `json:"payment_url"`
+	Amount        float64 `json:"amount"`
+	Currency      string  `json:"currency"`
 }
 
-// CreateCheckoutSession handles POST /subscription/checkout.
-// Accepts {"plan":"premium"|"ultimate"}, creates a Stripe Checkout Session
-// in subscription mode, and returns the session ID and hosted URL.
-func CreateCheckoutSession(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handler {
+// CreateCheckoutSession handles POST /api/v1/checkout (PAY-02).
+//
+// Flow (ADR §9.2 + §19.6):
+//  1. Validate body (plan_code, periodicity, currency).
+//  2. Load user — require email present (SSO-bound users only; guest users get 403).
+//  3. FindPlanByCode + FindActiveOffer — 404 if either missing.
+//  4. If offer.LavaOfferID is nil → 409 "offer_not_configured" (D-09 placeholder rows).
+//  5. 60s idempotency: if a pending invoice for (user, lava_offer_id) exists
+//     within the last 60s, return THAT instead of creating a duplicate.
+//  6. Call lava.CreateInvoice; INSERT invoices row; return paymentUrl.
+func CreateCheckoutSession(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lavaClient *lava.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID := c.Locals("user_id").(string)
 
 		var req checkoutRequest
 		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "invalid request body",
-			})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		}
+		if req.PlanCode == "" || req.Periodicity == "" || req.Currency == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "plan_code, periodicity, currency required"})
+		}
+		if _, ok := allowedCurrencies[req.Currency]; !ok {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "currency must be USD|EUR|RUB"})
+		}
+		if _, ok := allowedPeriodicities[req.Periodicity]; !ok {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid periodicity"})
 		}
 
-		priceID, err := planToPriceID(req.Plan, cfg)
+		// Load user — must have email (SSO-identified, not guest).
+		user, err := repository.FindUserByID(db, userID)
 		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": err.Error(),
+			logger.Error("checkout: load user", zap.String("user_id", userID), zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+		if user.Email == nil || *user.Email == "" {
+			// Guest user — must SSO first.
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error": "sign in with Apple or Google before purchasing",
 			})
 		}
 
-		successURL := fmt.Sprintf("%s://payment/success?session_id={CHECKOUT_SESSION_ID}", cfg.AppDeepLinkScheme)
-		cancelURL := fmt.Sprintf("%s://payment/cancel", cfg.AppDeepLinkScheme)
+		// Lookup plan + active offer.
+		plan, err := repository.FindPlanByCode(db, req.PlanCode)
+		if err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "plan not found"})
+			}
+			logger.Error("checkout: FindPlanByCode", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+		if !plan.IsActive {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "plan not active"})
+		}
+		offer, err := repository.FindActiveOffer(db, plan.ID, req.Periodicity, req.Currency)
+		if err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "no active offer for plan/periodicity/currency"})
+			}
+			logger.Error("checkout: FindActiveOffer", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+		if offer.LavaOfferID == nil || *offer.LavaOfferID == "" {
+			// D-09: placeholder offer — admin hasn't selected the lava offer yet.
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "offer_not_configured"})
+		}
 
-		params := &stripe.CheckoutSessionParams{
-			Mode: stripe.String(string(stripe.CheckoutSessionModeSubscription)),
-			LineItems: []*stripe.CheckoutSessionLineItemParams{
-				{
-					Price:    stripe.String(priceID),
-					Quantity: stripe.Int64(1),
+		// 60s idempotency reuse (ADR §9.2).
+		if existing, ierr := repository.FindActivePendingInvoice(db, userID, *offer.LavaOfferID, 60*time.Second); ierr == nil {
+			logger.Info("checkout: reusing pending invoice within 60s window",
+				zap.String("user_id", userID), zap.String("invoice_id", existing.ID))
+			return c.Status(fiber.StatusOK).JSON(fiber.Map{
+				"data": checkoutResponse{
+					InvoiceID:     existing.ID,
+					LavaInvoiceID: existing.LavaInvoiceID,
+					PaymentURL:    existing.PaymentURL,
+					Amount:        existing.Amount,
+					Currency:      existing.Currency,
 				},
-			},
-			SuccessURL: stripe.String(successURL),
-			CancelURL:  stripe.String(cancelURL),
-			Metadata: map[string]string{
-				"user_id": userID,
-				"plan":    req.Plan,
-			},
-		}
-
-		sess, err := session.New(params)
-		if err != nil {
-			logger.Error("failed to create stripe checkout session",
-				zap.String("user_id", userID),
-				zap.String("plan", req.Plan),
-				zap.Error(err),
-			)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "failed to create checkout session",
 			})
+		} else if !errors.Is(ierr, repository.ErrNotFound) {
+			logger.Error("checkout: FindActivePendingInvoice", zap.Error(ierr))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
 
-		logger.Info("checkout session created",
+		// Call lava.
+		lavaResp, err := lavaClient.CreateInvoice(c.Context(), lava.CreateInvoiceRequest{
+			Email:       *user.Email,
+			OfferID:     *offer.LavaOfferID,
+			Currency:    req.Currency,
+			Periodicity: req.Periodicity,
+			ClientUtm:   req.ClientUtm,
+		})
+		if err != nil {
+			logger.Error("checkout: lava CreateInvoice failed",
+				zap.String("user_id", userID), zap.String("lava_offer_id", *offer.LavaOfferID), zap.Error(err))
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "payment provider unavailable"})
+		}
+
+		// Persist locally.
+		paymentURL := ""
+		if lavaResp.PaymentURL != nil {
+			paymentURL = *lavaResp.PaymentURL
+		}
+		offerID := offer.ID
+		planID := plan.ID
+		inv := &model.Invoice{
+			UserID:        userID,
+			LavaInvoiceID: lavaResp.ID,
+			OfferID:       *offer.LavaOfferID,
+			PlanID:        &planID,
+			PlanOfferID:   &offerID,
+			Plan:          plan.Code,
+			Periodicity:   req.Periodicity,
+			Currency:      req.Currency,
+			Amount:        lavaResp.AmountTotal.Amount,
+			Status:        "pending",
+			PaymentURL:    paymentURL,
+		}
+		if err := repository.CreateInvoice(db, inv); err != nil {
+			logger.Error("checkout: CreateInvoice db insert failed", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+
+		logger.Info("checkout: invoice created",
 			zap.String("user_id", userID),
-			zap.String("plan", req.Plan),
-			zap.String("session_id", sess.ID),
+			zap.String("plan_code", plan.Code),
+			zap.String("periodicity", req.Periodicity),
+			zap.String("currency", req.Currency),
+			zap.String("lava_invoice_id", lavaResp.ID),
 		)
 
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 			"data": checkoutResponse{
-				SessionID: sess.ID,
-				URL:       sess.URL,
+				InvoiceID:     inv.ID,
+				LavaInvoiceID: lavaResp.ID,
+				PaymentURL:    paymentURL,
+				Amount:        lavaResp.AmountTotal.Amount,
+				Currency:      req.Currency,
 			},
 		})
 	}
 }
 
-// HandleStripeWebhook handles POST /webhook/stripe.
-// Validates the Stripe-Signature header, then dispatches on event type:
-//   - checkout.session.completed      → provision subscription, upgrade user tier
-//   - customer.subscription.deleted   → deactivate subscription, downgrade to free
-//   - invoice.payment_failed          → mark subscription inactive
-func HandleStripeWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		signature := c.Get("Stripe-Signature")
-		if signature == "" {
-			logger.Warn("webhook request missing Stripe-Signature header")
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "missing Stripe-Signature header",
-			})
-		}
-
-		payload := c.Body()
-		event, err := stripewebhook.ConstructEventWithOptions(payload, signature, cfg.StripeWebhookSecret,
-			stripewebhook.ConstructEventOptions{
-				// Ignore API version mismatches between the library and the Stripe
-				// account's configured version — handled by ensuring webhook endpoint
-				// version is kept in sync in the Stripe dashboard.
-				IgnoreAPIVersionMismatch: true,
-			},
-		)
-		if err != nil {
-			logger.Warn("webhook signature validation failed", zap.Error(err))
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "invalid webhook signature",
-			})
-		}
-
-		switch event.Type {
-		case "checkout.session.completed":
-			if err := handleCheckoutCompleted(logger, db, event.Data.Raw); err != nil {
-				logger.Error("error processing checkout.session.completed",
-					zap.String("event_id", event.ID),
-					zap.Error(err),
-				)
-				// Return 200 so Stripe does not retry — log and investigate manually.
-			}
-
-		case "customer.subscription.deleted":
-			if err := handleSubscriptionDeleted(logger, db, event.Data.Raw); err != nil {
-				logger.Error("error processing customer.subscription.deleted",
-					zap.String("event_id", event.ID),
-					zap.Error(err),
-				)
-			}
-
-		case "invoice.payment_failed":
-			if err := handlePaymentFailed(logger, db, event.Data.Raw); err != nil {
-				logger.Error("error processing invoice.payment_failed",
-					zap.String("event_id", event.ID),
-					zap.Error(err),
-				)
-			}
-
-		default:
-			logger.Debug("unhandled stripe event type", zap.String("type", string(event.Type)))
-		}
-
-		return c.SendStatus(fiber.StatusOK)
-	}
-}
-
-// CancelSubscription handles POST /subscription/cancel.
-// Cancels the Stripe subscription at period end and deactivates it in the DB.
-func CancelSubscription(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handler {
+// CancelSubscription handles POST /api/v1/subscription/cancel (PAY-10).
+//
+// Flow (ADR §10.6 + D-19 subscription.cancelled):
+//  1. Find the user's most recent active LavaContract.
+//  2. Call lava.CancelSubscription (DELETE /api/v1/subscriptions?contractId=X&email=Y).
+//  3. Locally mark lava_contracts.cancelled_at=now(), is_active=false.
+//  4. Do NOT downgrade tier — user keeps Pro until expires_at (cron downgrades in 03-09).
+//  5. Return {cancelled: true, access_until: <lava_contracts.expires_at>}.
+func CancelSubscription(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lavaClient *lava.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID := c.Locals("user_id").(string)
 
-		sub, err := repository.FindSubscriptionByUserID(db, userID)
+		user, err := repository.FindUserByID(db, userID)
 		if err != nil {
-			if errors.Is(err, repository.ErrNotFound) {
-				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-					"error": "no active subscription found",
-				})
+			logger.Error("cancel: load user", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+		if user.Email == nil || *user.Email == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "user has no email"})
+		}
+
+		// Find the most recent active lava_contracts row for this user.
+		var contract model.LavaContract
+		findErr := db.Where("user_id = ? AND is_active = ?", userID, true).Order("started_at DESC").First(&contract).Error
+		if findErr != nil {
+			if errors.Is(findErr, gorm.ErrRecordNotFound) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "no active subscription"})
 			}
-			logger.Error("failed to find subscription", zap.String("user_id", userID), zap.Error(err))
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "internal server error",
-			})
+			logger.Error("cancel: find active contract", zap.Error(findErr))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
 
-		stripeID := legacyStripeID(sub)
-		if stripeID == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "subscription has no associated Stripe ID",
-			})
+		// Call lava.
+		if err := lavaClient.CancelSubscription(c.Context(), contract.ContractID, *user.Email); err != nil {
+			logger.Error("cancel: lava CancelSubscription failed",
+				zap.String("contract_id", contract.ContractID), zap.Error(err))
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "payment provider unavailable"})
 		}
 
-			// Cancel at period end to avoid proration surprises.
-		cancelParams := &stripe.SubscriptionCancelParams{
-			InvoiceNow: stripe.Bool(false),
-			Prorate:    stripe.Bool(false),
-		}
-		_, err = stripesub.Cancel(stripeID, cancelParams)
-		if err != nil {
-			logger.Error("failed to cancel stripe subscription",
-				zap.String("user_id", userID),
-				zap.String("stripe_id", stripeID),
-				zap.Error(err),
-			)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "failed to cancel subscription with payment provider",
-			})
-		}
-
-		if err := repository.DeactivateSubscription(db, sub.ID); err != nil {
-			logger.Error("failed to deactivate subscription in db",
-				zap.String("sub_id", sub.ID),
-				zap.Error(err),
-			)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "internal server error",
-			})
-		}
-
-		if err := repository.UpdateUserTier(db, userID, "free"); err != nil {
-			logger.Error("failed to downgrade user tier",
-				zap.String("user_id", userID),
-				zap.Error(err),
-			)
-			// Non-fatal — subscription is already cancelled in Stripe and deactivated in DB.
+		// Mark local contract cancelled (tier NOT downgraded — expiry cron handles that).
+		now := time.Now()
+		if err := db.Model(&model.LavaContract{}).Where("id = ?", contract.ID).Updates(map[string]interface{}{
+			"is_active":    false,
+			"cancelled_at": &now,
+		}).Error; err != nil {
+			logger.Error("cancel: update local contract failed", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
 
 		logger.Info("subscription cancelled",
 			zap.String("user_id", userID),
-			zap.String("stripe_id", stripeID),
+			zap.String("contract_id", contract.ContractID),
 		)
 
 		return c.JSON(fiber.Map{
 			"data": fiber.Map{
-				"cancelled": true,
+				"cancelled":    true,
+				"access_until": contract.ExpiresAt,
 			},
 		})
 	}
 }
 
-// planToPriceID maps a plan name to the corresponding Stripe price ID from config.
-func planToPriceID(plan string, cfg *config.Config) (string, error) {
-	switch plan {
-	case "premium":
-		return cfg.StripePricePremium, nil
-	case "ultimate":
-		return cfg.StripePriceUltimate, nil
+// GetInvoice handles GET /api/v1/invoices/:id (PAY-09, D-25).
+//
+// Default: pure DB read.
+//
+// When ?escalate=true AND the local DB still shows status=pending, proxy to
+// lava's GET /api/v2/invoices/{lava_invoice_id} for a one-shot reconciliation:
+// if lava reports COMPLETED, we update local status to "paid" and ALSO update
+// invoices.status BUT DO NOT trigger SetUserPlan from this endpoint — the
+// webhook handler is the authoritative tier-grant path (per D-32 §2).
+// The escalate path solely flips the local invoice status so the /pay/success
+// page UX is snappy when the webhook is delayed.
+func GetInvoice(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lavaClient *lava.Client) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userID := c.Locals("user_id").(string)
+		invoiceID := c.Params("id")
+		escalate := c.Query("escalate") == "true"
+
+		inv, err := repository.FindInvoiceByID(db, invoiceID)
+		if err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "invoice not found"})
+			}
+			logger.Error("invoice: load failed", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+		// Ownership check — must own the invoice (D-32 §2).
+		if inv.UserID != userID {
+			// Same response as not-found to avoid existence leak.
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "invoice not found"})
+		}
+
+		// Escalate path — only when status is still pending.
+		if escalate && inv.Status == "pending" {
+			lavaInv, err := lavaClient.GetInvoice(c.Context(), inv.LavaInvoiceID)
+			if err != nil {
+				logger.Warn("invoice: lava GetInvoice failed during escalate (returning local data)",
+					zap.String("lava_invoice_id", inv.LavaInvoiceID), zap.Error(err))
+				// Non-fatal — fall through to return local pending status.
+			} else if lavaInv != nil {
+				localStatus := mapLavaStatusToLocal(lavaInv.Status)
+				if localStatus != inv.Status && localStatus != "" {
+					if uerr := repository.UpdateInvoiceStatus(db, inv.ID, localStatus); uerr != nil {
+						logger.Error("invoice: UpdateInvoiceStatus failed", zap.Error(uerr))
+						// Non-fatal — return what we have.
+					} else {
+						inv.Status = localStatus
+					}
+				}
+			}
+		}
+
+		return c.JSON(fiber.Map{
+			"data": fiber.Map{
+				"id":              inv.ID,
+				"lava_invoice_id": inv.LavaInvoiceID,
+				"status":          inv.Status,
+				"amount":          inv.Amount,
+				"currency":        inv.Currency,
+				"plan":            inv.Plan,
+				"periodicity":     inv.Periodicity,
+				"created_at":      inv.CreatedAt,
+			},
+		})
+	}
+}
+
+// mapLavaStatusToLocal maps lava's invoice status enum (uppercase, NEW |
+// IN_PROGRESS | COMPLETED | FAILED) to the local enum (pending | paid |
+// failed | cancelled). The mapping for invoice-detail responses differs
+// from the create-invoice response casing (RESEARCH §1.1 vs §1.2) —
+// handle both.
+func mapLavaStatusToLocal(lavaStatus string) string {
+	switch lavaStatus {
+	case "COMPLETED", "completed":
+		return "paid"
+	case "FAILED", "failed":
+		return "failed"
+	case "CANCELLED", "cancelled", "subscription-cancelled":
+		return "cancelled"
+	case "NEW", "IN_PROGRESS", "in-progress", "new":
+		return "pending"
 	default:
-		return "", fmt.Errorf("invalid plan %q: must be \"premium\" or \"ultimate\"", plan)
+		return ""
 	}
 }
 
-// handleCheckoutCompleted processes a checkout.session.completed event.
-func handleCheckoutCompleted(logger *zap.Logger, db *gorm.DB, raw json.RawMessage) error {
-	var sess stripe.CheckoutSession
-	if err := json.Unmarshal(raw, &sess); err != nil {
-		return fmt.Errorf("unmarshalling checkout session: %w", err)
-	}
-
-	userID, ok := sess.Metadata["user_id"]
-	if !ok || userID == "" {
-		return fmt.Errorf("checkout session %s has no user_id in metadata", sess.ID)
-	}
-
-	plan, ok := sess.Metadata["plan"]
-	if !ok || plan == "" {
-		return fmt.Errorf("checkout session %s has no plan in metadata", sess.ID)
-	}
-
-	// sess.Subscription is the Stripe subscription object created for this checkout.
-	stripeSubID := ""
-	if sess.Subscription != nil {
-		stripeSubID = sess.Subscription.ID
-	}
-
-	now := time.Now()
-	var legacyStripeIDPtr *string
-	if stripeSubID != "" {
-		legacyStripeIDPtr = &stripeSubID
-	}
-	sub := &model.Subscription{
-		UserID:         userID,
-		Plan:           plan,
-		LavaContractID: legacyStripeIDPtr,
-		IsActive:       true,
-		StartedAt:      now,
-	}
-
-	if err := repository.CreateOrUpdateSubscription(db, sub); err != nil {
-		return fmt.Errorf("upserting subscription for user %s: %w", userID, err)
-	}
-
-	if err := repository.UpdateUserTier(db, userID, plan); err != nil {
-		return fmt.Errorf("updating user tier for user %s: %w", userID, err)
-	}
-
-	logger.Info("subscription provisioned",
-		zap.String("user_id", userID),
-		zap.String("plan", plan),
-		zap.String("stripe_sub_id", stripeSubID),
-	)
-
-	return nil
-}
-
-// handleSubscriptionDeleted processes a customer.subscription.deleted event.
-func handleSubscriptionDeleted(logger *zap.Logger, db *gorm.DB, raw json.RawMessage) error {
-	var stripeSub stripe.Subscription
-	if err := json.Unmarshal(raw, &stripeSub); err != nil {
-		return fmt.Errorf("unmarshalling subscription: %w", err)
-	}
-
-	sub, err := repository.FindSubscriptionByStripeID(db, stripeSub.ID)
-	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			logger.Warn("subscription.deleted for unknown stripe ID", zap.String("stripe_id", stripeSub.ID))
-			return nil
-		}
-		return fmt.Errorf("finding subscription by stripe id %s: %w", stripeSub.ID, err)
-	}
-
-	if err := repository.DeactivateSubscription(db, sub.ID); err != nil {
-		return fmt.Errorf("deactivating subscription %s: %w", sub.ID, err)
-	}
-
-	if err := repository.UpdateUserTier(db, sub.UserID, "free"); err != nil {
-		return fmt.Errorf("downgrading tier for user %s: %w", sub.UserID, err)
-	}
-
-	logger.Info("subscription deactivated via webhook",
-		zap.String("user_id", sub.UserID),
-		zap.String("stripe_id", stripeSub.ID),
-	)
-
-	return nil
-}
-
-// handlePaymentFailed processes an invoice.payment_failed event.
-func handlePaymentFailed(logger *zap.Logger, db *gorm.DB, raw json.RawMessage) error {
-	// The invoice object contains a subscription field with the Stripe subscription ID.
-	var invoice stripe.Invoice
-	if err := json.Unmarshal(raw, &invoice); err != nil {
-		return fmt.Errorf("unmarshalling invoice: %w", err)
-	}
-
-	if invoice.Subscription == nil || invoice.Subscription.ID == "" {
-		logger.Warn("payment_failed invoice has no subscription", zap.String("invoice_id", invoice.ID))
-		return nil
-	}
-
-	sub, err := repository.FindSubscriptionByStripeID(db, invoice.Subscription.ID)
-	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			logger.Warn("payment_failed for unknown stripe subscription",
-				zap.String("stripe_id", invoice.Subscription.ID),
-			)
-			return nil
-		}
-		return fmt.Errorf("finding subscription by stripe id %s: %w", invoice.Subscription.ID, err)
-	}
-
-	if err := repository.DeactivateSubscription(db, sub.ID); err != nil {
-		return fmt.Errorf("deactivating subscription %s: %w", sub.ID, err)
-	}
-
-	logger.Info("subscription marked inactive due to payment failure",
-		zap.String("user_id", sub.UserID),
-		zap.String("stripe_id", invoice.Subscription.ID),
-	)
-
-	return nil
-}
+// Ensure the package compiles when imported by tests that previously
+// referenced Stripe helpers. The compile-time fmt usage prevents an
+// "imported and not used" error if no other reference remains.
+var _ = fmt.Sprintf
