@@ -66,6 +66,13 @@ func TestRequireEnv_ReturnsEmptyWhenAllSet(t *testing.T) {
 	t.Setenv("GOOGLE_CLIENT_ID_IOS", "ios-client.apps.googleusercontent.com")
 	t.Setenv("GOOGLE_CLIENT_ID_ANDROID", "android-client.apps.googleusercontent.com")
 	t.Setenv("GOOGLE_CLIENT_ID_WEB", "web-client.apps.googleusercontent.com")
+	// Phase 3 (PAY-16) — LAVA_* required keys must also be set.
+	t.Setenv("LAVA_ENV", "production")
+	t.Setenv("LAVA_API_KEY", "lava-live-key")
+	t.Setenv("LAVA_WEBHOOK_SECRET", "whsec-test")
+	t.Setenv("LAVA_WEBHOOK_ALLOWED_CIDRS", "0.0.0.0/0")
+	t.Setenv("LAVA_SUCCESS_URL", "https://risevpn.com/checkout/success")
+	t.Setenv("LAVA_FAIL_URL", "https://risevpn.com/checkout/fail")
 
 	missing := config.RequireEnv()
 
@@ -177,6 +184,13 @@ func TestRequireEnv_MissingSSOKeys_Reported(t *testing.T) {
 	t.Setenv("GOOGLE_CLIENT_ID_IOS", "")
 	t.Setenv("GOOGLE_CLIENT_ID_ANDROID", "")
 	t.Setenv("GOOGLE_CLIENT_ID_WEB", "")
+	// Phase 3 (PAY-16) — LAVA_* keys set so they don't appear in missing list.
+	t.Setenv("LAVA_ENV", "production")
+	t.Setenv("LAVA_API_KEY", "x")
+	t.Setenv("LAVA_WEBHOOK_SECRET", "x")
+	t.Setenv("LAVA_WEBHOOK_ALLOWED_CIDRS", "0.0.0.0/0")
+	t.Setenv("LAVA_SUCCESS_URL", "https://x")
+	t.Setenv("LAVA_FAIL_URL", "https://x")
 
 	missing := config.RequireEnv()
 
