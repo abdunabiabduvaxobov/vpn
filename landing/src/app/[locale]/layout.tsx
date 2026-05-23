@@ -4,8 +4,6 @@ import { NextIntlClientProvider, hasLocale } from "next-intl";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { notFound } from "next/navigation";
 import { routing } from "@/i18n/routing";
-import { Navbar } from "@/components/common/navbar";
-import { Footer } from "@/components/sections/footer";
 import { organizationSchema, softwareApplicationSchema } from "@/lib/seo";
 import "../globals.css";
 
@@ -122,11 +120,7 @@ export default async function LocaleLayout({
         id="top"
         className="min-h-screen bg-background text-foreground antialiased"
       >
-        <NextIntlClientProvider>
-          <Navbar />
-          <main>{children}</main>
-          <Footer />
-        </NextIntlClientProvider>
+        <NextIntlClientProvider>{children}</NextIntlClientProvider>
 
         <script
           type="application/ld+json"
