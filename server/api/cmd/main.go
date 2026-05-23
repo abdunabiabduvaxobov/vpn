@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"vpnapp/server/api/internal/auth/apple"
@@ -98,6 +99,17 @@ func main() {
 	lavaClient := lava.New(cfg.LavaActiveAPIKey)
 	logger.Info("lava client constructed", zap.String("env", cfg.LavaEnv))
 
+	// Parse LAVA_WEBHOOK_ALLOWED_CIDRS and construct the route-scoped IP allowlist
+	// middleware. Per RESEARCH §2.1+§2.2, Fiber's EnableTrustedProxyCheck alone
+	// does NOT reject untrusted IPs — it only ignores their X-Forwarded-* headers
+	// and falls back to RemoteIP(). This dedicated middleware reads
+	// c.Context().RemoteIP() (TCP-layer) and 403s on mismatch (PAY-06).
+	lavaCIDRs := strings.Split(cfg.LavaWebhookAllowedCIDRs, ",")
+	lavaIPAllowlist, err := middleware.LavaWebhookIPAllowlist(lavaCIDRs, logger)
+	if err != nil {
+		logger.Fatal("LAVA_WEBHOOK_ALLOWED_CIDRS parse failed", zap.Error(err))
+	}
+
 	// Connect to PostgreSQL
 	db, err := repository.NewDB(cfg.DatabaseURL)
 	if err != nil {
@@ -115,11 +127,17 @@ func main() {
 	// Start background session cleanup scheduler.
 	scheduler.Start(db, logger, cfg)
 
-	// Create Fiber app
+	// Create Fiber app.
+	// EnableTrustedProxyCheck + TrustedProxies is defence in depth — it ensures
+	// c.IP() returns the TCP-layer RemoteIP (not a spoofed X-Forwarded-For) for
+	// callers OUTSIDE the lava CIDR set on EVERY route. The webhook route gets
+	// its own LavaWebhookIPAllowlist middleware on top (PAY-06).
 	app := fiber.New(fiber.Config{
-		AppName:      "VPN API Server",
-		ServerHeader: "",
-		ErrorHandler: handler.ErrorHandler(logger),
+		AppName:                 "VPN API Server",
+		ServerHeader:            "",
+		ErrorHandler:            handler.ErrorHandler(logger),
+		EnableTrustedProxyCheck: true,
+		TrustedProxies:          lavaCIDRs,
 	})
 
 	// Global middleware.
@@ -163,6 +181,9 @@ func main() {
 		// endpoint (called whenever the 5-min access token expires) and the
 		// entire /admin/ route tree must bypass the mobile version gate.
 		middleware.SkipRule{Method: fiber.MethodPost, Path: "/api/v1/auth/refresh"},
+		// lava.top server posts the webhook without an X-App-Version header.
+		// IP allowlist + X-Api-Key are the auth gates for this route.
+		middleware.SkipRule{Method: fiber.MethodPost, Path: "/api/v1/webhook/lava"},
 		middleware.SkipRule{Path: "/api/v1/admin/", Prefix: true},
 	))
 
@@ -194,9 +215,11 @@ func main() {
 	)
 	api.Get("/health", handler.Health())
 
-	// Phase 3 NOTE: the lava webhook (POST /webhook/lava) lands in plan 03-06
-	// with the dedicated IP-allowlist middleware. The old Stripe webhook route
-	// has been removed (D-02).
+	// Phase 3 lava webhook (PAY-03..09). PUBLIC route — auth is via:
+	//   1. LavaWebhookIPAllowlist (TCP-layer RemoteIP check, 403 on miss).
+	//   2. X-Api-Key header inside the handler (crypto/subtle.ConstantTimeCompare).
+	// The old Stripe webhook route has been removed (D-02).
+	api.Post("/webhook/lava", lavaIPAllowlist, handler.HandleLavaWebhook(logger, cfg, db, lavaClient))
 
 	// Debug endpoint — logs only the "error" and "action" fields from
 	// client-side error reports. The body is intentionally NOT logged in
