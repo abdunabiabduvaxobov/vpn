@@ -13,6 +13,8 @@ const badgeVariants = cva(
       variant: {
         default:
           "bg-primary text-primary-foreground ring-1 ring-inset ring-primary/20",
+        secondary:
+          "bg-secondary text-secondary-foreground ring-1 ring-inset ring-secondary/30",
         outline: "text-foreground ring-1 ring-inset ring-border",
       },
     },

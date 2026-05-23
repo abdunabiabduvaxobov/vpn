@@ -6,6 +6,7 @@ import {
   Server,
   Settings,
   ShieldCheck,
+  Tag,
   Users,
 } from "lucide-react";
 
@@ -19,6 +20,7 @@ const navItems = [
   { to: "/dashboard", label: "Обзор", Icon: LayoutDashboard },
   { to: "/users", label: "Пользователи", Icon: Users },
   { to: "/servers", label: "Серверы", Icon: Server },
+  { to: "/plans", label: "Тарифы", Icon: Tag },
   { to: "/activity", label: "Журнал", Icon: Activity },
   { to: "/settings", label: "Настройки", Icon: Settings },
 ];
