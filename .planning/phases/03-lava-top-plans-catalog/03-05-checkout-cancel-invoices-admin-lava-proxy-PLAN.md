@@ -676,41 +676,18 @@ func TestCreateCheckoutSession_HappyPath(t *testing.T) {
 //   4. Assert status code + JSON body shape via json.NewDecoder
 ```
 
-    **CRITICAL:** the executor MUST implement all 9 tests named in the action block. The skeleton above shows the pattern (httptest mock + sqlite DB + mkPaymentApp helper). For `newLavaTestClient`, add this small helper inside the test file:
+    **CRITICAL:** the executor MUST implement all 9 tests named in the action block. The skeleton above shows the pattern (httptest mock + sqlite DB + mkPaymentApp helper). To construct a lava client pointing at the httptest server, call `lava.NewForTest("test-key", srv.URL)` — this helper is DEFINED in plan 03-02 T02 (lives in `server/api/internal/lava/client.go`); this plan only CONSUMES it. DO NOT modify `client.go` from this plan — `server/api/internal/lava/client.go` is NOT in this plan's `files_modified` and any change there belongs in 03-02.
+
+    If you find yourself wanting a thin bridge function in `payment_test.go`, it should look like this (optional sugar, not required):
 
 ```go
-// newLavaTestClient calls the package-private newWithBaseURL via a small bridge.
-// Since payment_test.go and lava package are different packages, we cannot
-// directly invoke lava.newWithBaseURL. Instead, expose a test-only helper IN
-// THE lava PACKAGE — RESEARCH §12.5 documents this; add to internal/lava/client_test.go
-// (or a new exported helper in internal/lava/test_helpers.go) called
-// NewWithBaseURLForTest. Alternative: do NOT mock at the lava-client layer;
-// instead use a stub Client struct with the same methods (but Client is opaque).
-// The simpler approach: add an unexported helper in internal/lava/dto.go or
-// elsewhere that constructs the client by calling newWithBaseURL — this stays
-// in-package.
-//
-// IMPLEMENTER: add `func NewForTest(apiKey, baseURL string) *Client {
-//     return newWithBaseURL(apiKey, baseURL) }` to internal/lava/client.go,
-// reachable from external test files. Update plan 03-02's <acceptance> if needed.
-//
-// For THIS plan, assume the helper exists; if not, add it as a one-line
-// follow-up to client.go.
+// Optional convenience wrapper — just calls lava.NewForTest from plan 03-02.
 func newLavaTestClient(t *testing.T, baseURL string) *lava.Client {
 	return lava.NewForTest("test-key", baseURL)
 }
 ```
 
-    **Two-line modification** to plan 03-02's `internal/lava/client.go`: add at the bottom (before the closing `}` of the package):
-```go
-// NewForTest constructs a Client pointed at a custom base URL. ONLY for use
-// by other-package tests that need to mock lava via httptest. The production
-// codebase MUST call New() — verified by the SSRF audit grep in plan 03-11.
-func NewForTest(apiKey, baseURL string) *Client {
-	return newWithBaseURL(apiKey, baseURL)
-}
-```
-    This is a 4-line addition to T02 of plan 03-02 — the executor of THIS plan (03-05) makes this addition INLINE while writing payment_test.go.
+    In `TestCreateCheckoutSession_HappyPath` above, the line `client := newLavaTestClient(t, lavaServer.URL)` could equivalently be written `client := lava.NewForTest("test-key", lavaServer.URL)`. Either form is fine — the constraint is that the constructor argument propagates to the client's baseURL, which is the contract verified in plan 03-02 T02.
 
     Run `cd server/api && go test ./internal/handler/ -run "TestCreateCheckoutSession|TestCancelSubscription_KeepsProUntilExpiry|TestGetInvoice" -count=1 -timeout=60s -v`.
   </action>
@@ -721,7 +698,6 @@ func NewForTest(apiKey, baseURL string) *Client {
     - `grep "TestCreateCheckoutSession_60sIdempotencyReuse" server/api/internal/handler/payment_test.go` finds one match (ADR §9.2)
     - `grep "TestCancelSubscription_KeepsProUntilExpiry" server/api/internal/handler/payment_test.go` finds one match (PAY-10 in 03-VALIDATION.md)
     - `grep "TestGetInvoice_OwnershipCheck_Returns404OnMismatch" server/api/internal/handler/payment_test.go` finds one match (D-32 §2)
-    - `grep "NewForTest" server/api/internal/lava/client.go` finds one match (the 4-line helper added by this plan)
     - `cd server/api && go test ./internal/handler/ -run "TestCreateCheckoutSession|TestCancelSubscription|TestGetInvoice" -count=1 -timeout=60s` exits 0
   </acceptance_criteria>
   <automated>cd server/api && go test ./internal/handler/ -run "TestCreateCheckoutSession|TestCancelSubscription_KeepsProUntilExpiry|TestGetInvoice" -count=1 -timeout=60s</automated>
