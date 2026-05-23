@@ -66,7 +66,7 @@ RiseVPN is a consumer VPN service operating on Android (Google Play) and iOS, ba
 
 ## Constraints
 
-- **Tech stack — Backend:** Go 1.22 + Fiber v2 + GORM + Postgres 16 + Redis 7. Locked. No language switch.
+- **Tech stack — Backend:** Go 1.25 + Fiber v2 + GORM + Postgres 16 + Redis 7. Locked. No language switch. (Bumped from 1.22 on 2026-05-23: indirect deps require directive >= 1.25 — local `go test` refused to run with 1.22.0 directive.)
 - **Tech stack — Mobile:** React Native 0.84, TypeScript, Zustand stores, axios, react-navigation. Locked.
 - **Tech stack — Landing:** Next.js 16 App Router + next-intl (EN/RU/ES) + shadcn/ui + Tailwind 4. Locked.
 - **Tech stack — Admin web:** Vite + React 19 + TanStack Query + shadcn/ui. Locked.

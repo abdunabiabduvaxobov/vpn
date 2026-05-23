@@ -9,7 +9,7 @@ requires:
   - phase: 02-auth-sso-backend
     provides: SSO handlers + migration 018 + auth_test.go fixtures (from plans 02-01..02-08)
 provides:
-  - go.mod aligned with CLAUDE.md locked stack (Go 1.22)
+  - go.mod aligned with CLAUDE.md locked stack (was Go 1.22; bumped to Go 1.25 on 2026-05-23 after escalation — see addendum below)
   - seedAdminUser test fixture aligned with Phase 1 SC#8 invariant (tier=free)
   - migration 018 transactional-DDL semantics documented inline for future operators
 affects: []
@@ -144,3 +144,28 @@ All file-level acceptance criteria pass. Go toolchain verification is structural
 ---
 *Phase: 02-auth-sso-backend*
 *Completed: 2026-05-22*
+
+---
+
+## Addendum (2026-05-23 — post-merge orchestrator escalation)
+
+Plan's Task 1 fallback fired. After Wave 2 merge, the orchestrator ran `go test ./...`
+and the local Go 1.26.1 toolchain refused with `go: updates to go.mod needed; to update
+it: go mod tidy`. `go mod tidy` proposed only one change: bump the directive from
+`1.22.0` back to `1.25.0` (no dependency-graph drift, no `toolchain` directive added).
+
+The user resolved the constraint conflict by **bumping the CLAUDE.md / PROJECT.md
+backend stack from Go 1.22 to Go 1.25**. The 02-10 IN-01 fix stays — go.mod now
+declares `go 1.25.0` matching the new locked stack. The original IN-01 finding
+("declares unreleased 1.25.0 from training-data hallucination") is replaced by an
+explicit, validated stack-version decision.
+
+**Final state:**
+- `server/api/go.mod` line 3: `go 1.25.0` (matches updated CLAUDE.md)
+- CLAUDE.md / PROJECT.md: "Tech stack — Backend: Go 1.25 + Fiber v2 + ..."
+- `go test ./...`: all packages PASS on local toolchain (12 packages, 0 failures)
+- `go vet ./...`: clean
+- `go build ./...`: clean
+
+This addendum is the canonical record. The plan body and earlier sections of this
+SUMMARY are preserved as the pre-escalation snapshot.
