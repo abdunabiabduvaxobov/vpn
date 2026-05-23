@@ -29,6 +29,9 @@ func Health() fiber.Handler {
 
 // GetSubscription handles GET /subscription.
 // Returns the user's active subscription from the database.
+//
+// PAY-11 / D-24: defaults come from the system plan (via FindSystemPlanID); paid-plan
+// limits come from FindPlanByCode(sub.Plan). No more hardcoded PlanLimits map.
 func GetSubscription(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID := c.Locals("user_id").(string)
@@ -36,12 +39,26 @@ func GetSubscription(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		sub, err := repository.FindSubscriptionByUserID(db, userID)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
-				// No subscription found — return default free plan
+				// No subscription — return system-plan defaults.
+				systemPlanID, sperr := repository.FindSystemPlanID(db)
+				if sperr != nil {
+					logger.Error("GetSubscription: FindSystemPlanID failed", zap.Error(sperr))
+					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+						"error": "internal server error",
+					})
+				}
+				systemPlan, sperr := repository.FindPlanByID(db, systemPlanID)
+				if sperr != nil {
+					logger.Error("GetSubscription: FindPlanByID(system) failed", zap.Error(sperr))
+					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+						"error": "internal server error",
+					})
+				}
 				return c.JSON(fiber.Map{
 					"data": fiber.Map{
-						"plan":        "free",
+						"plan":        systemPlan.Code,
 						"is_active":   true,
-						"max_devices": legacyPlanLimits["free"].MaxDevices,
+						"max_devices": systemPlan.MaxDevices,
 					},
 				})
 			}
@@ -51,7 +68,29 @@ func GetSubscription(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		limits := legacyPlanLimits[sub.Plan]
+		// Active subscription — read limits from the matching plan row.
+		plan, perr := repository.FindPlanByCode(db, sub.Plan)
+		if perr != nil {
+			// Plan was soft-deleted — fall back to system plan for the limits
+			// (the user keeps Pro until expiry per ADR §19.10; display the
+			// numeric limits from the system plan to avoid 500).
+			logger.Warn("GetSubscription: FindPlanByCode failed; falling back to system plan",
+				zap.String("plan", sub.Plan), zap.Error(perr))
+			systemPlanID, sperr := repository.FindSystemPlanID(db)
+			if sperr != nil {
+				logger.Error("GetSubscription: FindSystemPlanID failed (fallback)", zap.Error(sperr))
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "internal server error",
+				})
+			}
+			plan, sperr = repository.FindPlanByID(db, systemPlanID)
+			if sperr != nil {
+				logger.Error("GetSubscription: FindPlanByID(system) failed (fallback)", zap.Error(sperr))
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "internal server error",
+				})
+			}
+		}
 
 		return c.JSON(fiber.Map{
 			"data": fiber.Map{
@@ -60,7 +99,7 @@ func GetSubscription(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 				"is_active":   sub.IsActive,
 				"started_at":  sub.StartedAt,
 				"expires_at":  sub.ExpiresAt,
-				"max_devices": limits.MaxDevices,
+				"max_devices": plan.MaxDevices,
 			},
 		})
 	}
