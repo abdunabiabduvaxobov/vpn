@@ -290,6 +290,15 @@ func newWithBaseURL(apiKey, baseURL string) *Client {
 	}
 }
 
+// NewForTest constructs a Client pointing at an arbitrary base URL — for httptest-mocking ONLY.
+// External-package tests (e.g. handler/payment_test.go in plan 03-05, handler/webhook_lava_test.go
+// in plan 03-06) call this to point the lava client at httptest.NewServer().URL. Production code
+// MUST use New(), which always passes the hardcoded BaseURL. The SSRF audit grep in plan 03-11
+// confirms no production call site invokes NewForTest.
+func NewForTest(apiKey, baseURL string) *Client {
+	return newWithBaseURL(apiKey, baseURL)
+}
+
 // do is the shared request helper. Stamps X-Api-Key + Content-Type + Accept;
 // returns the raw *http.Response or a wrapped error. Caller closes resp.Body.
 func (c *Client) do(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
@@ -630,6 +639,9 @@ func VerifyAPIKey(received, current, previous string) bool {
     - Files `client.go`, `dto.go`, `invoice.go`, `products.go`, `subscription.go`, `webhook.go` all exist under `server/api/internal/lava/`
     - `grep 'const BaseURL = "https://gate.lava.top"' server/api/internal/lava/client.go` finds one match
     - `grep "ErrUseLastResponse" server/api/internal/lava/client.go` finds one match
+    - `grep -n "func NewForTest\(apiKey, baseURL string\)" server/api/internal/lava/client.go` finds exactly one match (test affordance lives WITH the package per BLOCKER #2 fix)
+    - `grep -n "newWithBaseURL\(apiKey, baseURL\)" server/api/internal/lava/client.go` finds at least 1 match in the NewForTest body — the parameter is passed through, NOT replaced with the package-const BaseURL
+    - `grep -B 2 "func NewForTest" server/api/internal/lava/client.go` shows the doc comment naming "httptest" explicitly so future readers understand the constraint
     - `grep "Timeout: 5 \\* time.Second" server/api/internal/lava/client.go` finds one match
     - `grep "subtle.ConstantTimeCompare" server/api/internal/lava/webhook.go` finds at least 2 matches
     - `grep 'POST", "/api/v3/invoice"' server/api/internal/lava/invoice.go` finds one match
@@ -1032,7 +1044,7 @@ truths:
   - "Active API key is resolved once at startup into Config.LavaActiveAPIKey; downstream code never picks between LAVA_API_KEY / LAVA_API_KEY_SANDBOX directly."
 artifacts:
   - path: "server/api/internal/lava/client.go"
-    provides: "*Client type + New constructor + hardcoded BaseURL"
+    provides: "*Client type + New constructor + hardcoded BaseURL + NewForTest helper for external-package httptest mocks"
     contains: 'const BaseURL = "https://gate.lava.top"'
   - path: "server/api/internal/lava/dto.go"
     provides: "All request/response DTOs (lava OpenAPI 1.17.0)"
