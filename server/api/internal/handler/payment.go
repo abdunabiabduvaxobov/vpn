@@ -294,6 +294,17 @@ func GetInvoice(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lavaClient 
 				// Non-fatal — fall through to return local pending status.
 			} else if lavaInv != nil {
 				localStatus := mapLavaStatusToLocal(lavaInv.Status)
+				// WR-04: surface the empty-string guard at Warn so the operator
+				// catches lava API changes (new enum values) early. Without
+				// this log the user's /pay/success page polls forever and the
+				// only signal is the support ticket.
+				if localStatus == "" {
+					logger.Warn("invoice: lava status not mapped — keeping local status",
+						zap.String("lava_status", lavaInv.Status),
+						zap.String("local_status", inv.Status),
+						zap.String("lava_invoice_id", inv.LavaInvoiceID),
+					)
+				}
 				if localStatus != inv.Status && localStatus != "" {
 					if uerr := repository.UpdateInvoiceStatus(db, inv.ID, localStatus); uerr != nil {
 						logger.Error("invoice: UpdateInvoiceStatus failed", zap.Error(uerr))
