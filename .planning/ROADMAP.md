@@ -93,7 +93,18 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
   5. `GET /api/v1/plans` (no auth) returns the seeded `free` and `pro` plans with their offers, and the landing /pricing page renders without any hardcoded price strings in `landing/`.
   6. Admin removes server S from plan P via `DELETE /admin/plans/:id/servers/:server_id`; a non-admin user on plan P calling `GET /servers` no longer sees S; an admin user on the same plan still sees it (admin bypass works).
   7. The tier granted by a webhook is derived from the lava.top `offerId` in the payload via `plan_offers` lookup, never from any client-supplied metadata.
-**Plans**: TBD
+**Plans**: 11 plans
+  - [ ] 03-01-PLAN.md (wave 1) — migrations 019 + 020 + GORM models + Stripe-leakage cleanup [PAY-01]
+  - [ ] 03-02-PLAN.md (wave 1) — internal/lava/ HTTP client + LAVA_* config + LAVA_ENV selector [PAY-07, PAY-16, PAY-02 (DTO), PAY-10 (DTO)]
+  - [ ] 03-03-PLAN.md (wave 2, depends 01) — plan_repo.go (17 functions) + invoice_repo.go + tests [PAY-01, PAY-08, PAY-09, PAY-11]
+  - [ ] 03-04-PLAN.md (wave 2, depends 01+03) — server-access enforcement (delete PlanLimits map; rewire servers.go, connection.go, devices.go, admin.go, health.go) [PAY-11]
+  - [ ] 03-05-PLAN.md (wave 3, depends 01+02+03) — POST /checkout + GET /invoices/:id + POST /subscription/cancel + GET /admin/lava/products + payment.go rewrite (Stripe deleted) [PAY-02, PAY-09 (escalate), PAY-10, PAY-13 (admin proxy)]
+  - [ ] 03-06-PLAN.md (wave 3, depends 01+02+03+05) — POST /webhook/lava + LavaWebhookIPAllowlist middleware + 5 event-type dispatch + idempotency UPSERT [PAY-03, PAY-04, PAY-05, PAY-06, PAY-07, PAY-08, PAY-09]
+  - [ ] 03-07-PLAN.md (wave 3, depends 01+03) — GET /api/v1/plans (public) + Redis cache wrapper + JWT plan_id claim + middleware fallback [PAY-12]
+  - [ ] 03-08-PLAN.md (wave 4, depends 01+03+07) — admin /plans CRUD (13 endpoints) + audit-log integration + cache busting [PAY-13, PAY-14, PAY-15]
+  - [ ] 03-09-PLAN.md (wave 4, depends 01+03) — expiry-downgrade cron (every 10 min) in scheduler.go [PAY-09]
+  - [ ] 03-10-PLAN.md (wave 5, depends 05+08) — admin-web Plans UI (7 shadcn install + 2 pages + 8 components + D-12 dropdown picker) [PAY-13, PAY-14, PAY-15]
+  - [ ] 03-11-PLAN.md (wave 5, depends 02+05+06+07+08+09) — docs/lava-payments-api.md + sandbox integration test + final grep smoke (PlanLimits, BaseURL, c.IP()) [PAY-01..PAY-16 closure]
 
 ### Phase 4: Landing surfaces
 **Goal**: A user on risevpn.com can sign in with Apple or Google, see their plan on `/dashboard`, choose Pro on `/pricing`, complete payment on lava.top, and land on `/pay/success` with Pro already active.

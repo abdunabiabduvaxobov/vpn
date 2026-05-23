@@ -1,5 +1,7 @@
 ---
 phase: 3
+plan: 10
+type: execute
 slug: lava-top-plans-catalog
 plan_number: 10
 wave: 5
@@ -31,6 +33,10 @@ files_modified:
 autonomous: true
 requirements_addressed: [PAY-13, PAY-14, PAY-15]
 estimated_complexity: high
+must_haves:
+  refs:
+    - "See <must_haves> XML block in plan body for canonical truths / artifacts / key_links"
+
 ---
 
 <objective>
