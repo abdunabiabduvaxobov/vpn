@@ -176,6 +176,9 @@ func main() {
 		cfg.MinAppVersion,
 		logger,
 		middleware.SkipRule{Method: fiber.MethodGet, Path: "/api/v1/health"},
+		// Phase 3 public plans (PAY-12). Landing-site browsers GET /plans
+		// directly and don't send X-App-Version. No auth on this route.
+		middleware.SkipRule{Method: fiber.MethodGet, Path: "/api/v1/plans"},
 		middleware.SkipRule{Method: fiber.MethodPost, Path: "/api/v1/auth/admin-login"},
 		// The web admin panel does not send X-App-Version. Both the refresh
 		// endpoint (called whenever the 5-min access token expires) and the
@@ -214,6 +217,13 @@ func main() {
 		handler.LinkDevice(logger, cfg, db),
 	)
 	api.Get("/health", handler.Health())
+
+	// Phase 3 public plans endpoint (PAY-12). No auth — landing /pricing reads
+	// this. Cached in Redis (cache:plans:public:{currency}, TTL 60s); admin
+	// writes (plan 03-08) bust via cache.BustPlansCache after a successful
+	// mutation. Currency derived from ?currency=USD|EUR|RUB or Accept-Language
+	// (D-27); response excludes admin-only fields per D-27.
+	api.Get("/plans", handler.ListPlansPublic(logger, db, redisClient))
 
 	// Phase 3 lava webhook (PAY-03..09). PUBLIC route — auth is via:
 	//   1. LavaWebhookIPAllowlist (TCP-layer RemoteIP check, 403 on miss).
