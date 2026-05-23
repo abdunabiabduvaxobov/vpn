@@ -90,7 +90,12 @@ import (
 )
 
 // DowngradeExpiredPlans flips users with lapsed subscriptions back to the
-// system plan + 'free' tier. The SQL is ADR §19.10 verbatim:
+// system plan + 'free' tier. The SQL is the ADR §19.10 cron, REVISED per the
+// BLOCKER #1 fix in plan 03-06 — the `s.is_active = TRUE` qualifier was DROPPED
+// because D-19 was tightened to flip subscriptions.is_active=false immediately
+// on subscription.recurring.payment.failed. Without dropping is_active here,
+// recurring-failed users would keep Pro forever past expires_at — the cron
+// would never find them.
 //
 //   UPDATE users u
 //      SET plan_id            = system_plan_id,
@@ -99,13 +104,21 @@ import (
 //      AND EXISTS (
 //          SELECT 1 FROM subscriptions s
 //           WHERE s.user_id = u.id
-//             AND s.is_active = TRUE
 //             AND s.expires_at IS NOT NULL
 //             AND s.expires_at < now()
 //      );
 //
+// The qualifier is now: "user is on a non-system plan AND their subscription's
+// expires_at has lapsed", regardless of is_active state. This catches BOTH
+// (a) users whose recurring payment failed (is_active flipped to false in 03-06
+// T03) and (b) users on still-active subscriptions whose expires_at lapsed for
+// any other reason (e.g. manual SQL cleanup, lava-side desync).
+//
+// Coordinated with plan 03-06: handleLavaRecurringFailed sets subscriptions.is_active=false per D-19.
+// This cron must NOT filter on is_active or those users would keep Pro forever past expires_at.
+//
 // Idempotent: re-running immediately is a no-op (the first run flipped them;
-// subsequent runs find no eligible rows).
+// subsequent runs find no eligible rows because users.plan_id is now system).
 //
 // Returns the rows-affected count for logging. Safe on an empty table.
 //
@@ -122,11 +135,13 @@ func DowngradeExpiredPlans(db *gorm.DB) (int64, error) {
 	// Resolve the user IDs first (driver-agnostic), then UPDATE them.
 	// On Postgres this could be a single UPDATE ... FROM, but the two-step
 	// approach is portable and the row count remains accurate.
+	// NOTE: `is_active` is intentionally NOT in the WHERE clause — see the
+	// doc comment above for the D-19 coordination with plan 03-06.
 	var userIDs []string
 	err = db.Model(&model.User{}).
 		Joins("JOIN subscriptions s ON s.user_id = users.id").
-		Where("users.plan_id != ? AND s.is_active = ? AND s.expires_at IS NOT NULL AND s.expires_at < ?",
-			systemPlanID, true, time.Now()).
+		Where("users.plan_id != ? AND s.expires_at IS NOT NULL AND s.expires_at < ?",
+			systemPlanID, time.Now()).
 		Pluck("users.id", &userIDs).Error
 	if err != nil {
 		return 0, err
@@ -218,6 +233,41 @@ func TestDowngradeExpiredPlans_FlipsLapsedUsers(t *testing.T) {
 	}
 }
 
+// TestRunExpiryDowngrade_FindsUsersRegardlessOfSubActive proves the D-19 BLOCKER #1
+// coordination: a user whose recurring payment failed has subscriptions.is_active=FALSE
+// (set in plan 03-06 T03 handleLavaRecurringFailed) but their expires_at is still in
+// the past. The cron MUST still downgrade them. Before the BLOCKER #1 fix, the cron
+// filtered `s.is_active = TRUE` and these users would keep Pro forever.
+func TestRunExpiryDowngrade_FindsUsersRegardlessOfSubActive(t *testing.T) {
+	db := setupPlanRepoDB(t)
+	free, pro := seedTwoPlans(t, db)
+	// User D: on pro; expires_at in the past; sub.is_active = FALSE (simulates
+	// post-recurring-failed state per plan 03-06 T03 D-19 literal reading).
+	userD := uuid.NewString()
+	if err := db.Create(&model.User{ID: userD, FullName: "D", SubscriptionTier: "pro", PlanID: pro.ID}).Error; err != nil {
+		t.Fatalf("seed D: %v", err)
+	}
+	yesterday := time.Now().Add(-24 * time.Hour)
+	if err := db.Create(&model.Subscription{
+		ID: uuid.NewString(), UserID: userD, Plan: "pro", IsActive: false, ExpiresAt: &yesterday,
+	}).Error; err != nil {
+		t.Fatalf("seed sub D: %v", err)
+	}
+
+	rows, err := repository.DowngradeExpiredPlans(db)
+	if err != nil {
+		t.Fatalf("DowngradeExpiredPlans: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("BLOCKER #1 / D-19: expected 1 row flipped (sub.is_active=FALSE must NOT exclude the user), got %d", rows)
+	}
+	var d model.User
+	_ = db.First(&d, "id = ?", userD).Error
+	if d.PlanID != free.ID || d.SubscriptionTier != "free" {
+		t.Errorf("BLOCKER #1 / D-19: User D with sub.is_active=FALSE + lapsed expires_at must be downgraded — got plan_id=%s tier=%s", d.PlanID, d.SubscriptionTier)
+	}
+}
+
 func TestDowngradeExpiredPlans_EmptyTable_NoOp(t *testing.T) {
 	db := setupPlanRepoDB(t)
 	seedTwoPlans(t, db) // need system plan for FindSystemPlanID
@@ -231,19 +281,21 @@ func TestDowngradeExpiredPlans_EmptyTable_NoOp(t *testing.T) {
 }
 ```
 
-    Run `cd server/api && go test ./internal/repository/ -run "TestDowngradeExpiredPlans" -count=1 -timeout=30s -v`.
+    Run `cd server/api && go test ./internal/repository/ -run "TestDowngradeExpiredPlans|TestRunExpiryDowngrade" -count=1 -timeout=30s -v`.
   </action>
   <acceptance_criteria>
     - Files `server/api/internal/repository/expiry_repo.go` and `expiry_repo_test.go` exist
     - `grep "FindSystemPlanID" server/api/internal/repository/expiry_repo.go` finds one match
     - `grep "expires_at < ?\|expires_at < \\?" server/api/internal/repository/expiry_repo.go` finds at least one match
-    - `grep "is_active = ?\\|is_active = \\?" server/api/internal/repository/expiry_repo.go` finds at least one match
+    - BLOCKER #1 fix: `grep -n "is_active" server/api/internal/repository/expiry_repo.go` finds matches ONLY in doc comments (lines starting with `//`) — NOT inside the `.Where(...)` chain. Verify with `awk '/Where\(/,/\)/' server/api/internal/repository/expiry_repo.go | grep -c "is_active"` returns 0 (zero is_active references INSIDE the GORM Where call).
+    - `grep -n "Coordinated with plan 03-06" server/api/internal/repository/expiry_repo.go` finds one match (the cross-link comment to handleLavaRecurringFailed)
     - `grep "TestDowngradeExpiredPlans_FlipsLapsedUsers" server/api/internal/repository/expiry_repo_test.go` finds one match
+    - `grep "TestRunExpiryDowngrade_FindsUsersRegardlessOfSubActive" server/api/internal/repository/expiry_repo_test.go` finds one match (D-19 BLOCKER #1 fix proof: sub.is_active=FALSE + lapsed expires_at still gets downgraded)
     - `grep "second call must return 0" server/api/internal/repository/expiry_repo_test.go` finds one match (idempotency proof)
-    - `cd server/api && go test ./internal/repository/ -run "TestDowngradeExpiredPlans" -count=1 -timeout=30s` exits 0
+    - `cd server/api && go test ./internal/repository/ -run "TestDowngradeExpiredPlans|TestRunExpiryDowngrade" -count=1 -timeout=30s` exits 0
   </acceptance_criteria>
-  <automated>cd server/api && go test ./internal/repository/ -run "TestDowngradeExpiredPlans" -count=1 -timeout=30s</automated>
-  <done>DowngradeExpiredPlans flips lapsed users to system plan + tier=free; idempotent on re-run; tests pass on sqlite.</done>
+  <automated>cd server/api && go test ./internal/repository/ -run "TestDowngradeExpiredPlans|TestRunExpiryDowngrade" -count=1 -timeout=30s</automated>
+  <done>DowngradeExpiredPlans flips lapsed users to system plan + tier=free regardless of subscriptions.is_active state (D-19 BLOCKER #1 coordination with plan 03-06); idempotent on re-run; tests pass on sqlite.</done>
 </task>
 
 <task type="auto">
@@ -329,14 +381,17 @@ func runExpiryDowngrade(db *gorm.DB, logger *zap.Logger) {
 - `cd server/api && go build ./...` exits 0
 - `cd server/api && go test ./... -count=1 -timeout=300s` exits 0
 - `TestDowngradeExpiredPlans_FlipsLapsedUsers` passes (PAY-09 evidence — expired users flip to system plan; non-expired users untouched)
+- `TestRunExpiryDowngrade_FindsUsersRegardlessOfSubActive` passes (BLOCKER #1 D-19 coordination — sub.is_active=FALSE + lapsed expires_at users still downgrade)
 - `TestDowngradeExpiredPlans_EmptyTable_NoOp` passes (D-26 idempotency on empty)
 - `grep "expiryTickCount%10" server/api/internal/scheduler/scheduler.go` confirms ~10 min cadence
+- `awk '/Where\(/,/\)/' server/api/internal/repository/expiry_repo.go | grep -c "is_active"` returns 0 (is_active NOT present inside the cron's GORM Where call — BLOCKER #1 fix)
 </verification>
 
 <must_haves>
 truths:
   - "DowngradeExpiredPlans flips lapsed users to the system plan + tier='free' in ONE SQL statement (PAY-09 + ADR §19.10)."
   - "DowngradeExpiredPlans is idempotent — re-running returns 0 rows immediately."
+  - "DowngradeExpiredPlans WHERE clause does NOT filter on subscriptions.is_active (BLOCKER #1 D-19 coordination with plan 03-06): a recurring-failed user whose subscriptions.is_active was flipped to false still gets downgraded once expires_at lapses. Without this, such users would keep Pro forever."
   - "scheduler.go runs runExpiryDowngrade approximately every 10 minutes (every 10 ticks of the existing 1-minute cleanup loop)."
   - "Existing scheduler cleanup pipeline (session cleanup, stale connections, stale devices, expired link codes, subscription expiry from HOTFIX-01) is unchanged — Phase 3 adds the plan-id flip as an additional step."
 artifacts:
@@ -363,7 +418,7 @@ key_links:
 | Threat ID | Category | Component | Disposition | Mitigation Plan |
 |-----------|----------|-----------|-------------|-----------------|
 | T-03-70 | DoS | Scheduler fires too aggressively and floods DB | accept | Every 10 minutes; one UPDATE that touches O(lapsed_users) rows. At any reasonable scale this is bounded. |
-| T-03-71 | Tampering | Scheduler downgrades a paying user mid-period | mitigate | WHERE clause requires `s.is_active = TRUE AND s.expires_at < now()`. A paid user's expires_at is in the future (set by webhook payment.success); they're never matched. |
+| T-03-71 | Tampering | Scheduler downgrades a paying user mid-period | mitigate | WHERE clause requires `s.expires_at < now()` (is_active intentionally dropped per BLOCKER #1 D-19 coordination with plan 03-06). A paid user's expires_at is in the future (set by webhook payment.success / extended by recurring.success); they're never matched. A user mid-cancellation but still inside their paid period also has expires_at in the future and is unaffected. |
 | T-03-72 | Repudiation | User claims their plan was downgraded incorrectly | mitigate | Each downgrade logs via `logger.Info("expired plans downgraded ... count=N")`. Phase 7 ADMIN-06 surfaces this in the UI; until then, ops can grep logs. |
 | T-03-73 | Tampering | Multi-replica race (each replica downgrades the same user) | accept | Single-replica v2.2.0. Phase 6 PERF-06 introduces RUN_SCHEDULER env gate. Even today, the operation is idempotent — concurrent UPDATEs converge on the same final state. |
 
@@ -373,7 +428,7 @@ ASVS L1 scoping for this plan (background job, no external surface). No L2 contr
 <success_criteria>
 1. `cd server/api && go build ./...` exits 0.
 2. `cd server/api && go test ./... -count=1 -timeout=300s` exits 0.
-3. PAY-09 cron path verified via `TestDowngradeExpiredPlans_FlipsLapsedUsers`.
+3. PAY-09 cron path verified via `TestDowngradeExpiredPlans_FlipsLapsedUsers` AND `TestRunExpiryDowngrade_FindsUsersRegardlessOfSubActive` (BLOCKER #1 D-19 coordination).
 4. Scheduler tick-counter gates the downgrade to every 10 minutes (1m × 10 ticks).
 5. Existing scheduler pipeline (HOTFIX-01 expired-subscription downgrade, stale connections, etc.) is intact.
 </success_criteria>
