@@ -20,12 +20,13 @@ must_haves:
   truths:
     - "GET /<locale>/pricing renders dynamically from the backend's /api/v1/plans response — no hardcoded prices anywhere in landing/"
     - "Currency is derived from active locale (ru→RUB, en→USD, es→EUR) and overridable via ?currency= which persists to a `pricing_currency` cookie"
-    - "Page is statically generated per (locale, currency) tuple with fetch cache tagged 'plans'"
+    - "Per-user CTA detection happens server-side via getSession() on every request (no force-static) so a logged-in Pro user never sees the 'Get Pro' CTA"
+    - "fetch('/api/v1/plans', { next: { tags: ['plans'], revalidate: 600 } }) keeps plans data cached at the fetch layer; revalidateTag('plans') still busts it after admin writes"
     - "POST /api/revalidate-pricing?secret=<REVALIDATE_SECRET> calls revalidateTag('plans') after constant-time secret comparison; otherwise returns 401"
     - "Empty state (no plans returned) renders an i18n-keyed message, not a crash"
   artifacts:
     - path: "landing/src/app/[locale]/(app)/pricing/page.tsx"
-      provides: "Pricing page — server component, ISR with fetch tag 'plans'"
+      provides: "Pricing page — server component, fetch-level ISR with tag 'plans' (no force-static so per-user CTA renders correctly)"
     - path: "landing/src/app/api/revalidate-pricing/route.ts"
       provides: "Webhook receiver — secret-protected, calls revalidateTag('plans')"
       exports: ["POST"]
@@ -59,16 +60,16 @@ tags: [pricing, isr, plans, currency, i18n]
 
 <objective>
 Build a fully dynamic /pricing page (WEB-04 + WEB-08) that:
-- Renders three locale × currency variants at build/request time: `/ru/pricing?currency=RUB|USD|EUR`, `/en/pricing?currency=USD|EUR|RUB`, `/es/pricing?currency=EUR|USD|RUB` (default currency = D-04 locale-based mapping)
-- Fetches plans from `${BACKEND_API_URL}/api/v1/plans?currency=<C>` with `next: { tags: ['plans'] }` so a single tag bust regenerates ALL variants
+- Renders three locale × currency variants per request: `/ru/pricing?currency=RUB|USD|EUR`, `/en/pricing?currency=USD|EUR|RUB`, `/es/pricing?currency=EUR|USD|RUB` (default currency = D-04 locale-based mapping)
+- Fetches plans from `${BACKEND_API_URL}/api/v1/plans?currency=<C>` with `next: { tags: ['plans'], revalidate: 600 }` so admin tag-busts continue to invalidate the cached body across all variants and a single backend call services up to 10 minutes of traffic per (locale, currency)
 - Exposes a `POST /api/revalidate-pricing?secret=<REVALIDATE_SECRET>` endpoint that the Go backend's admin write handlers call (D-13/D-14) — constant-time secret compare, then `revalidateTag('plans')`
 - Has zero hardcoded prices anywhere in `landing/` source
 
 The page is also the entry point for the checkout flow (Plan 07) — the CTA on each plan card carries `plan`, `period`, `currency` query params that Plan 07's checkout client component consumes.
 
-Purpose: This page is the public face of the Pro tier. WEB-04 ("renders dynamically, ISR with on-demand revalidate") is the single most user-visible Phase 4 deliverable for SC #5. Currency switching is the most-failed test in similar landing pages — get it right server-side or lose conversions in non-USD markets.
+Purpose: This page is the public face of the Pro tier. WEB-04 ("renders dynamically, ISR with on-demand revalidate") is the single most user-visible Phase 4 deliverable for SC #5. Currency switching is the most-failed test in similar landing pages — get it right server-side or lose conversions in non-USD markets. Per-user CTA detection (logged-in Pro user sees "Manage" / nothing instead of "Get Pro") happens at request time, NOT build time, to avoid a Pro user being shown the upgrade CTA and paying a second time.
 
-Output: A signed-out visitor visits `/<locale>/pricing`, sees pricing in their locale's currency, can toggle currency, and a CTA click forwards to Plan 07's checkout flow. Admin updates a plan in admin-web → fan-out hits /api/revalidate-pricing → all three variants regenerate on next request.
+Output: A signed-out visitor visits `/<locale>/pricing`, sees pricing in their locale's currency, can toggle currency, and a CTA click forwards to Plan 07's checkout flow. A logged-in Free user sees "Get Pro" CTA. A logged-in Pro user sees "Current plan" disabled state. Admin updates a plan in admin-web → fan-out hits /api/revalidate-pricing → fetch tag busts → next request regenerates the body.
 </objective>
 
 <execution_context>
@@ -89,7 +90,7 @@ Output: A signed-out visitor visits `/<locale>/pricing`, sees pricing in their l
 <interfaces>
 <!-- Locked CONTEXT.md decisions -->
 - D-04: locale → currency default mapping: ru→RUB, en→USD, es→EUR. `?currency=` query param overrides. Override persists to `pricing_currency` cookie (HttpOnly: NO — this cookie is read by client to render the chip — set as a regular cookie with Path=/; SameSite=Lax; Max-Age=2592000 (30 days); Secure when prod).
-- D-13: ISR via `fetch(url, { next: { tags: ['plans'] } })`. Tag bust via `revalidateTag('plans')` regenerates all dependent pages on next request.
+- D-13: ISR via `fetch(url, { next: { tags: ['plans'], revalidate: 600 } })`. Tag bust via `revalidateTag('plans')` regenerates the cached fetch body on next request. NOTE: we deliberately DO NOT set `export const dynamic = 'force-static'` on the page — that directive freezes `cookies()` and `getSession()` to build-time values, which would make a logged-in Pro user always appear logged-out on /pricing. D-13's "statically generated, tag-bust on admin write" intent is satisfied by the fetch-level `next: { tags: [...], revalidate: 600 }` semantics, not by page-level `force-static`.
 - D-14: `POST /api/revalidate-pricing?secret=<REVALIDATE_SECRET>` — constant-time compare; on success revalidate tag.
 
 Backend contract (Phase 3 plan 03-07):
@@ -121,7 +122,7 @@ Backend contract (Phase 3 plan 03-07):
     ]
   }
   ```
-- Cached server-side at backend with 60s TTL (PAY-12 cache wrapper); Phase 4 adds the LANDING-side ISR tag on top of that.
+- Cached server-side at backend with 60s TTL (PAY-12 cache wrapper); Phase 4 adds the LANDING-side fetch-tag cache on top of that.
 
 `landing/src/components/ui/card.tsx` interfaces (created in Plan 02):
 ```ts
@@ -221,7 +222,7 @@ export function TierBadge({ tier: "free" | "pro"; label: string }): JSX.Element;
     - `grep -n 'env.BACKEND_API_URL.*/api/v1/plans' landing/src/lib/plans.ts` returns 1 match
     - `cd landing && BACKEND_API_URL=http://x REVALIDATE_SECRET=y APPLE_SERVICE_ID=x APPLE_REDIRECT_URI=https://x/cb GOOGLE_CLIENT_ID_WEB=x GOOGLE_REDIRECT_URI=https://x/cb APP_URL=https://x npx tsc --noEmit` exits 0
   </acceptance_criteria>
-  <done>fetchPlans hits the backend with `next: { tags: ['plans'] }`, locale-currency.ts maps ru→RUB/en→USD/es→EUR and exposes a typed formatter.</done>
+  <done>fetchPlans hits the backend with `next: { tags: ['plans'], revalidate: 600 }`, locale-currency.ts maps ru→RUB/en→USD/es→EUR and exposes a typed formatter.</done>
 </task>
 
 <task type="auto" tdd="false">
@@ -248,11 +249,18 @@ export function TierBadge({ tier: "free" | "pro"; label: string }): JSX.Element;
     import { CurrencySwitcher } from "@/components/app/currency-switcher";
     import { PricingClient } from "./pricing-client";
 
-    // Use ISR semantics — the route is force-dynamic at the (app) layout level (Plan 02),
-    // but we override it back to static-with-tag here because /pricing is a public page
-    // that benefits from caching across users.
-    export const dynamic = "force-static";
-    export const revalidate = 600;
+    // IMPORTANT: We INTENTIONALLY do NOT set `export const dynamic = "force-static"` here.
+    // The (app) layout (Plan 02) already sets `force-dynamic` so getSession() / cookies()
+    // are evaluated at request time. force-static would freeze the cookie jar to its
+    // build-time (empty) value, which would make a logged-in Pro user appear logged-out
+    // and see the "Get Pro" CTA — a real risk of double-charging the user.
+    //
+    // Cache freshness is handled at the fetch() layer instead (see fetchPlans in plans.ts):
+    //   fetch(url, { next: { tags: ["plans"], revalidate: 600 } })
+    // revalidateTag("plans") (Task 3) still busts that fetch entry across all renders,
+    // so D-13's "statically generated, tag-bust on admin write" intent is preserved at
+    // the data-cache layer rather than the page-render layer.
+    export const runtime = "nodejs";
 
     type Props = {
       params: Promise<{ locale: string }>;
@@ -441,6 +449,7 @@ export function TierBadge({ tier: "free" | "pro"; label: string }): JSX.Element;
     - `grep -n 'currencyForLocale' landing/src/app/\[locale\]/\(app\)/pricing/page.tsx` returns 1 match
     - `grep -n 'getSession' landing/src/app/\[locale\]/\(app\)/pricing/page.tsx` returns 1 match
     - `grep -n 'PlanCard\|CurrencySwitcher' landing/src/app/\[locale\]/\(app\)/pricing/page.tsx` returns at least 2 matches
+    - `grep -n 'force-static' landing/src/app/\[locale\]/\(app\)/pricing/page.tsx` returns 0 matches (DELIBERATELY ABSENT — see action notes; force-static would break per-user CTA detection by freezing getSession() to build time)
     - `grep -n 'pricing_currency' landing/src/components/app/currency-switcher.tsx` returns 1 match
     - `grep -n 'SameSite=Lax' landing/src/components/app/currency-switcher.tsx` returns 1 match
     - `grep -rn 'data-price=\|"price":\s*[0-9]\|"\$[0-9]\|"€[0-9]\|"₽[0-9]' landing/src/` returns 0 matches (no hardcoded prices)
@@ -449,7 +458,7 @@ export function TierBadge({ tier: "free" | "pro"; label: string }): JSX.Element;
     - `grep -n 'next=/pricing.*plan=pro' landing/src/components/app/plan-card.tsx` returns 1 match (logged-out CTA target)
     - `cd landing && BACKEND_API_URL=http://x REVALIDATE_SECRET=y APPLE_SERVICE_ID=x APPLE_REDIRECT_URI=https://x/cb GOOGLE_CLIENT_ID_WEB=x GOOGLE_REDIRECT_URI=https://x/cb APP_URL=https://x npm run build` exits 0
   </acceptance_criteria>
-  <done>/pricing page renders dynamically from backend /api/v1/plans, currency switcher updates URL + cookie, plan card CTA carries the right query string for logged-in vs logged-out users, and no hardcoded prices appear anywhere in the source.</done>
+  <done>/pricing page renders dynamically from backend /api/v1/plans, currency switcher updates URL + cookie, plan card CTA carries the right query string for logged-in vs logged-out users, and no hardcoded prices appear anywhere in the source. force-static is NOT applied so per-user CTA detection works at request time.</done>
 </task>
 
 <task type="auto" tdd="false">
@@ -497,7 +506,7 @@ export function TierBadge({ tier: "free" | "pro"; label: string }): JSX.Element;
     - `grep -n 'runtime = "nodejs"' landing/src/app/api/revalidate-pricing/route.ts` returns 1 match
     - `cd landing && BACKEND_API_URL=http://x REVALIDATE_SECRET=test123 APPLE_SERVICE_ID=x APPLE_REDIRECT_URI=https://x/cb GOOGLE_CLIENT_ID_WEB=x GOOGLE_REDIRECT_URI=https://x/cb APP_URL=https://x npm run build` exits 0
   </acceptance_criteria>
-  <done>POST /api/revalidate-pricing?secret=<wrong> returns 401; POST /api/revalidate-pricing?secret=<right> returns 200 + busts the 'plans' cache tag.</done>
+  <done>POST /api/revalidate-pricing?secret=<wrong> returns 401; POST /api/revalidate-pricing?secret=<right> returns 200 + busts the 'plans' fetch cache tag.</done>
 </task>
 
 </tasks>
@@ -510,6 +519,7 @@ export function TierBadge({ tier: "free" | "pro"; label: string }): JSX.Element;
 | public visitor → /pricing | Untrusted; all data is read-only from backend |
 | backend admin write → /api/revalidate-pricing | Shared secret over HTTPS; SSRF surface |
 | client form → backend /plans | Mediated by Node proxy (Plan 03); CSRF n/a for GET |
+| logged-in user's session cookie → CTA branching | Server-side getSession() at request time — must NOT be cached at the page level |
 
 ## STRIDE Threat Register
 
@@ -517,17 +527,19 @@ export function TierBadge({ tier: "free" | "pro"; label: string }): JSX.Element;
 |-----------|----------|-----------|-------------|-----------------|
 | T-04-05-01 | E (Elevation) | /api/revalidate-pricing | mitigate | Task 3 constant-time compares `?secret=` against `env.REVALIDATE_SECRET`; mismatched secret returns 401 with no other side effects |
 | T-04-05-02 | I (Info disclosure) | REVALIDATE_SECRET in client bundle | mitigate | Plan 01's `env.ts` is `server-only`; importing into a client component fails the build. Secret never reaches the browser |
-| T-04-05-03 | D (DoS) | unauthenticated /pricing scrapers | accept | Backend's /api/v1/plans is public + cached (PAY-12); landing-side ISR (revalidate: 600s) means at most 1 backend call per 10 min per (locale, currency). Tag bust still cheap. Rate-limit handled at nginx for landing |
+| T-04-05-03 | D (DoS) | unauthenticated /pricing scrapers | accept | Backend's /api/v1/plans is public + cached (PAY-12); landing-side fetch cache (revalidate: 600s, tag 'plans') means at most 1 backend call per 10 min per (locale, currency). Tag bust still cheap. Rate-limit handled at nginx for landing |
 | T-04-05-04 | T (Tampering) | plan tampering (client submits modified plan id at checkout) | mitigate (downstream) | Plan 07's checkout uses `plan` + `period` query params to call backend `/checkout`. Backend trusts ONLY its own `plans` + `plan_offers` tables — client-supplied values are looked up; tampered codes return 4xx. Phase 3 PAY-08 closure |
 | T-04-05-05 | T (Tampering) | malicious `?currency=` value | mitigate | Task 1 `currencyForLocale` allow-lists USD/EUR/RUB; any other value falls back to locale default |
 | T-04-05-06 | I (Info disclosure) | server_countries leak of internal infra | accept | server_countries is intentionally public (PAY-12); Phase 3 already vets this list. Phase 4 just forwards it |
 | T-04-05-07 | S (Spoofing) | open admin tag-bust callbacks | mitigate | Task 3 requires the secret as a query param. NOTE: query params can land in access logs — Phase-future hardening should move the secret to a request header. For Phase 4, accepted given the per-bust rate is low and HTTPS is enforced |
 | T-04-05-08 | I (Info disclosure) | pricing_currency cookie | accept | Plain string ("USD"/"EUR"/"RUB"); not sensitive |
+| T-04-05-09 | E (Elevation by stale render) | logged-in Pro user shown "Get Pro" CTA | mitigate | Task 2 deliberately omits `export const dynamic = "force-static"` on the page. With force-static, `getSession()` returns build-time empty cookies → Pro user sees logged-out CTA → could trigger duplicate checkout. Inheriting the (app) layout's `force-dynamic` keeps `cookies()` evaluated at request time so isAuthed/planId are correct per user. The fetch-level `next: { tags: ['plans'], revalidate: 600 }` still amortises the backend call across users and still honours admin-write tag bust |
 </threat_model>
 
 <verification>
 - SC #5: `grep -rn '\\$[0-9]\\|€[0-9]\\|₽[0-9]\\|"price":\\s*[0-9]' landing/src/` returns 0 matches (no hardcoded prices)
-- SC #5 (continued): Three locale variants (`/ru/pricing`, `/en/pricing`, `/es/pricing`) build to separate ISR variants → `curl -I http://localhost:3000/ru/pricing` and friends each return 200 with proper Cache-Control
+- SC #5 (continued): Three locale variants (`/ru/pricing`, `/en/pricing`, `/es/pricing`) render per-request → `curl -I http://localhost:3000/ru/pricing` returns 200; plans data is served from the fetch cache (with revalidate=600) for up to 10 minutes between backend calls
+- Per-user CTA: A request with a Pro session cookie shows "Current plan" (disabled) on the Pro card; a request without session shows "Get Pro" → /login (Plan 08 Playwright assertion)
 - Revalidate: POST /api/revalidate-pricing?secret=<env value> → 200; with wrong secret → 401 (Plan 08 smoke)
 - WEB-04: Currency switcher click updates `?currency=` and persists `pricing_currency` cookie (Plan 08 Playwright assertion)
 - Build: `npm run build` exits 0 with all env vars provided
@@ -540,12 +552,15 @@ export function TierBadge({ tier: "free" | "pro"; label: string }): JSX.Element;
 - revalidateTag('plans') wired behind a constant-time secret check (D-13/D-14)
 - Empty state renders cleanly when backend returns no plans
 - No hardcoded prices anywhere in landing/
+- Per-user CTA detection (Pro vs Free) works correctly at request time — no force-static
 </success_criteria>
 
 <output>
 After completion, create `.planning/phases/04-landing-surfaces/04-05-pricing-plans-isr-revalidate-SUMMARY.md` documenting:
-- Static-with-tag mode chosen for /pricing (overrides parent (app) layout's force-dynamic)
+- Why force-static was NOT applied to /pricing: it would freeze getSession() to build-time empty cookies and silently break per-user CTA detection (logged-in Pro user could be shown "Get Pro" and re-pay). D-13's intent is achieved via fetch-level `next: { tags: ['plans'], revalidate: 600 }` + Task 3's revalidateTag('plans') instead.
 - pricing_currency cookie attributes (non-HttpOnly, SameSite=Lax, 30-day)
 - Phase 3 follow-up: backend admin handlers in `server/api/internal/handler/plans_admin.go` need to POST to `${APP_URL}/api/revalidate-pricing?secret=${REVALIDATE_SECRET}` after each successful write. Capture as `/gsd-note` (operator follow-up).
 - Phase-future hardening flag: secret-in-query-param vs secret-in-header
 </output>
+</content>
+</invoke>

@@ -21,7 +21,7 @@ must_haves:
     - "A logged-in visitor on /pricing who clicks 'Get Pro' triggers POST /api/v1/checkout in a single round-trip and redirects to the returned lava.top paymentUrl"
     - "A logged-out visitor clicking 'Get Pro' is redirected to /<locale>/login?next=/pricing&plan=pro&period=monthly&currency=<C>; after sign-in returns to /<locale>/pricing?plan=pro&period=monthly&currency=<C>&checkout=auto and the auto-checkout fires immediately"
     - "/pay/success?invoiceId=X polls GET /api/v1/invoices/{id} every 2s — polls 1-5 use the cheap path, polls 6+ add ?escalate=true"
-    - "When status flips to 'paid', the page shows 'Pro is active!' and a Continue button → /<locale>/dashboard; polling stops"
+    - "When status flips to 'paid', the page FORCES a token refresh via POST /api/v1/auth/refresh (so the Plan 03 proxy re-issues rv_user with the new plan_id from the rotated JWT — D-17), THEN shows 'Pro is active!' with a Continue button → /<locale>/dashboard; polling stops"
     - "After 30s without 'paid', the page shows 'Still processing your payment…' with a Refresh button + Telegram support link; polling stops"
     - "If status flips to 'failed', the page redirects to /<locale>/pay/fail?invoiceId=X&reason=<r>"
     - "/pay/fail renders i18n-aware messaging with a 'Try again' CTA back to /pricing (preserving plan/period/currency)"
@@ -32,7 +32,7 @@ must_haves:
     - path: "landing/src/app/[locale]/(app)/pay/success/page.tsx"
       provides: "/pay/success — auth-gated server page that hosts PollClient"
     - path: "landing/src/app/[locale]/(app)/pay/success/poll-client.tsx"
-      provides: "Polling logic — 2s interval, escalate at poll 6, 30s timeout, transitions to active/timeout/failed states"
+      provides: "Polling logic — 2s interval, escalate at poll 6, 30s timeout, force-refresh on paid, transitions to active/timeout/failed states"
       exports: ["PollClient"]
     - path: "landing/src/app/[locale]/(app)/pay/fail/page.tsx"
       provides: "/pay/fail — reads ?reason= and renders matching copy"
@@ -51,11 +51,15 @@ must_haves:
       to: "GET /api/v1/invoices/{id}[?escalate=true]"
       via: "setInterval 2s"
       pattern: "/api/v1/invoices"
+    - from: "landing/src/app/[locale]/(app)/pay/success/poll-client.tsx"
+      to: "POST /api/v1/auth/refresh (via Plan 03 proxy, triggered on status=paid)"
+      via: "fetch('/api/v1/auth/refresh', { method: 'POST' }) — Plan 03 proxy re-issues rv_user with new plan_id"
+      pattern: "/api/v1/auth/refresh|auth/refresh"
     - from: "landing/src/app/[locale]/(app)/pay/fail/page.tsx"
       to: "/<locale>/pricing?plan=...&period=...&currency=..."
       via: "Link href"
       pattern: "Link.*pricing"
-tags: [checkout, payments, polling, lava, isr]
+tags: [checkout, payments, polling, lava, isr, plan-id-freshness]
 ---
 
 <objective>
@@ -63,12 +67,12 @@ Wire the entire money flow: logged-out → /pricing → /login → /pricing (aut
 
 Specifically:
 - WEB-05: "Get Pro" on /pricing POSTs /checkout and redirects to lava.top; logged-out auto-redirects to /login with the right `next=` and resumes after sign-in.
-- WEB-06: /pay/success polls /invoices/{id} for up to 30s with 2s cadence + escalation at poll 6, shows "we'll email you" after timeout.
+- WEB-06: /pay/success polls /invoices/{id} for up to 30s with 2s cadence + escalation at poll 6, shows "we'll email you" after timeout. **B2 fix**: when polling detects `status === "paid"`, the page triggers a `POST /api/v1/auth/refresh` through the proxy BEFORE redirecting/showing "active". Plan 03's proxy decodes `plan_id` from the new access_token JWT and re-issues `rv_user` with the upgraded planId, so the user lands on /dashboard with Pro visible immediately — no waiting 5 minutes for natural rv_at expiry.
 - WEB-07: /pay/fail shows friendly retry CTA back to /pricing.
 
-Purpose: This is where money becomes possible. Plan 04 puts identity in place; Plan 05 displays prices; Plan 06 confirms the user; **this plan** is the only thing that converts intent into a paid subscription. Every concrete number (2s poll, escalate at poll 6, 30s timeout) is locked in CONTEXT D-21 and must not be changed.
+Purpose: This is where money becomes possible. Plan 04 puts identity in place; Plan 05 displays prices; Plan 06 confirms the user; **this plan** is the only thing that converts intent into a paid subscription. Every concrete number (2s poll, escalate at poll 6, 30s timeout) is locked in CONTEXT D-21 and must not be changed. The forced refresh on paid status is the final wiring that makes the milestone goal — *"land on /pay/success with Pro already active"* — literally true within ~2-3s of webhook arrival.
 
-Output: A logged-in user clicks "Get Pro" → lava.top opens in a new tab → user pays → lava redirects to /pay/success → within ~2s of webhook arrival the page shows "Pro is active!" → Continue → /dashboard with the Pro badge.
+Output: A logged-in user clicks "Get Pro" → lava.top opens → user pays → lava redirects to /pay/success → within ~2s of webhook arrival the page detects `paid`, fires the refresh trigger, shows "Pro is active!" → Continue → /dashboard with the Pro badge.
 </objective>
 
 <execution_context>
@@ -79,6 +83,7 @@ Output: A logged-in user clicks "Get Pro" → lava.top opens in a new tab → us
 <context>
 @.planning/phases/04-landing-surfaces/04-CONTEXT.md
 @.planning/phases/04-landing-surfaces/04-UI-SPEC.md
+@.planning/phases/04-landing-surfaces/04-03-node-proxy-cookies-refresh-PLAN.md
 @.planning/phases/04-landing-surfaces/04-04-login-oauth-callback-PLAN.md
 @.planning/phases/04-landing-surfaces/04-05-pricing-plans-isr-revalidate-PLAN.md
 @.planning/phases/04-landing-surfaces/04-06-dashboard-signout-PLAN.md
@@ -96,14 +101,16 @@ Output: A logged-in user clicks "Get Pro" → lava.top opens in a new tab → us
 - D-21: polling cadence — 2s interval, polls 1-5 use cheap path, polls 6+ add ?escalate=true, 30s total timeout, statuses "paid" / "pending" / "failed" / "cancelled".
 - D-22: i18n message keys — `pay.success.processing` / `.active` / `.takingLonger.heading` / `.takingLonger.body` / `.refresh` / `.contactSupport` / `.continue`.
 - D-23: /pay/fail copy — title constant, body varies by `?reason=` (default/declined/cancelled), primary CTA "Try again" → /pricing, secondary "Contact support" → Telegram.
+- D-17: rv_user.planId is the source of truth for /dashboard plan display. After a successful payment, the BACKEND upgrades the user's plan_id in the users table, and subsequent JWT mints (refresh, new login) carry the new plan_id claim. The CLIENT must trigger a refresh to pick up the new JWT — natural rv_at expiry takes up to 5 min. This plan triggers it explicitly on `status === "paid"`.
 
 Backend contracts (Phase 3 plan 03-05):
 - POST /api/v1/checkout — body `{plan_code: "pro", periodicity: "monthly" | "yearly", currency: "USD"|"EUR"|"RUB"}` → 200 `{payment_url: string, invoice_id: string}`. Auth required (Bearer via Plan 03 proxy).
 - GET /api/v1/invoices/:id[?escalate=true] — returns `{id, status: "pending"|"paid"|"failed"|"cancelled", plan_code, ...}`. Auth required. 404 if invoice doesn't belong to caller (ownership check).
+- POST /api/v1/auth/refresh — triggered through the Plan 03 proxy (`fetch('/api/v1/auth/refresh', { method: 'POST' })`). The Plan 03 proxy doesn't actually forward this as a normal call — instead, Plan 03's refresh path is triggered by any 401 OR by an explicit POST to this URL. For Phase 4 we use the explicit POST: Plan 03's catch-all proxy forwards it to backend `/api/v1/auth/refresh`, on 200 it re-issues rv_at + rv_rt + rv_user (with decodePlanIdFromJwt on the new access_token). The actual response body is irrelevant to the page — we just need the cookie side-effects.
 - lava.top URL TTL ~24h per CLAUDE.md lava constraints.
 
 Status mapping (status string → UI state):
-- "paid" → active
+- "paid" → trigger refresh → active
 - "pending" → processing (continue polling)
 - "failed" → redirect to /pay/fail
 - "cancelled" → redirect to /pay/fail?reason=cancelled
@@ -202,20 +209,21 @@ Note: backend may return lowercased OR uppercased status (per 03-05 SUMMARY: `ma
 </task>
 
 <task type="auto" tdd="false">
-  <name>Task 2: /pay/success — PollClient (2s + escalate + 30s timeout) + PaymentStatusCard</name>
+  <name>Task 2: /pay/success — PollClient (2s + escalate + 30s timeout + force-refresh on paid) + PaymentStatusCard</name>
   <files>landing/src/app/[locale]/(app)/pay/success/page.tsx, landing/src/app/[locale]/(app)/pay/success/poll-client.tsx, landing/src/components/app/payment-status-card.tsx</files>
   <read_first>
     - landing/src/lib/session.ts (Plan 02)
     - landing/src/components/ui/card.tsx
     - landing/src/components/ui/button.tsx
     - landing/src/lib/constants.ts (SUPPORT.telegram)
-    - .planning/phases/04-landing-surfaces/04-CONTEXT.md (D-21, D-22)
+    - .planning/phases/04-landing-surfaces/04-CONTEXT.md (D-17, D-21, D-22)
     - .planning/phases/04-landing-surfaces/04-UI-SPEC.md (§/pay/success + §Copywriting Contract)
+    - .planning/phases/04-landing-surfaces/04-03-node-proxy-cookies-refresh-PLAN.md (B2 fix — proxy re-issues rv_user on refresh)
     - .planning/phases/03-lava-top-plans-catalog/03-05-checkout-cancel-invoices-admin-lava-proxy-SUMMARY.md (status semantics, escalate=true)
     - landing/src/i18n/navigation.ts
   </read_first>
   <action>
-    Create landing/src/components/app/payment-status-card.tsx (Server-renderable; receives state as prop from PollClient — split into a presentation component so PollClient can swap by state):
+    Create landing/src/components/app/payment-status-card.tsx (Client component — receives state as prop from PollClient — split into a presentation component so PollClient can swap by state):
     ```tsx
     "use client";
     import { useTranslations } from "next-intl";
@@ -298,6 +306,36 @@ Note: backend may return lowercased OR uppercased status (per 03-05 SUMMARY: `ma
         if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
       }
 
+      /**
+       * B2/D-17 FIX — Force a token refresh after detecting status=paid.
+       *
+       * The backend upgrades users.plan_id when the lava.top webhook lands, but the
+       * user's current rv_at JWT was minted BEFORE the upgrade and still claims the
+       * old plan_id. Plan 03's proxy decodes plan_id from the access_token at every
+       * refresh rotation and re-issues rv_user with the new claim. By POSTing to
+       * /api/v1/auth/refresh through the proxy here, we trigger that rotation
+       * synchronously — by the time we navigate to /dashboard, rv_user.planId
+       * reflects Pro. Without this trigger, the user would see Free on /dashboard
+       * for up to 5 minutes (until natural rv_at expiry) — directly breaking the
+       * phase goal "land on /pay/success with Pro already active".
+       *
+       * Errors are swallowed: the cookie side-effects are the only thing that matters,
+       * and even if the refresh fails (e.g., transient network blip), the natural
+       * 5-min rv_at expiry will eventually pick up the new plan_id. The "active" UI
+       * still renders so the user knows their payment went through.
+       */
+      async function forceRefreshForNewPlanId() {
+        try {
+          await fetch("/api/v1/auth/refresh", {
+            method: "POST",
+            credentials: "same-origin",
+            signal: AbortSignal.timeout(5000),
+          });
+        } catch {
+          // Non-fatal — natural rv_at expiry within 5 min will pick up the new plan_id.
+        }
+      }
+
       async function pollOnce() {
         if (stopped.current) return;
         pollNo.current += 1;
@@ -310,8 +348,14 @@ Note: backend may return lowercased OR uppercased status (per 03-05 SUMMARY: `ma
           if (!r.ok) return; // transient — keep polling
           const json = await r.json().catch(() => null);
           const status = (json?.status ?? "").toString().toLowerCase();
-          if (status === "paid") { stop(); setView("active"); return; }
-          if (status === "failed") { stop(); router.replace(`/pay/fail?invoiceId=${encodeURIComponent(invoiceId)}&reason=declined`); return; }
+          if (status === "paid") {
+            stop();
+            // B2/D-17 fix — force refresh BEFORE flipping to active so dashboard reads fresh planId.
+            await forceRefreshForNewPlanId();
+            setView("active");
+            return;
+          }
+          if (status === "failed")    { stop(); router.replace(`/pay/fail?invoiceId=${encodeURIComponent(invoiceId)}&reason=declined`);  return; }
           if (status === "cancelled") { stop(); router.replace(`/pay/fail?invoiceId=${encodeURIComponent(invoiceId)}&reason=cancelled`); return; }
           // "pending" or unknown → keep polling
         } catch {
@@ -333,6 +377,7 @@ Note: backend may return lowercased OR uppercased status (per 03-05 SUMMARY: `ma
 
       function refresh() {
         // Re-poll once on manual refresh after timeout. Doesn't restart the timer — single shot.
+        // If this single-shot lands paid, ALSO force refresh so the navigation to /dashboard shows Pro.
         (async () => {
           const url = `/api/v1/invoices/${encodeURIComponent(invoiceId)}?escalate=true`;
           try {
@@ -340,9 +385,14 @@ Note: backend may return lowercased OR uppercased status (per 03-05 SUMMARY: `ma
             if (r.ok) {
               const json = await r.json().catch(() => null);
               const status = (json?.status ?? "").toString().toLowerCase();
-              if (status === "paid") setView("active");
-              else if (status === "failed") router.replace(`/pay/fail?invoiceId=${encodeURIComponent(invoiceId)}&reason=declined`);
-              else if (status === "cancelled") router.replace(`/pay/fail?invoiceId=${encodeURIComponent(invoiceId)}&reason=cancelled`);
+              if (status === "paid") {
+                await forceRefreshForNewPlanId();
+                setView("active");
+              } else if (status === "failed") {
+                router.replace(`/pay/fail?invoiceId=${encodeURIComponent(invoiceId)}&reason=declined`);
+              } else if (status === "cancelled") {
+                router.replace(`/pay/fail?invoiceId=${encodeURIComponent(invoiceId)}&reason=cancelled`);
+              }
             }
           } catch {}
         })();
@@ -391,14 +441,16 @@ Note: backend may return lowercased OR uppercased status (per 03-05 SUMMARY: `ma
     - `grep -n 'TIMEOUT_MS = 30000\|TIMEOUT_MS=30000' landing/src/app/\[locale\]/\(app\)/pay/success/poll-client.tsx` returns 1 match
     - `grep -n 'escalate=true' landing/src/app/\[locale\]/\(app\)/pay/success/poll-client.tsx` returns at least 2 matches (poll + refresh)
     - `grep -n "/api/v1/invoices/" landing/src/app/\[locale\]/\(app\)/pay/success/poll-client.tsx` returns at least 2 matches
+    - `grep -n '/api/v1/auth/refresh' landing/src/app/\[locale\]/\(app\)/pay/success/poll-client.tsx` returns at least 1 match (B2 fix — force-refresh trigger on paid)
+    - `grep -n 'forceRefreshForNewPlanId' landing/src/app/\[locale\]/\(app\)/pay/success/poll-client.tsx` returns at least 3 matches (defined + called from pollOnce + called from refresh single-shot)
     - `grep -n '"paid"\|"failed"\|"cancelled"\|"pending"' landing/src/app/\[locale\]/\(app\)/pay/success/poll-client.tsx` returns at least 4 matches (all statuses handled)
     - `grep -n 'toLowerCase' landing/src/app/\[locale\]/\(app\)/pay/success/poll-client.tsx` returns at least 1 match (casing normalisation)
     - `grep -n 'getSession' landing/src/app/\[locale\]/\(app\)/pay/success/page.tsx` returns 1 match
     - `grep -n 'PaymentStatusCard' landing/src/components/app/payment-status-card.tsx` returns at least 1 match
-    - `grep -n 'pay.success.takingLonger\|pay.success.processing\|pay.success.active' landing/src/components/app/payment-status-card.tsx` returns at least 3 matches (or via translation calls)
+    - `grep -n 'pay.success.takingLonger\|pay.success.processing\|pay.success.active\|pay\\.success' landing/src/components/app/payment-status-card.tsx` returns at least 3 matches
     - `cd landing && BACKEND_API_URL=http://x REVALIDATE_SECRET=y APPLE_SERVICE_ID=x APPLE_REDIRECT_URI=https://x/cb GOOGLE_CLIENT_ID_WEB=x GOOGLE_REDIRECT_URI=https://x/cb APP_URL=https://x npm run build` exits 0
   </acceptance_criteria>
-  <done>/pay/success?invoiceId=X polls per D-21 contract, transitions to active/timeout/failed correctly, auth-gates the page, and renders the three UI states with the exact i18n keys.</done>
+  <done>/pay/success?invoiceId=X polls per D-21 contract, on `paid` triggers POST /api/v1/auth/refresh BEFORE flipping to "active" (so the Plan 03 proxy re-issues rv_user with new plan_id), transitions to active/timeout/failed correctly, auth-gates the page, and renders the three UI states with the exact i18n keys.</done>
 </task>
 
 <task type="auto" tdd="false">
@@ -501,6 +553,7 @@ Note: backend may return lowercased OR uppercased status (per 03-05 SUMMARY: `ma
 | client polling → /api/v1/invoices | Authenticated; backend enforces ownership (returns 404 on mismatch per 03-05) |
 | /pay/success?invoiceId=X URL | Untrusted invoiceId from query — backend ownership check is the gate |
 | lava.top → landing redirect | Untrusted querystring on /pay/success / /pay/fail; we DO NOT trust ?reason= to label success — only the /invoices status decides |
+| client → /api/v1/auth/refresh (force-refresh trigger) | Authenticated via Plan 03 proxy; idempotent — multiple calls just rotate refresh tokens, all server-side state |
 
 ## STRIDE Threat Register
 
@@ -517,18 +570,22 @@ Note: backend may return lowercased OR uppercased status (per 03-05 SUMMARY: `ma
 | T-04-07-09 | T (CSRF on checkout POST) | /api/v1/checkout | mitigate | Plan 03 proxy uses cookies → Bearer translation; cookies are SameSite=Strict so cross-site POST cannot include them. The endpoint also requires JSON body which a form-CSRF can't produce without Content-Type tricks |
 | T-04-07-10 | E (Elevation) | unauth user reaches /pay/success | mitigate | Task 2 page server-gates on `getSession()` and redirects to /login?next=/pay/success?invoiceId=... |
 | T-04-07-11 | I (Info disclosure) | escalate=true triggers lava call without user gate | mitigate | Phase 3 03-05 ownership check happens before escalate. Backend won't call lava on a non-owned invoice |
+| T-04-07-12 | D (DoS via spam refresh) | malicious page that repeatedly fires /api/v1/auth/refresh | mitigate | Backend refresh-rotation is transactional (HOTFIX-05) — second call with the same rv_rt will fail because rotation already consumed it. Net DoS upside is zero. Plan 03 proxy also has a one-shot recursion guard per request. |
+| T-04-07-13 | E (Elevation via partial refresh) | refresh succeeds but rv_user re-issue fails | mitigate | Plan 03 proxy writes all three cookies (rv_at, rv_rt, rv_user) atomically on the response — either all land or none do. Even if rv_user re-issue's JWT decode returns "" (defensive empty string), the prior rv_user.planId is used as fallback so the user is not locked out. |
 </threat_model>
 
 <verification>
 - SC #2: logged-in click → POST /api/v1/checkout → 200 paymentUrl → window.location.href redirect (one HTTP round-trip). Plan 08 smoke captures the network log.
 - SC #3: logged-out click → /login?next=/pricing&plan=pro&period=monthly&currency=USD → sign-in completes → /pricing?plan=pro&period=monthly&currency=USD&checkout=auto → POST /checkout fires once. Plan 08 Playwright.
 - SC #4: stub backend responses to confirm polling cadence (2s / escalate at poll 6 / 30s timeout). Plan 08 Playwright with `route.continue` interception.
+- SC #4 (B2 fix verification): mock /invoices/{id} to return `pending` then `paid`; assert POST /api/v1/auth/refresh fires AFTER the paid response is observed and BEFORE the "Pro is active!" view renders. Plan 08 spec.
 - TypeScript + build: `cd landing && npm run build` exits 0.
 </verification>
 
 <success_criteria>
 - WEB-05 closure: checkout flow works logged-in (direct) + logged-out (deep-link → resume after sign-in)
 - WEB-06 closure: polling per D-21 contract (interval, escalate, timeout)
+- WEB-06 + D-17 closure: on `paid`, force-refresh trigger → Plan 03 proxy re-issues rv_user with new plan_id from rotated JWT → /dashboard renders Pro on next navigation
 - WEB-07 closure: /pay/fail with reason-aware copy + retry CTA preserving plan/period/currency
 - Open-redirect defence on payment_url whitelist
 - Status casing normalised; all four invoice states handled
@@ -540,4 +597,7 @@ After completion, create `.planning/phases/04-landing-surfaces/04-07-checkout-pa
 - Exact polling numbers (D-21 verbatim)
 - Status casing normalisation (lowercase) — mirrors backend mapLavaStatusToLocal
 - /pay/fail reason allow-list (default / declined / cancelled)
+- B2 closure: force-refresh trigger on `status === "paid"` — POST /api/v1/auth/refresh fires before view flips to "active" so rv_user.planId is current when user navigates to /dashboard. Non-fatal failure handling.
 </output>
+</content>
+</invoke>

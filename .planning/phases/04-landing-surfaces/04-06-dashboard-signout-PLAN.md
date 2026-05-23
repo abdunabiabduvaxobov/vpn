@@ -16,6 +16,7 @@ must_haves:
   truths:
     - "GET /<locale>/dashboard renders ONLY when rv_at cookie is present; otherwise server-side redirects to /<locale>/login?next=/dashboard"
     - "Dashboard shows the user's email (from rv_user cookie) and current plan name + tier badge (resolved from rv_user.planId via plan name lookup)"
+    - "Because Plan 03 re-issues rv_user with the JWT's plan_id claim on every refresh rotation, and Plan 07 forces a refresh after a paid invoice, this page reflects the user's CURRENT plan (D-17 closure)"
     - "Free users see a single 'Get Pro' CTA → /<locale>/pricing"
     - "Pro users see a single 'Manage Subscription' link (deferred backend endpoint — Phase 4 renders link to Telegram support as a graceful fallback)"
     - "Sign out button opens a confirmation dialog; confirming POSTs to /api/auth/logout (Plan 03) and navigates to /<locale>/"
@@ -45,9 +46,9 @@ tags: [dashboard, auth-gated, signout]
 ---
 
 <objective>
-Build the protected /dashboard page (WEB-03) that displays the signed-in user's email, current plan, and a single context-aware CTA. The page is server-side gated: missing `rv_at` → `redirect("/<locale>/login?next=/dashboard")`. Email and planId come from the `rv_user` cookie set at OAuth completion (Plan 04); the plan name is looked up by fetching `/api/v1/plans` server-side. Sign out is wired to Plan 03's `/api/auth/logout` route.
+Build the protected /dashboard page (WEB-03) that displays the signed-in user's email, current plan, and a single context-aware CTA. The page is server-side gated: missing `rv_at` → `redirect("/<locale>/login?next=/dashboard")`. Email and planId come from the `rv_user` cookie set at OAuth completion (Plan 04) and refreshed at every proxy refresh-rotation (Plan 03); the plan name is looked up by fetching `/api/v1/plans` server-side. Sign out is wired to Plan 03's `/api/auth/logout` route.
 
-Purpose: WEB-03 closure + UX completeness — the dashboard is what makes "signed in" tangible to the user. Without it, sign-in feels like it did nothing.
+Purpose: WEB-03 closure + UX completeness — the dashboard is what makes "signed in" tangible to the user. Without it, sign-in feels like it did nothing. With Plan 03's B2 fix (rv_user re-issued with fresh plan_id on every refresh) and Plan 07's force-refresh trigger on paid status, this page reliably shows Pro immediately after the user returns from /pay/success.
 
 Output: A logged-in user lands on `/<locale>/dashboard`, sees their email + plan + relevant CTA + sign-out, and signing out returns them to the marketing home page with all session cookies cleared.
 </objective>
@@ -72,9 +73,9 @@ Output: A logged-in user lands on `/<locale>/dashboard`, sees their email + plan
 
 <interfaces>
 <!-- Locked CONTEXT.md decisions -->
-- D-15: minimal dashboard — email + plan + ONE CTA + Sign-out. No device list, no billing history.
+- D-15: minimal dashboard — email + plan + ONE CTA + Sign-out. No device list, no billing history. **W3 scope note: billing history (WEB-03 expanded scope) is intentionally OUT of Phase 4 — deferred to Phase 7+ per CONTEXT D-15 locked decision.**
 - D-16: Manage Subscription URL needs a new backend endpoint `GET /api/v1/subscription/manage-url`. Endpoint DOES NOT EXIST in Phase 3 (verified). Phase 4 fallback: when user is Pro, link points to `https://t.me/flawlssr` (SUPPORT.telegram from constants) with copy "Manage Subscription" and a small caption "Contact support to manage your plan". A follow-up todo is captured for the backend endpoint.
-- D-17: plan + email from rv_user cookie (decoded via Plan 03's decodeSessionUser); plan NAME resolved by fetching /api/v1/plans server-side and finding the entry with `plan.code === planId`.
+- D-17: plan + email from rv_user cookie (decoded via Plan 03's decodeSessionUser); plan NAME resolved by fetching /api/v1/plans server-side and finding the entry with `plan.code === planId`. **The planId value in rv_user is kept fresh by Plan 03's proxy (re-issues rv_user with `decodePlanIdFromJwt(access_token)` on every refresh rotation) + Plan 07's force-refresh trigger on /pay/success.**
 - D-18: server-side detection — `getSession()` is already used by NavbarApp (Plan 02). Dashboard reuses the same helper and follows the same `dynamic = 'force-dynamic'` pattern (inherited from (app) layout).
 - D-25: sign-out POST /api/auth/logout, then navigate to /.
 
@@ -295,7 +296,9 @@ We need only `code` + `name` for the lookup.
       const t = await getTranslations("dashboard");
 
       // Resolve plan display name. The rv_user cookie carries planId which is the plan CODE (per Plan 04).
-      // Lookup uses the user's locale's default currency (any currency works for name resolution; plan.name doesn't depend on currency).
+      // Plan 03's proxy keeps rv_user.planId fresh by re-issuing it with decodePlanIdFromJwt(access_token)
+      // on every refresh rotation; Plan 07 forces a refresh after a paid invoice so /dashboard reflects Pro
+      // immediately after payment.
       const plans = await fetchPlans(currencyForLocale(locale));
       const userPlan = plans.find((p) => p.code === session.planId);
       const planCode = session.planId || "free";
@@ -351,6 +354,7 @@ We need only `code` + `name` for the lookup.
 | T-04-06-05 | S (Spoofing) | open redirect via `next` query param | mitigate (downstream) | Plan 04's `isSafeNextPath` validates the `next` value at OAuth callback — `/dashboard` is hard-coded literal in Task 3 |
 | T-04-06-06 | I (Info disclosure) | Telegram support link leaks user agent to t.me | accept | Standard outbound link; `rel="noopener noreferrer"` set in Task 1 |
 | T-04-06-07 | D (DoS) | /dashboard fires /api/v1/plans on every request | mitigate | fetchPlans (Plan 05) uses `next: { tags: ['plans'], revalidate: 600 }`, so it's deduped across all dashboard requests for a given currency. Backend also caches at PAY-12 layer (60s) |
+| T-04-06-08 | I (Stale plan_id) | rv_user.planId could be stale (Free shown for Pro user) | mitigate (cross-plan) | Plan 03 re-issues rv_user with `decodePlanIdFromJwt(access_token)` on every refresh-rotation; Plan 07's pay-success handler forces a refresh after `status === "paid"` so the user lands on /dashboard with current planId. /dashboard itself only reads rv_user; freshness ownership lives upstream. |
 </threat_model>
 
 <verification>
@@ -374,4 +378,8 @@ After completion, create `.planning/phases/04-landing-surfaces/04-06-dashboard-s
 - Server-gating pattern (`getSession()` → `redirect()`)
 - Manage Subscription fallback (Telegram support link) + follow-up todo for the backend `/subscription/manage-url` endpoint
 - Confirmation dialog markup (base-ui Dialog primitive used here is the same one Plan 04 uses indirectly)
+- **W3 deferred scope: billing history (last N invoices) intentionally EXCLUDED from Phase 4 per CONTEXT.md D-15 locked decision. Captured for Phase 7+.**
+- D-17 freshness pipeline reference: rv_user.planId stays current via Plan 03's refresh-time JWT decode + Plan 07's post-paid forced refresh. /dashboard is a read-only consumer of that pipeline.
 </output>
+</content>
+</invoke>

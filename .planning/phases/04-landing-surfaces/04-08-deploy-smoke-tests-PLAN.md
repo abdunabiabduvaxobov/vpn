@@ -7,6 +7,7 @@ depends_on: [04-04, 04-05, 04-06, 04-07]
 files_modified:
   - landing/Dockerfile
   - landing/docker-compose.landing.yml
+  - docker-compose.prod.yml
   - landing/nginx/vpn.mydayai.uz.conf
   - landing/playwright.config.ts
   - landing/package.json
@@ -29,7 +30,8 @@ requirements:
 must_haves:
   truths:
     - "landing/Dockerfile builds a Node 22 image running the standalone Next.js server"
-    - "landing/docker-compose.landing.yml adds the landing-node container alongside the existing nginx service"
+    - "landing/docker-compose.landing.yml adds the landing-node container alongside the existing nginx service AND attaches it to the same shared network as the api service so landing-node can reach http://vpn-api:3000"
+    - "docker-compose.prod.yml is updated to declare a shared external network (vpn-net) and attach the api service to it; landing-node joins the same network as external: true"
     - "landing/nginx/vpn.mydayai.uz.conf routes /login /dashboard /pricing /pay/* /auth/* /api/* to the Node container on a private port; / and other marketing pages stay served from the static export OR pass through to Node (we choose all-Node for v2.2.0 simplicity)"
     - "Playwright E2E specs assert each ROADMAP success criterion against a backend mock"
     - "`npm run test:e2e` exits 0"
@@ -37,7 +39,9 @@ must_haves:
     - path: "landing/Dockerfile"
       provides: "Production image — multi-stage build, Node 22 alpine, non-root user, exposes 3000"
     - path: "landing/docker-compose.landing.yml"
-      provides: "Compose override for the landing-node service"
+      provides: "Compose override for the landing-node service; attaches to vpn-net (shared with api)"
+    - path: "docker-compose.prod.yml"
+      provides: "Updated to declare vpn-net network + attach api service to it"
     - path: "landing/nginx/vpn.mydayai.uz.conf"
       provides: "Updated nginx routing (D-02)"
     - path: "landing/e2e/*.spec.ts"
@@ -48,25 +52,29 @@ must_haves:
     - from: "landing/nginx/vpn.mydayai.uz.conf"
       to: "landing-node container"
       via: "proxy_pass to upstream"
-      pattern: "proxy_pass\\s+http://landing-node"
+      pattern: "proxy_pass\\s+http://landing[-_]node"
+    - from: "landing-node container"
+      to: "vpn-api container"
+      via: "BACKEND_API_URL=http://vpn-api:3000 over shared vpn-net network"
+      pattern: "vpn-api:3000"
     - from: "landing/e2e/*.spec.ts"
       to: "landing standalone server"
       via: "Playwright webServer config"
       pattern: "webServer"
-tags: [deploy, docker, nginx, e2e, smoke]
+tags: [deploy, docker, nginx, networking, e2e, smoke]
 ---
 
 <objective>
 Ship Phase 4 to production-shaped infrastructure and verify every WEB-XX requirement with automated Playwright tests. Concretely:
 
 1. Build a Dockerfile that produces the `landing-node` container from the standalone output (Plan 01).
-2. Add a `docker-compose.landing.yml` overlay that runs `landing-node` next to the existing static nginx (D-02).
+2. **B3 fix:** Add a shared external network `vpn-net` to `docker-compose.prod.yml` and attach the `api` service to it. Add a `docker-compose.landing.yml` overlay that runs `landing-node` next to the existing static nginx (D-02) AND joins the same `vpn-net` network so `landing-node` can reach `http://vpn-api:3000` for the backend proxy. (Previously the overlay created an isolated `landing-net` with no path to the api service — landing-node would have failed every backend call. This fix makes the cluster actually reachable.)
 3. Update the existing nginx vhost to proxy app paths (`/login`, `/dashboard`, `/pricing`, `/pay/*`, `/auth/*`, `/api/*`) to the Node container — keeping the existing static paths working.
 4. Stand up Playwright with a backend-mock fixture so the E2E suite asserts the 6 ROADMAP success criteria + WEB-01..WEB-09 without needing the Go backend.
 
-Purpose: deploys the Phase 4 work end-to-end, validates every requirement, and produces the smoke test bundle that becomes the regression baseline for Phase 5+ (mobile work depends on this same backend surface).
+Purpose: deploys the Phase 4 work end-to-end, validates every requirement, and produces the smoke test bundle that becomes the regression baseline for Phase 5+ (mobile work depends on this same backend surface). Network plumbing right means a real deploy works, not just `docker compose up` returning success while landing-node silently 502s every API call.
 
-Output: A `docker compose -f docker-compose.yml -f landing/docker-compose.landing.yml up -d` brings the entire landing stack up; nginx serves marketing pages + proxies app pages to Node; Playwright smoke `npm run test:e2e` exits 0 with 8+ green tests covering every WEB-XX.
+Output: A `docker compose -f docker-compose.prod.yml -f landing/docker-compose.landing.yml up -d` brings the entire stack up; nginx serves marketing pages + proxies app pages to Node; landing-node resolves `vpn-api` via the shared network; Playwright smoke `npm run test:e2e` exits 0 with 8+ green tests covering every WEB-XX.
 </objective>
 
 <execution_context>
@@ -83,6 +91,7 @@ Output: A `docker compose -f docker-compose.yml -f landing/docker-compose.landin
 @.planning/phases/04-landing-surfaces/04-05-pricing-plans-isr-revalidate-PLAN.md
 @.planning/phases/04-landing-surfaces/04-06-dashboard-signout-PLAN.md
 @.planning/phases/04-landing-surfaces/04-07-checkout-pay-success-fail-PLAN.md
+@docker-compose.prod.yml
 @landing/nginx/vpn.mydayai.uz.conf
 @landing/package.json
 @landing/next.config.ts
@@ -94,8 +103,14 @@ Output: A `docker compose -f docker-compose.yml -f landing/docker-compose.landin
 
 Existing nginx config: listens on 9443 (port 443 is the xray VPN). The HTTP 80 redirect goes to 9443. We keep that exactly — only the location blocks change.
 
+**B3 — networking topology (verified against docker-compose.prod.yml):**
+- `docker-compose.prod.yml` declares services `postgres`, `redis`, `api`, `tunnel`. The `api` container is named `vpn-api` (via `container_name: vpn-api`), listens on `PORT=3000` internally, and currently binds to `127.0.0.1:3000` on the host (not exposed to the docker network beyond the default bridge).
+- There is no explicit `networks:` declaration in docker-compose.prod.yml today, so all services share the default project-wide bridge network. landing-node, brought up via the overlay, would NOT be on that default bridge if the overlay declares its own network — services on different networks cannot resolve each other by service name.
+- **Fix:** declare an EXPLICIT `vpn-net` network in `docker-compose.prod.yml`, attach the `api` service to it, and reference it as `external: false, name: vpn-net` (so compose creates it on first `up`). The landing overlay declares the SAME network as `external: true` so it joins instead of creating a duplicate. Now landing-node can dial `http://vpn-api:3000` for its BACKEND_API_URL.
+- Compose-managed networks: `vpn-net` is created when prod stack starts; landing overlay joins it. If operator runs landing standalone (without prod stack), they would need to either: (a) start prod stack first, (b) set BACKEND_API_URL to a public URL (e.g., https://vpnapi.mydayai.uz), or (c) drop `external: true`. Document tradeoff in SUMMARY.
+
 Phase 4 environment matrix (required to start the container):
-- BACKEND_API_URL (Plan 01)
+- BACKEND_API_URL — production cluster: `http://vpn-api:3000` (internal DNS via shared vpn-net network). Standalone/Vercel: `https://vpnapi.mydayai.uz` (public URL). Operator picks per deployment.
 - REVALIDATE_SECRET (Plan 01)
 - COOKIE_DOMAIN (Plan 01 — optional)
 - APPLE_SERVICE_ID, APPLE_REDIRECT_URI (Plan 04)
@@ -113,15 +128,21 @@ Playwright backend-mock pattern:
   - mockInvoice(page, { id, statusSequence: ["pending","pending","paid"] }) → returns each call's nth status
   - mockCheckout(page, { paymentUrl }) → returns 200 with paymentUrl
 - Backend mock intercepts go on the BROWSER side (Playwright), so the Node proxy still runs the cookies → Bearer transformation against the mock. For OAuth provider URLs (appleid.apple.com, accounts.google.com), use `page.route` to intercept and immediately POST to /auth/callback with a known id_token (since real OAuth provider calls won't work in CI).
+
+**W2 — Playwright 30s timeout test:** The "SC#4 timeout" assertion in pay-success.spec.ts needs to wait for the 30s timeout view to render. Two implementation choices:
+- (a) `test.setTimeout(45_000)` — simple wall-clock wait (RECOMMENDED — chosen for Phase 4)
+- (b) `page.clock.install()` + `page.clock.fastForward(30000)` (Playwright ≥1.45) — requires the polling implementation to use the system clock in a way `page.clock` can intercept, which adds coupling. Not worth it for one test.
+The Task 3 spec uses option (a).
 </interfaces>
 </context>
 
 <tasks>
 
 <task type="auto" tdd="false">
-  <name>Task 1: Dockerfile + compose overlay + nginx routing update for the landing-node container</name>
-  <files>landing/Dockerfile, landing/docker-compose.landing.yml, landing/nginx/vpn.mydayai.uz.conf, landing/.dockerignore</files>
+  <name>Task 1: Dockerfile + compose overlay + shared network + nginx routing update for the landing-node container</name>
+  <files>landing/Dockerfile, landing/docker-compose.landing.yml, docker-compose.prod.yml, landing/nginx/vpn.mydayai.uz.conf, landing/.dockerignore</files>
   <read_first>
+    - docker-compose.prod.yml (existing — services: postgres, redis, api, tunnel; api container_name=vpn-api, PORT=3000)
     - landing/nginx/vpn.mydayai.uz.conf (existing — port 9443 listener; static root /opt/vpn/landing/dist)
     - landing/next.config.ts (standalone output)
     - landing/package.json
@@ -179,7 +200,25 @@ Playwright backend-mock pattern:
     *.md
     ```
 
-    Create landing/docker-compose.landing.yml (overlay — applied with `-f` alongside the existing top-level compose):
+    **B3 — Edit docker-compose.prod.yml** to add a top-level `networks:` block and attach the `api` service to it. Surgical change — do not touch postgres/redis/tunnel beyond joining the network (so api can still reach them; the new network is ADDITIONAL, postgres/redis remain accessible via the default bridge):
+    ```yaml
+    services:
+      # ... (postgres, redis unchanged — they stay on default bridge; api still reaches them by service name)
+      api:
+        # ... (existing config unchanged)
+        networks:
+          - default       # keeps connectivity to postgres + redis
+          - vpn-net       # NEW: allows landing-node to dial http://vpn-api:3000
+      # ... (tunnel unchanged)
+
+    networks:
+      vpn-net:
+        name: vpn-net     # explicit name so the landing overlay can reference it as external
+        driver: bridge
+    ```
+    The `default` network entry under api: ensures backward compatibility — without it, joining `networks:` would REMOVE api from the default network and break api → postgres / api → redis service-name DNS. Always list both. (Compose semantics: when ANY service has a `networks:` key, it loses the default-bridge attachment unless `default` is listed.) Per Docker Compose spec.
+
+    **B3 — Create landing/docker-compose.landing.yml** (overlay — applied with `-f` alongside the prod compose). This overlay joins the already-created `vpn-net` as external:
     ```yaml
     services:
       landing-node:
@@ -187,11 +226,16 @@ Playwright backend-mock pattern:
           context: ./landing
           dockerfile: Dockerfile
         image: rise-vpn-landing-node:latest
+        container_name: landing-node
         restart: unless-stopped
         environment:
           NODE_ENV: production
           PORT: "3000"
           HOSTNAME: "0.0.0.0"
+          # In production stack (api on the same vpn-net), use the internal hostname:
+          #   BACKEND_API_URL=http://vpn-api:3000
+          # For Vercel / standalone deploys (no api in same cluster), use the public URL:
+          #   BACKEND_API_URL=https://vpnapi.mydayai.uz
           BACKEND_API_URL: ${BACKEND_API_URL:?}
           REVALIDATE_SECRET: ${REVALIDATE_SECRET:?}
           COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
@@ -201,13 +245,16 @@ Playwright backend-mock pattern:
           GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:?}
           APP_URL: ${APP_URL:?}
         networks:
-          - landing-net
+          - vpn-net
         expose:
           - "3000"
+
     networks:
-      landing-net:
-        driver: bridge
+      vpn-net:
+        external: true
+        name: vpn-net
     ```
+    NOTE: `external: true` means the network must already exist before this overlay starts — which is the case when `docker-compose.prod.yml` was brought up first. The `name: vpn-net` ensures we attach to the SAME network compose-prod created (some compose versions prefix project name otherwise).
 
     Update landing/nginx/vpn.mydayai.uz.conf — add the following AFTER the existing `location = /` block (which currently 302's to /ru/) and BEFORE any existing `location /_next/static/` block:
     ```nginx
@@ -263,13 +310,18 @@ Playwright backend-mock pattern:
     - `grep -n 'EXPOSE 3000' landing/Dockerfile` returns 1 match
     - `grep -n 'landing-node' landing/docker-compose.landing.yml` returns at least 1 match
     - `grep -n 'BACKEND_API_URL.*\${BACKEND_API_URL:?}' landing/docker-compose.landing.yml` returns 1 match (required env enforced)
+    - `grep -n 'vpn-net' landing/docker-compose.landing.yml` returns at least 2 matches (B3 fix — network referenced + declared external)
+    - `grep -n 'external: true' landing/docker-compose.landing.yml` returns 1 match (B3 fix — overlay joins existing network)
+    - `grep -n 'vpn-net' docker-compose.prod.yml` returns at least 2 matches (B3 fix — network declared + api joins)
+    - `grep -n 'networks:' docker-compose.prod.yml` returns at least 2 matches (top-level + api service)
     - `grep -n 'proxy_pass http://landing_node' landing/nginx/vpn.mydayai.uz.conf` returns at least 3 matches
     - `grep -n 'login\|dashboard\|pricing\|pay/(success\|fail)' landing/nginx/vpn.mydayai.uz.conf` returns at least 1 match (app paths)
     - `grep -n '/auth/callback' landing/nginx/vpn.mydayai.uz.conf` returns at least 1 match
     - `grep -n 'client_max_body_size 64k' landing/nginx/vpn.mydayai.uz.conf` returns 1 match
     - `cd landing && docker build --build-arg BACKEND_API_URL=https://x --build-arg REVALIDATE_SECRET=y --build-arg APPLE_SERVICE_ID=x --build-arg APPLE_REDIRECT_URI=https://x/cb --build-arg GOOGLE_CLIENT_ID_WEB=x --build-arg GOOGLE_REDIRECT_URI=https://x/cb --build-arg APP_URL=https://x -t rise-vpn-landing-node:test .` exits 0
+    - **B3 reachability check:** After `docker compose -f docker-compose.prod.yml -f landing/docker-compose.landing.yml up -d`, run `docker compose -f docker-compose.prod.yml -f landing/docker-compose.landing.yml exec landing-node sh -c 'wget -q -O - http://vpn-api:3000/health || wget -q -O - http://vpn-api:3000/api/v1/plans?currency=USD'` and assert the response is a 200 or a recognised API JSON body (NOT a "Could not resolve host" / connection-refused error). Document this as part of the operator runbook in the SUMMARY. (`wget` is preferred over `curl` because node:22-alpine includes wget by default; `curl` may need `apk add`.)
   </acceptance_criteria>
-  <done>Dockerfile builds the standalone bundle into a 22-alpine runner image, compose overlay enforces required env vars, nginx config proxies /login/dashboard/pricing/pay/*/auth/*/api/* to the Node container.</done>
+  <done>Dockerfile builds the standalone bundle into a 22-alpine runner image; compose overlay enforces required env vars; nginx config proxies /login/dashboard/pricing/pay/*/auth/*/api/* to the Node container; landing-node and vpn-api share the `vpn-net` network so service-name DNS works (`http://vpn-api:3000` resolves from inside landing-node).</done>
 </task>
 
 <task type="auto" tdd="false">
@@ -279,7 +331,7 @@ Playwright backend-mock pattern:
     - landing/package.json (existing scripts + deps)
     - .planning/phases/04-landing-surfaces/04-04-login-oauth-callback-PLAN.md (Apple/Google authorize URL format)
     - .planning/phases/04-landing-surfaces/04-05-pricing-plans-isr-revalidate-PLAN.md (plans response shape)
-    - .planning/phases/04-landing-surfaces/04-07-checkout-pay-success-fail-PLAN.md (checkout + invoice response shapes)
+    - .planning/phases/04-landing-surfaces/04-07-checkout-pay-success-fail-PLAN.md (checkout + invoice response shapes + B2 force-refresh trigger)
   </read_first>
   <action>
     Add devDependencies to landing/package.json: `@playwright/test`. Add scripts:
@@ -346,6 +398,23 @@ Playwright backend-mock pattern:
       }));
     }
 
+    /**
+     * Mock the backend's /api/v1/auth/refresh used by the Plan 03 proxy AND by Plan 07's
+     * force-refresh trigger on `status=paid`. Returns a NEW access_token whose embedded
+     * plan_id claim equals opts.planId so we can assert the post-paid rv_user re-issue.
+     * Build a tiny unsigned JWT: header.payload.signature where signature is meaningless
+     * (Plan 03's decodePlanIdFromJwt skips signature verification).
+     */
+    export async function mockAuthRefresh(page: Page, opts: { planId: string }) {
+      const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+      const payload = Buffer.from(JSON.stringify({ sub: "u1", plan_id: opts.planId, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 300 })).toString("base64url");
+      const jwt = `${header}.${payload}.mocksig`;
+      await page.route("**/api/v1/auth/refresh", async (route) => route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ access_token: jwt, refresh_token: "rotated_rt", expires_in: 300 }),
+      }));
+    }
+
     export async function mockCheckout(page: Page, opts: { paymentUrl: string; invoiceId: string }) {
       await page.route("**/api/v1/checkout", async (route) => route.fulfill({
         status: 200, contentType: "application/json",
@@ -371,10 +440,6 @@ Playwright backend-mock pattern:
         const url = new URL(route.request().url());
         const state = url.searchParams.get("state") ?? "";
         const provider = url.host.includes("apple") ? "apple" : "google";
-        // POST id_token + state back to /auth/callback.
-        const body = `id_token=mock_id_token&state=${encodeURIComponent(state)}`;
-        // Use Playwright's fulfill to issue a 302 to a synthetic page that POSTs the form. Easier: do the POST via APIRequest from the test.
-        // Implementation: respond with a tiny HTML that auto-submits a form to /auth/callback.
         const html = `<!doctype html><html><body><form method="POST" action="http://localhost:3000/auth/callback?provider=${provider}"><input name="id_token" value="mock_id_token"/><input name="state" value="${state}"/></form><script>document.forms[0].submit()</script></body></html>`;
         await route.fulfill({ status: 200, contentType: "text/html", body: html });
       });
@@ -386,10 +451,10 @@ Playwright backend-mock pattern:
     - `grep -n '"test:e2e"' landing/package.json` returns 1 match
     - `test -e landing/playwright.config.ts && grep -n 'webServer' landing/playwright.config.ts` returns at least 1 match
     - `test -e landing/e2e/_fixtures/backend-mock.ts`
-    - `grep -n 'mockPlans\|mockOauthExchange\|mockCheckout\|mockInvoicePolling\|mockOAuthRedirect' landing/e2e/_fixtures/backend-mock.ts` returns at least 5 matches
+    - `grep -n 'mockPlans\|mockOauthExchange\|mockCheckout\|mockInvoicePolling\|mockOAuthRedirect\|mockAuthRefresh' landing/e2e/_fixtures/backend-mock.ts` returns at least 6 matches (B2 fix — mockAuthRefresh added)
     - `cd landing && npx playwright --version` exits 0 (Playwright installed)
   </acceptance_criteria>
-  <done>Playwright is installed, config points at the standalone server with mock env, backend-mock fixture exports the five helpers above.</done>
+  <done>Playwright is installed, config points at the standalone server with mock env, backend-mock fixture exports the six helpers above (including mockAuthRefresh for the B2 force-refresh path).</done>
 </task>
 
 <task type="auto" tdd="false">
@@ -461,7 +526,6 @@ Playwright backend-mock pattern:
       await context.addCookies([
         { name: "rv_at", value: "test_at", domain: "localhost", path: "/", httpOnly: true, sameSite: "Strict" },
         { name: "rv_rt", value: "test_rt", domain: "localhost", path: "/", httpOnly: true, sameSite: "Strict" },
-        // rv_user value is HMAC-signed; in test mode we accept that decodeSessionUser returns null and dashboard falls back gracefully.
       ]);
       await mockPlans(page);
       await mockCheckout(page, { paymentUrl: "https://gate.lava.top/pay/abc", invoiceId: "inv-123" });
@@ -492,19 +556,34 @@ Playwright backend-mock pattern:
     Create landing/e2e/pay-success.spec.ts — covers SC #4 + WEB-06:
     ```ts
     import { test, expect } from "@playwright/test";
-    import { mockInvoicePolling } from "./_fixtures/backend-mock";
+    import { mockInvoicePolling, mockAuthRefresh } from "./_fixtures/backend-mock";
 
-    test("SC#4 (happy): /pay/success polls and flips to active within ~2s of webhook landing", async ({ page, context }) => {
+    test("SC#4 (happy): /pay/success polls and flips to active within ~2s of webhook landing; forces refresh on paid", async ({ page, context }) => {
       await context.addCookies([
         { name: "rv_at", value: "test_at", domain: "localhost", path: "/", httpOnly: true, sameSite: "Strict" },
+        { name: "rv_rt", value: "test_rt", domain: "localhost", path: "/", httpOnly: true, sameSite: "Strict" },
       ]);
       await mockInvoicePolling(page, { id: "inv-123", sequence: ["pending", "paid"] });
+      // B2 fix verification — mockAuthRefresh returns a JWT with plan_id=pro; the page
+      // must POST /api/v1/auth/refresh on `paid` BEFORE displaying "Pro is active!".
+      await mockAuthRefresh(page, { planId: "pro" });
+
+      // Track that POST /api/v1/auth/refresh was issued. waitForRequest resolves on first match.
+      const refreshRequestPromise = page.waitForRequest((req) =>
+        req.url().endsWith("/api/v1/auth/refresh") && req.method() === "POST",
+        { timeout: 10_000 }
+      );
+
       await page.goto("/ru/pay/success?invoiceId=inv-123");
+      await refreshRequestPromise;  // B2 — assert force-refresh fired after paid
       await expect(page.getByText(/Pro is active|активна|activ/i)).toBeVisible({ timeout: 6_000 });
       await expect(page.getByRole("link", { name: /dashboard|кабинет/i })).toBeVisible();
     });
 
     test("SC#4 (timeout): /pay/success shows 'we'll email you' after 30s of pending", async ({ page, context }) => {
+      // W2 fix — bump test timeout above the page's 30s timeout so the assertion is reachable.
+      test.setTimeout(45_000);
+
       await context.addCookies([
         { name: "rv_at", value: "test_at", domain: "localhost", path: "/", httpOnly: true, sameSite: "Strict" },
       ]);
@@ -545,10 +624,12 @@ Playwright backend-mock pattern:
     - `test -e landing/e2e/login.spec.ts && grep -n 'SC#1\|alice@example.com\|HttpOnly\|httpOnly' landing/e2e/login.spec.ts` returns at least 2 matches
     - `test -e landing/e2e/pricing.spec.ts && grep -n 'SC#2\|SC#3\|SC#5\|gate.lava.top\|pricing_currency' landing/e2e/pricing.spec.ts` returns at least 4 matches
     - `test -e landing/e2e/pay-success.spec.ts && grep -n 'SC#4\|pending\|paid\|email' landing/e2e/pay-success.spec.ts` returns at least 3 matches
+    - `grep -n 'mockAuthRefresh\|/api/v1/auth/refresh' landing/e2e/pay-success.spec.ts` returns at least 2 matches (B2 fix — force-refresh assertion)
+    - `grep -n 'test.setTimeout(45_000)\|test.setTimeout(45000)' landing/e2e/pay-success.spec.ts` returns 1 match (W2 fix — wall-clock timeout buffer)
     - `test -e landing/e2e/navbar.spec.ts && grep -n 'SC#6\|Pricing\|Login\|Dashboard\|Sign out' landing/e2e/navbar.spec.ts` returns at least 4 matches
     - `cd landing && BACKEND_API_URL=http://127.0.0.1:1 REVALIDATE_SECRET=test-revalidate-secret APPLE_SERVICE_ID=test.web APPLE_REDIRECT_URI=http://localhost:3000/auth/callback?provider=apple GOOGLE_CLIENT_ID_WEB=test.google GOOGLE_REDIRECT_URI=http://localhost:3000/auth/callback?provider=google APP_URL=http://localhost:3000 npm run build && npm run test:e2e` exits 0
   </acceptance_criteria>
-  <done>4 Playwright spec files; suite asserts SC #1-6 + WEB-01..WEB-09; `npm run test:e2e` exits 0.</done>
+  <done>4 Playwright spec files; suite asserts SC #1-6 + WEB-01..WEB-09; B2 force-refresh assertion present; W2 wall-clock timeout used for 30s scenario; `npm run test:e2e` exits 0.</done>
 </task>
 
 </tasks>
@@ -559,6 +640,7 @@ Playwright backend-mock pattern:
 | Boundary | Description |
 |----------|-------------|
 | nginx → landing-node | Internal docker network; no TLS termination needed inside |
+| landing-node → vpn-api | Shared `vpn-net` bridge network; service-name DNS (`vpn-api:3000`) over plain HTTP; internal-only, never traverses untrusted network |
 | browser → nginx :9443 | TLS 1.2+ from Let's Encrypt cert |
 | Playwright → standalone server | Loopback localhost:3000; not a security boundary |
 
@@ -568,12 +650,13 @@ Playwright backend-mock pattern:
 |-----------|----------|-----------|-------------|-----------------|
 | T-04-08-01 | I (Info disclosure) | docker layer secrets | mitigate | Task 1 Dockerfile uses ARG only for placeholder build-time vars; runtime secrets come from compose's `${VAR:?}` which fails to start if unset. No COPY of .env files (excluded in .dockerignore) |
 | T-04-08-02 | E (Elevation) | container running as root | mitigate | Task 1 adds `addgroup --system nodejs && adduser --system --uid 1001 nextjs` and `USER nextjs` directive |
-| T-04-08-03 | T (Tampering) | nginx exposes internal proxy_pass to public | mitigate | landing-node port 3000 is `expose`-only (not `ports:`), accessible only over the internal `landing-net` docker network; nginx is the only ingress |
+| T-04-08-03 | T (Tampering) | nginx exposes internal proxy_pass to public | mitigate | landing-node port 3000 is `expose`-only (not `ports:`), accessible only over the internal `vpn-net` docker network; nginx is the only ingress |
 | T-04-08-04 | D (DoS) | nginx → Node body buffering | mitigate | Task 1 sets `client_max_body_size 64k` matching PERF-09 + Plan 03's BODY_BYTES_LIMIT |
 | T-04-08-05 | I (Info disclosure) | Playwright traces contain cookies | accept | Traces retained only on failure (Task 2 config); developer-only; not pushed beyond CI artifact bucket |
 | T-04-08-06 | T (Mock test bypasses real backend) | mocks paper over a real backend bug | accept | Plan 08 mocks the Phase 2/3 contracts ONLY; a future integration test (Phase 6 or roll-into Phase 5 ship) runs against the real backend. Document follow-up |
 | T-04-08-07 | I (Open port surface) | port 3000 leak through misconfig | mitigate | Compose overlay uses `expose:` not `ports:`. Operator must verify no `ports: ["3000:3000"]` accidentally added in env-specific overrides |
 | T-04-08-08 | T (Stale brand assets) | Apple/Google launch policy changes after deploy | accept | Plan 02 documented the source URLs in `landing/public/brand/README.md`; operator runbook should add a quarterly check |
+| T-04-08-09 | I (Cross-tenant network exposure) | vpn-net joined by extra services in future | mitigate | `vpn-net` declared explicit + named; future overlays that need it MUST list `external: true, name: vpn-net`. Inadvertent typos create a NEW separate network instead of accidentally exposing data. Document network-naming convention in SUMMARY. |
 </threat_model>
 
 <verification>
@@ -581,19 +664,23 @@ Playwright backend-mock pattern:
   - SC #1 → login.spec.ts "SC#1: Apple sign-in completes ..."
   - SC #2 → pricing.spec.ts "SC#2: logged-in click ..."
   - SC #3 → pricing.spec.ts "SC#3: logged-out 'Get Pro' ..."
-  - SC #4 → pay-success.spec.ts "SC#4 (happy)" + "SC#4 (timeout)"
+  - SC #4 → pay-success.spec.ts "SC#4 (happy)" (includes B2 force-refresh assertion) + "SC#4 (timeout)" (W2 timeout-buffered)
   - SC #5 → pricing.spec.ts "SC#5: /pricing renders in RU with RUB ..."
   - SC #6 → navbar.spec.ts "SC#6 logged-out" + "SC#6 logged-in"
 - WEB-XX coverage: all 9 requirements asserted at least once in the suite (login covers WEB-01/02; navbar covers WEB-09; pricing covers WEB-04/05/08; pay-success covers WEB-06; pay-fail manual + via redirect in pay-success; dashboard reachable via SC #1 flow → WEB-03)
 - Docker build: `docker build ...` exits 0 (Task 1 acceptance)
+- B3 reachability: `docker compose ... exec landing-node sh -c 'wget -q -O - http://vpn-api:3000/api/v1/plans?currency=USD'` returns a JSON body (Task 1 operator runbook step)
 - E2E: `npm run test:e2e` exits 0 (Task 3 acceptance)
 </verification>
 
 <success_criteria>
 - Dockerfile produces a runnable container on Node 22 alpine as non-root
 - Compose overlay enforces required env vars (`${VAR:?}` syntax)
+- **B3 closure**: docker-compose.prod.yml declares `vpn-net` + attaches api; landing overlay joins it as external. landing-node can dial `http://vpn-api:3000` for BACKEND_API_URL.
 - nginx routes app paths to landing-node, keeps everything else on the existing static serving path
 - Playwright suite covers all 6 ROADMAP SCs + all 9 WEB-XX requirements
+- **B2 closure**: pay-success.spec.ts asserts /api/v1/auth/refresh fires before "Pro is active!" renders
+- **W2 closure**: 30s timeout test wrapped with `test.setTimeout(45_000)` so it's not flaky
 - `npm run test:e2e` exits 0
 </success_criteria>
 
@@ -601,8 +688,15 @@ Playwright backend-mock pattern:
 After completion, create `.planning/phases/04-landing-surfaces/04-08-deploy-smoke-tests-SUMMARY.md` documenting:
 - Multi-stage Dockerfile pattern (placeholder build args; runtime secrets via compose)
 - nginx routing layout (which paths go where)
+- **B3 closure: `vpn-net` shared external network. docker-compose.prod.yml declares the network and attaches `api`; landing overlay joins via `external: true, name: vpn-net`. Result: `BACKEND_API_URL=http://vpn-api:3000` resolves from inside landing-node. Operator runbook for non-prod deploys (Vercel, standalone): use `BACKEND_API_URL=https://vpnapi.mydayai.uz` public URL instead.**
 - Static-export-removal vs keep-static decision (recommend: remove for v2.2.0 simplicity)
 - Playwright env block matched to Phase 4 env contract
+- **B2 closure: pay-success.spec.ts asserts the force-refresh fires on `status === "paid"` before "Pro is active!" renders. mockAuthRefresh fixture returns a JWT with `plan_id` claim so the rv_user re-issue path is exercised end-to-end.**
+- **W2 closure: 30s timeout test uses `test.setTimeout(45_000)` (simple wall-clock buffer) rather than `page.clock.fastForward`. Rationale: `page.clock` requires polling implementation to use the system clock in a way Playwright can intercept — too much coupling for one test.**
 - Follow-up: integration test against real Phase 2/3 backend (deferred to /gsd-note)
 - Follow-up: Phase 3 admin handlers need to POST /api/revalidate-pricing fan-out (still open from Plan 05)
+- **W4 follow-up captured as /gsd-note: "After Phase 4 ships, update REQUIREMENTS.md WEB-06 to replace `status=COMPLETED` with `status=paid` to match the lava.top mapping used in Phase 3 + Phase 4."**
+- W5 reference: rv_user re-issue on proxy refresh + 30-day Max-Age implemented in Plan 03; this plan's smoke tests verify it via the SC#4 happy-path assertion.
 </output>
+</content>
+</invoke>
