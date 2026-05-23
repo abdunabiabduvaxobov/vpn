@@ -128,16 +128,27 @@ func main() {
 	scheduler.Start(db, logger, cfg)
 
 	// Create Fiber app.
-	// EnableTrustedProxyCheck + TrustedProxies is defence in depth — it ensures
-	// c.IP() returns the TCP-layer RemoteIP (not a spoofed X-Forwarded-For) for
-	// callers OUTSIDE the lava CIDR set on EVERY route. The webhook route gets
-	// its own LavaWebhookIPAllowlist middleware on top (PAY-06).
+	//
+	// CR-01 fix: TrustedProxies enumerates the L7 intermediaries (reverse proxy,
+	// CDN, load balancer) whose X-Forwarded-* headers we honour for c.IP(). lava
+	// is a third-party HTTP CLIENT (webhook origin), NOT a trusted L7 proxy, so
+	// its CIDR set must NOT appear here — otherwise lava could spoof c.IP() via
+	// X-Forwarded-For for the rate limiter, audit log, and any other code path
+	// keyed on c.IP().
+	//
+	// For the v2.2.0 single-VM Docker Compose deploy there is no L7 proxy in
+	// front of the API container — TrustedProxies is therefore an empty slice
+	// ("trust nothing"). When a reverse proxy is introduced later, populate this
+	// from a NEW config field (e.g. cfg.TrustedProxyCIDRs), NOT from
+	// LAVA_WEBHOOK_ALLOWED_CIDRS. The webhook route still gets its own
+	// LavaWebhookIPAllowlist middleware on top — that one correctly uses
+	// c.Context().RemoteIP() (TCP-layer, unspoofable) per PAY-06.
 	app := fiber.New(fiber.Config{
 		AppName:                 "VPN API Server",
 		ServerHeader:            "",
 		ErrorHandler:            handler.ErrorHandler(logger),
 		EnableTrustedProxyCheck: true,
-		TrustedProxies:          lavaCIDRs,
+		TrustedProxies:          []string{},
 	})
 
 	// Global middleware.
