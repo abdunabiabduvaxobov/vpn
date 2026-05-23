@@ -5,522 +5,734 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"vpnapp/server/api/internal/config"
+	"vpnapp/server/api/internal/lava"
 	"vpnapp/server/api/internal/model"
+	"vpnapp/server/api/internal/repository"
 
 	"github.com/gofiber/fiber/v2"
-	stripe "github.com/stripe/stripe-go/v81"
-	stripewebhook "github.com/stripe/stripe-go/v81/webhook"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )
 
-// generateStripeSignature produces a valid Stripe-Signature header value for
-// the given payload and webhook secret using the Stripe library's own signing
-// algorithm. Tests can use this to produce headers that ConstructEventWithOptions
-// will accept without hitting the real Stripe API.
-func generateStripeSignature(payload []byte, secret string) string {
-	signed := stripewebhook.GenerateTestSignedPayload(&stripewebhook.UnsignedPayload{
-		Payload:   payload,
-		Secret:    secret,
-		Timestamp: time.Now(),
-	})
-	return signed.Header
-}
-
-// newTestDB opens an in-memory SQLite database and creates the tables required
-// by the payment handler tests using SQLite-compatible DDL (the GORM models
-// use gen_random_uuid() defaults that are PostgreSQL-only, so AutoMigrate is
-// not used here).
-func newTestDB(t *testing.T) *gorm.DB {
+// setupPaymentTestDB creates the minimum schema for payment handler tests.
+// Includes users + plans + plan_offers + invoices + lava_contracts + subscriptions.
+// Uses SQLite-compatible DDL; PostgreSQL gen_random_uuid() defaults are emulated
+// via randomblob() so the same SetUserPlan transactional pattern that drives
+// plan_repo tests works here as well.
+func setupPaymentTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
 	})
 	if err != nil {
-		t.Fatalf("failed to open test db: %v", err)
+		t.Fatalf("open: %v", err)
 	}
+	// Pin the connection pool to 1 so in-memory state is visible across
+	// transactional helpers (same pattern as repository/plan_repo_test.go).
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("db handle: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+
+	uuidDefault := `(lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6))))`
 
 	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS users (
-			id                      TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
-			email_hash              TEXT NOT NULL UNIQUE,
-			password_hash           TEXT NOT NULL,
-			full_name               TEXT NOT NULL DEFAULT '',
-			subscription_tier       TEXT NOT NULL DEFAULT 'free',
-			subscription_expires_at DATETIME,
-			role                    TEXT NOT NULL DEFAULT 'user',
-			telegram_user_id        INTEGER UNIQUE,
-			telegram_linked_at      DATETIME,
-			telegram_username       TEXT,
-			telegram_first_name     TEXT,
-			apple_user_id           TEXT,
-			google_user_id          TEXT,
-			email                   TEXT,
-			email_verified          INTEGER NOT NULL DEFAULT 0,
-			email_is_private_relay  INTEGER NOT NULL DEFAULT 0,
-			auth_provider           TEXT NOT NULL DEFAULT 'guest',
-			plan_id                 TEXT NOT NULL DEFAULT '',
-			created_at              DATETIME,
-			updated_at              DATETIME
+		`CREATE TABLE users (
+			id TEXT PRIMARY KEY DEFAULT ` + uuidDefault + `,
+			email TEXT,
+			email_verified INTEGER DEFAULT 0,
+			email_is_private_relay INTEGER DEFAULT 0,
+			full_name TEXT NOT NULL DEFAULT '',
+			subscription_tier TEXT NOT NULL DEFAULT 'free',
+			subscription_expires_at TIMESTAMP,
+			role TEXT NOT NULL DEFAULT 'user',
+			auth_provider TEXT NOT NULL DEFAULT 'guest',
+			apple_user_id TEXT,
+			google_user_id TEXT,
+			email_hash TEXT,
+			password_hash TEXT,
+			telegram_user_id INTEGER,
+			telegram_linked_at TIMESTAMP,
+			telegram_username TEXT,
+			telegram_first_name TEXT,
+			plan_id TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
-		`CREATE TABLE IF NOT EXISTS subscriptions (
-			id               TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
-			user_id          TEXT NOT NULL,
-			plan             TEXT NOT NULL DEFAULT 'free',
+		`CREATE TABLE plans (
+			id TEXT PRIMARY KEY DEFAULT ` + uuidDefault + `,
+			code TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			max_devices INTEGER NOT NULL,
+			max_servers INTEGER NOT NULL,
+			speed_limit_mbps INTEGER NOT NULL DEFAULT 0,
+			is_active INTEGER NOT NULL DEFAULT 1,
+			is_system INTEGER NOT NULL DEFAULT 0,
+			sort_order INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE plan_offers (
+			id TEXT PRIMARY KEY DEFAULT ` + uuidDefault + `,
+			plan_id TEXT NOT NULL,
+			periodicity TEXT NOT NULL,
+			currency TEXT NOT NULL,
+			amount REAL NOT NULL,
+			lava_offer_id TEXT,
+			is_active INTEGER NOT NULL DEFAULT 1,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE invoices (
+			id TEXT PRIMARY KEY DEFAULT ` + uuidDefault + `,
+			user_id TEXT NOT NULL,
+			lava_invoice_id TEXT NOT NULL UNIQUE,
+			offer_id TEXT NOT NULL,
+			plan_id TEXT,
+			plan_offer_id TEXT,
+			plan TEXT NOT NULL,
+			periodicity TEXT NOT NULL,
+			currency TEXT NOT NULL,
+			amount REAL NOT NULL,
+			status TEXT NOT NULL,
+			payment_url TEXT,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE lava_contracts (
+			id TEXT PRIMARY KEY DEFAULT ` + uuidDefault + `,
+			user_id TEXT NOT NULL,
+			contract_id TEXT NOT NULL UNIQUE,
+			parent_contract_id TEXT,
+			offer_id TEXT NOT NULL,
+			plan TEXT NOT NULL,
+			periodicity TEXT NOT NULL,
+			currency TEXT NOT NULL,
+			is_active INTEGER NOT NULL DEFAULT 1,
+			started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			expires_at TIMESTAMP,
+			cancelled_at TIMESTAMP,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE subscriptions (
+			id TEXT PRIMARY KEY DEFAULT ` + uuidDefault + `,
+			user_id TEXT NOT NULL,
+			plan TEXT NOT NULL DEFAULT 'free',
 			lava_contract_id TEXT,
-			is_active        INTEGER NOT NULL DEFAULT 1,
-			started_at       DATETIME,
-			expires_at       DATETIME
+			is_active INTEGER NOT NULL DEFAULT 1,
+			started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			expires_at TIMESTAMP
 		)`,
 	}
-
-	for _, stmt := range stmts {
-		if err := db.Exec(stmt).Error; err != nil {
-			t.Fatalf("failed to create test table: %v", err)
+	for _, s := range stmts {
+		if err := db.Exec(s).Error; err != nil {
+			t.Fatalf("DDL: %v", err)
 		}
 	}
 	return db
 }
 
-// seedUser inserts a user row and returns it.
-func seedUser(t *testing.T, db *gorm.DB, tier string) *model.User {
+// mkPaymentApp wires the three handlers + the lava client (httptest-mocked)
+// onto a fresh Fiber app. A thin middleware sets c.Locals("user_id") so
+// tests don't need full JWT auth.
+func mkPaymentApp(t *testing.T, db *gorm.DB, lavaClient *lava.Client, userID string) *fiber.App {
 	t.Helper()
-	emailHash := "testhash"
-	passwordHash := "ph"
-	user := &model.User{
-		EmailHash:        &emailHash,
-		PasswordHash:     &passwordHash,
-		SubscriptionTier: tier,
-	}
-	if err := db.Create(user).Error; err != nil {
-		t.Fatalf("failed to seed user: %v", err)
-	}
-	return user
-}
-
-// seedSubscription inserts a subscription row and returns it.
-// Phase 3 (D-11): stripeID is now stored in LavaContractID for backward-compat
-// of test call sites; the legacy Stripe paths exercised here are skipped via
-// t.Skip in their test bodies and will be removed in plan 03-05.
-func seedSubscription(t *testing.T, db *gorm.DB, userID, plan, stripeID string, active bool) *model.Subscription {
-	t.Helper()
-	var lavaContractID *string
-	if stripeID != "" {
-		lavaContractID = &stripeID
-	}
-	sub := &model.Subscription{
-		UserID:         userID,
-		Plan:           plan,
-		LavaContractID: lavaContractID,
-		IsActive:       active,
-		StartedAt:      time.Now(),
-	}
-	if err := db.Create(sub).Error; err != nil {
-		t.Fatalf("failed to seed subscription: %v", err)
-	}
-	return sub
-}
-
-// newTestApp wraps a single handler in a minimal Fiber app and sets context
-// locals so the JWT middleware is not required in unit tests.
-func newTestApp(handler fiber.Handler, userID, tier string) *fiber.App {
+	logger := zap.NewNop()
+	cfg := &config.Config{}
 	app := fiber.New()
-	app.Post("/test", func(c *fiber.Ctx) error {
+	app.Use(func(c *fiber.Ctx) error {
 		c.Locals("user_id", userID)
-		c.Locals("tier", tier)
 		return c.Next()
-	}, handler)
+	})
+	app.Post("/api/v1/checkout", CreateCheckoutSession(logger, cfg, db, lavaClient))
+	app.Post("/api/v1/subscription/cancel", CancelSubscription(logger, cfg, db, lavaClient))
+	app.Get("/api/v1/invoices/:id", GetInvoice(logger, cfg, db, lavaClient))
 	return app
 }
 
-// ---- planToPriceID ----
-// planToPriceID now takes a cfg argument so tests must supply one.
-
-func planToPriceIDTestCfg() *config.Config {
-	return &config.Config{
-		StripePricePremium:  "price_TEST_PREMIUM",
-		StripePriceUltimate: "price_TEST_ULTIMATE",
+// seedUserAndPlan inserts a free + pro plan, a SSO user with the given email,
+// and an active Pro MONTHLY/USD offer with the supplied lava_offer_id (nil
+// for the placeholder 409 test).
+func seedUserAndPlan(t *testing.T, db *gorm.DB, email string, lavaOfferID *string) (userID, planID, offerID string) {
+	t.Helper()
+	freeID := uuid.NewString()
+	proID := uuid.NewString()
+	for _, p := range []model.Plan{
+		{ID: freeID, Code: "free", Name: "Free", MaxDevices: 1, MaxServers: 3, IsActive: true, IsSystem: true, SortOrder: 0},
+		{ID: proID, Code: "pro", Name: "Pro", MaxDevices: 3, MaxServers: -1, IsActive: true, IsSystem: false, SortOrder: 10},
+	} {
+		if err := db.Create(&p).Error; err != nil {
+			t.Fatalf("seed plan: %v", err)
+		}
 	}
+	offerID = uuid.NewString()
+	if err := db.Create(&model.PlanOffer{
+		ID: offerID, PlanID: proID, Periodicity: "MONTHLY", Currency: "USD",
+		Amount: 5.0, LavaOfferID: lavaOfferID, IsActive: true,
+	}).Error; err != nil {
+		t.Fatalf("seed offer: %v", err)
+	}
+	userID = uuid.NewString()
+	if err := db.Create(&model.User{
+		ID: userID, Email: &email, EmailVerified: true, FullName: "u",
+		SubscriptionTier: "free", PlanID: freeID, AuthProvider: "google",
+	}).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	return userID, proID, offerID
 }
 
-func TestPlanToPriceID_Premium(t *testing.T) {
-	cfg := planToPriceIDTestCfg()
-	id, err := planToPriceID("premium", cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+// seedGuestUser inserts a guest user with Email=nil; used by the 403-guest
+// rejection test.
+func seedGuestUser(t *testing.T, db *gorm.DB, planID string) string {
+	t.Helper()
+	userID := uuid.NewString()
+	if err := db.Create(&model.User{
+		ID: userID, FullName: "guest", SubscriptionTier: "free",
+		PlanID: planID, AuthProvider: "guest",
+	}).Error; err != nil {
+		t.Fatalf("seed guest user: %v", err)
 	}
-	if id != cfg.StripePricePremium {
-		t.Errorf("expected %q, got %q", cfg.StripePricePremium, id)
-	}
+	return userID
 }
 
-func TestPlanToPriceID_Ultimate(t *testing.T) {
-	cfg := planToPriceIDTestCfg()
-	id, err := planToPriceID("ultimate", cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if id != cfg.StripePriceUltimate {
-		t.Errorf("expected %q, got %q", cfg.StripePriceUltimate, id)
-	}
+// newLavaTestClient is a thin convenience wrapper around lava.NewForTest —
+// keeps test bodies readable while remaining a pure consumer of the helper
+// added in plan 03-02 T02.
+func newLavaTestClient(t *testing.T, baseURL string) *lava.Client {
+	t.Helper()
+	return lava.NewForTest("test-key", baseURL)
 }
 
-func TestPlanToPriceID_InvalidPlan(t *testing.T) {
-	_, err := planToPriceID("free", planToPriceIDTestCfg())
-	if err == nil {
-		t.Fatal("expected error for plan=free, got nil")
+// decodeJSONBody is a tiny helper to read+decode an httptest response body.
+func decodeJSONBody(t *testing.T, resp *http.Response, out interface{}) string {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	_, _ = buf.ReadFrom(resp.Body)
+	raw := buf.String()
+	if out != nil {
+		if err := json.Unmarshal(buf.Bytes(), out); err != nil {
+			t.Fatalf("decode body %q: %v", raw, err)
+		}
 	}
+	return raw
 }
 
-func TestPlanToPriceID_EmptyPlan(t *testing.T) {
-	_, err := planToPriceID("", planToPriceIDTestCfg())
-	if err == nil {
-		t.Fatal("expected error for empty plan, got nil")
-	}
-}
+// --- Tests ---
 
-// ---- CreateCheckoutSession ----
+func TestCreateCheckoutSession_HappyPath(t *testing.T) {
+	db := setupPaymentTestDB(t)
+	lavaOID := "lava-off-1"
+	userID, _, _ := seedUserAndPlan(t, db, "alice@example.com", &lavaOID)
 
-func TestCreateCheckoutSession_InvalidBody(t *testing.T) {
-	logger := zap.NewNop()
-	db := newTestDB(t)
-	cfg := &config.Config{StripeKey: "sk_test_placeholder", AppDeepLinkScheme: "vpnapp"}
+	lavaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/invoice" {
+			t.Errorf("expected /api/v3/invoice, got %s", r.URL.Path)
+		}
+		w.WriteHeader(200)
+		pu := "https://app.lava.top/pay/abc"
+		_ = json.NewEncoder(w).Encode(lava.InvoiceResponse{
+			ID:          "lava-inv-1",
+			Status:      "in-progress",
+			AmountTotal: lava.InvoiceAmount{Amount: 5.0, Currency: "USD"},
+			PaymentURL:  &pu,
+		})
+	}))
+	defer lavaServer.Close()
+	client := newLavaTestClient(t, lavaServer.URL)
 
-	app := newTestApp(CreateCheckoutSession(logger, cfg, db), "user-1", "free")
-
-	req := httptest.NewRequest(http.MethodPost, "/test", bytes.NewBufferString("not-json"))
+	app := mkPaymentApp(t, db, client, userID)
+	body := strings.NewReader(`{"plan_code":"pro","periodicity":"MONTHLY","currency":"USD"}`)
+	req := httptest.NewRequest("POST", "/api/v1/checkout", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatalf("Test: %v", err)
 	}
-	if resp.StatusCode != fiber.StatusBadRequest {
-		t.Errorf("expected 400, got %d", resp.StatusCode)
+	var body2 struct {
+		Data struct {
+			InvoiceID     string  `json:"invoice_id"`
+			LavaInvoiceID string  `json:"lava_invoice_id"`
+			PaymentURL    string  `json:"payment_url"`
+			Amount        float64 `json:"amount"`
+			Currency      string  `json:"currency"`
+		} `json:"data"`
+	}
+	raw := decodeJSONBody(t, resp, &body2)
+	if resp.StatusCode != 201 {
+		t.Fatalf("expected 201, got %d body=%s", resp.StatusCode, raw)
+	}
+	if body2.Data.LavaInvoiceID != "lava-inv-1" {
+		t.Errorf("expected lava_invoice_id=lava-inv-1, got %q", body2.Data.LavaInvoiceID)
+	}
+	if body2.Data.PaymentURL != "https://app.lava.top/pay/abc" {
+		t.Errorf("expected payment_url, got %q", body2.Data.PaymentURL)
+	}
+	if body2.Data.Currency != "USD" || body2.Data.Amount != 5.0 {
+		t.Errorf("expected USD/5.0, got %s/%v", body2.Data.Currency, body2.Data.Amount)
+	}
+	if body2.Data.InvoiceID == "" {
+		t.Error("expected non-empty invoice_id")
+	}
+
+	// Verify the invoice row was actually written with status=pending.
+	inv, err := repository.FindInvoiceByID(db, body2.Data.InvoiceID)
+	if err != nil {
+		t.Fatalf("FindInvoiceByID: %v", err)
+	}
+	if inv.Status != "pending" {
+		t.Errorf("expected invoice.status=pending, got %q", inv.Status)
+	}
+	if inv.UserID != userID {
+		t.Errorf("expected invoice.user_id=%s, got %s", userID, inv.UserID)
 	}
 }
 
-func TestCreateCheckoutSession_InvalidPlan(t *testing.T) {
-	logger := zap.NewNop()
-	db := newTestDB(t)
-	cfg := &config.Config{StripeKey: "sk_test_placeholder", AppDeepLinkScheme: "vpnapp"}
+func TestCreateCheckoutSession_409_OfferNotConfigured(t *testing.T) {
+	db := setupPaymentTestDB(t)
+	// nil lava_offer_id → D-09 placeholder offer.
+	userID, _, _ := seedUserAndPlan(t, db, "alice@example.com", nil)
 
-	app := newTestApp(CreateCheckoutSession(logger, cfg, db), "user-1", "free")
+	// httptest server should NEVER be hit on the 409 path — fail loudly if it is.
+	lavaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("lava should not be called for placeholder offer; got %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(500)
+	}))
+	defer lavaServer.Close()
+	client := newLavaTestClient(t, lavaServer.URL)
 
-	body, _ := json.Marshal(map[string]string{"plan": "basic"})
-	req := httptest.NewRequest(http.MethodPost, "/test", bytes.NewBuffer(body))
+	app := mkPaymentApp(t, db, client, userID)
+	body := strings.NewReader(`{"plan_code":"pro","periodicity":"MONTHLY","currency":"USD"}`)
+	req := httptest.NewRequest("POST", "/api/v1/checkout", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatalf("Test: %v", err)
 	}
-	if resp.StatusCode != fiber.StatusBadRequest {
-		t.Errorf("expected 400, got %d", resp.StatusCode)
+	var body2 map[string]string
+	raw := decodeJSONBody(t, resp, &body2)
+	if resp.StatusCode != 409 {
+		t.Fatalf("expected 409, got %d body=%s", resp.StatusCode, raw)
+	}
+	if body2["error"] != "offer_not_configured" {
+		t.Errorf("expected error=offer_not_configured, got %q (raw=%s)", body2["error"], raw)
 	}
 }
 
-func TestCreateCheckoutSession_StripeError(t *testing.T) {
-	// With a clearly invalid key Stripe will reject the request — we expect 500.
-	logger := zap.NewNop()
-	db := newTestDB(t)
-	cfg := &config.Config{StripeKey: "sk_test_invalid_key_for_test", AppDeepLinkScheme: "vpnapp"}
+func TestCreateCheckoutSession_60sIdempotencyReuse(t *testing.T) {
+	db := setupPaymentTestDB(t)
+	lavaOID := "lava-off-2"
+	userID, _, _ := seedUserAndPlan(t, db, "alice@example.com", &lavaOID)
 
-	app := newTestApp(CreateCheckoutSession(logger, cfg, db), "user-1", "free")
+	// Count lava POSTs so we can assert the SECOND call DOES NOT hit lava.
+	var lavaPosts int
+	lavaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lavaPosts++
+		w.WriteHeader(200)
+		pu := "https://app.lava.top/pay/idempotent"
+		_ = json.NewEncoder(w).Encode(lava.InvoiceResponse{
+			ID:          "lava-inv-idempotent",
+			Status:      "in-progress",
+			AmountTotal: lava.InvoiceAmount{Amount: 5.0, Currency: "USD"},
+			PaymentURL:  &pu,
+		})
+	}))
+	defer lavaServer.Close()
+	client := newLavaTestClient(t, lavaServer.URL)
 
-	body, _ := json.Marshal(map[string]string{"plan": "premium"})
-	req := httptest.NewRequest(http.MethodPost, "/test", bytes.NewBuffer(body))
+	app := mkPaymentApp(t, db, client, userID)
+	body1 := strings.NewReader(`{"plan_code":"pro","periodicity":"MONTHLY","currency":"USD"}`)
+	req1 := httptest.NewRequest("POST", "/api/v1/checkout", body1)
+	req1.Header.Set("Content-Type", "application/json")
+	resp1, err := app.Test(req1)
+	if err != nil {
+		t.Fatalf("first Test: %v", err)
+	}
+	var first struct {
+		Data struct {
+			InvoiceID string `json:"invoice_id"`
+		} `json:"data"`
+	}
+	raw1 := decodeJSONBody(t, resp1, &first)
+	if resp1.StatusCode != 201 {
+		t.Fatalf("first call expected 201, got %d body=%s", resp1.StatusCode, raw1)
+	}
+
+	// Second call within 60s — should reuse, 200 OK, lavaPosts must remain 1.
+	body2 := strings.NewReader(`{"plan_code":"pro","periodicity":"MONTHLY","currency":"USD"}`)
+	req2 := httptest.NewRequest("POST", "/api/v1/checkout", body2)
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := app.Test(req2)
+	if err != nil {
+		t.Fatalf("second Test: %v", err)
+	}
+	var second struct {
+		Data struct {
+			InvoiceID string `json:"invoice_id"`
+		} `json:"data"`
+	}
+	raw2 := decodeJSONBody(t, resp2, &second)
+	if resp2.StatusCode != 200 {
+		t.Fatalf("second call expected 200 (reuse), got %d body=%s", resp2.StatusCode, raw2)
+	}
+	if first.Data.InvoiceID != second.Data.InvoiceID {
+		t.Errorf("expected same invoice_id on reuse, got %s vs %s", first.Data.InvoiceID, second.Data.InvoiceID)
+	}
+	if lavaPosts != 1 {
+		t.Errorf("expected lava called exactly once across two checkouts, got %d", lavaPosts)
+	}
+}
+
+func TestCreateCheckoutSession_GuestRejected(t *testing.T) {
+	db := setupPaymentTestDB(t)
+	// Need plans seeded so the lookup chain would proceed if email check failed.
+	freeID := uuid.NewString()
+	proID := uuid.NewString()
+	if err := db.Create(&model.Plan{ID: freeID, Code: "free", Name: "Free", MaxDevices: 1, MaxServers: 3, IsActive: true, IsSystem: true}).Error; err != nil {
+		t.Fatalf("seed free plan: %v", err)
+	}
+	if err := db.Create(&model.Plan{ID: proID, Code: "pro", Name: "Pro", MaxDevices: 3, MaxServers: -1, IsActive: true}).Error; err != nil {
+		t.Fatalf("seed pro plan: %v", err)
+	}
+	guestID := seedGuestUser(t, db, freeID)
+
+	lavaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("lava should not be called for guest user; got %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(500)
+	}))
+	defer lavaServer.Close()
+	client := newLavaTestClient(t, lavaServer.URL)
+
+	app := mkPaymentApp(t, db, client, guestID)
+	body := strings.NewReader(`{"plan_code":"pro","periodicity":"MONTHLY","currency":"USD"}`)
+	req := httptest.NewRequest("POST", "/api/v1/checkout", body)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := app.Test(req, 5000)
+	resp, err := app.Test(req)
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatalf("Test: %v", err)
 	}
-	if resp.StatusCode != fiber.StatusInternalServerError {
-		t.Errorf("expected 500 from Stripe rejection, got %d", resp.StatusCode)
+	if resp.StatusCode != 403 {
+		buf := new(bytes.Buffer)
+		_, _ = buf.ReadFrom(resp.Body)
+		t.Fatalf("expected 403, got %d body=%s", resp.StatusCode, buf.String())
 	}
 }
 
-// ---- HandleStripeWebhook ----
+func TestCreateCheckoutSession_InvalidCurrency(t *testing.T) {
+	db := setupPaymentTestDB(t)
+	lavaOID := "lava-off-3"
+	userID, _, _ := seedUserAndPlan(t, db, "alice@example.com", &lavaOID)
 
-func TestHandleStripeWebhook_MissingSignatureHeader(t *testing.T) {
-	logger := zap.NewNop()
-	db := newTestDB(t)
-	cfg := &config.Config{StripeWebhookSecret: "whsec_test"}
+	lavaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("lava should not be called for invalid currency; got %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(500)
+	}))
+	defer lavaServer.Close()
+	client := newLavaTestClient(t, lavaServer.URL)
 
-	app := fiber.New()
-	app.Post("/webhook/stripe", HandleStripeWebhook(logger, cfg, db))
-
-	req := httptest.NewRequest(http.MethodPost, "/webhook/stripe", bytes.NewBufferString(`{}`))
+	app := mkPaymentApp(t, db, client, userID)
+	body := strings.NewReader(`{"plan_code":"pro","periodicity":"MONTHLY","currency":"XXX"}`)
+	req := httptest.NewRequest("POST", "/api/v1/checkout", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatalf("Test: %v", err)
 	}
-	if resp.StatusCode != fiber.StatusBadRequest {
-		t.Errorf("expected 400, got %d", resp.StatusCode)
+	if resp.StatusCode != 400 {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
 }
 
-func TestHandleStripeWebhook_InvalidSignature(t *testing.T) {
-	logger := zap.NewNop()
-	db := newTestDB(t)
-	cfg := &config.Config{StripeWebhookSecret: "whsec_test_secret"}
+func TestCancelSubscription_KeepsProUntilExpiry(t *testing.T) {
+	db := setupPaymentTestDB(t)
+	lavaOID := "lava-off-cancel"
+	userID, _, _ := seedUserAndPlan(t, db, "alice@example.com", &lavaOID)
 
-	app := fiber.New()
-	app.Post("/webhook/stripe", HandleStripeWebhook(logger, cfg, db))
+	// Bump user to Pro so we can verify it STAYS Pro after cancel.
+	if err := db.Exec(`UPDATE users SET subscription_tier='pro' WHERE id=?`, userID).Error; err != nil {
+		t.Fatalf("set user pro: %v", err)
+	}
 
-	req := httptest.NewRequest(http.MethodPost, "/webhook/stripe", bytes.NewBufferString(`{"type":"checkout.session.completed"}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Stripe-Signature", "t=bad,v1=invalid")
+	// Seed an active lava_contract for this user with a future expires_at.
+	expiresAt := time.Now().Add(20 * 24 * time.Hour) // 20 days out
+	contractRow := &model.LavaContract{
+		ID:          uuid.NewString(),
+		UserID:      userID,
+		ContractID:  "ctr-abc-123",
+		OfferID:     lavaOID,
+		Plan:        "pro",
+		Periodicity: "MONTHLY",
+		Currency:    "USD",
+		IsActive:    true,
+		ExpiresAt:   &expiresAt,
+	}
+	if err := db.Create(contractRow).Error; err != nil {
+		t.Fatalf("seed contract: %v", err)
+	}
+
+	// Lava DELETE mock — 200 success.
+	lavaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "DELETE" {
+			t.Errorf("expected DELETE, got %s", r.Method)
+		}
+		if !strings.HasPrefix(r.URL.Path, "/api/v1/subscriptions") {
+			t.Errorf("expected /api/v1/subscriptions path, got %s", r.URL.Path)
+		}
+		// contractId + email must be present in query.
+		if r.URL.Query().Get("contractId") != "ctr-abc-123" {
+			t.Errorf("expected contractId=ctr-abc-123, got %q", r.URL.Query().Get("contractId"))
+		}
+		if r.URL.Query().Get("email") != "alice@example.com" {
+			t.Errorf("expected email=alice@example.com, got %q", r.URL.Query().Get("email"))
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer lavaServer.Close()
+	client := newLavaTestClient(t, lavaServer.URL)
+
+	app := mkPaymentApp(t, db, client, userID)
+	req := httptest.NewRequest("POST", "/api/v1/subscription/cancel", nil)
 	resp, err := app.Test(req)
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatalf("Test: %v", err)
 	}
-	if resp.StatusCode != fiber.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", resp.StatusCode)
+	var body struct {
+		Data struct {
+			Cancelled bool `json:"cancelled"`
+		} `json:"data"`
+	}
+	raw := decodeJSONBody(t, resp, &body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, raw)
+	}
+	if !body.Data.Cancelled {
+		t.Errorf("expected data.cancelled=true, raw=%s", raw)
+	}
+
+	// Verify local contract row was marked cancelled.
+	var reloaded model.LavaContract
+	if err := db.Where("id = ?", contractRow.ID).First(&reloaded).Error; err != nil {
+		t.Fatalf("reload contract: %v", err)
+	}
+	if reloaded.IsActive {
+		t.Error("expected contract.is_active=false after cancel")
+	}
+	if reloaded.CancelledAt == nil {
+		t.Error("expected contract.cancelled_at to be set")
+	}
+
+	// CRITICAL (PAY-10): users.subscription_tier MUST remain 'pro' — expiry cron downgrades.
+	var u model.User
+	if err := db.Where("id = ?", userID).First(&u).Error; err != nil {
+		t.Fatalf("reload user: %v", err)
+	}
+	if u.SubscriptionTier != "pro" {
+		t.Errorf("PAY-10 violation: expected user.subscription_tier=pro after cancel, got %q", u.SubscriptionTier)
 	}
 }
 
-func TestHandleStripeWebhook_UnhandledEventType(t *testing.T) {
-	// A valid-signature webhook with an unknown event type should return 200.
-	logger := zap.NewNop()
-	db := newTestDB(t)
-	secret := "whsec_testsecret12345678901234"
-	cfg := &config.Config{StripeWebhookSecret: secret}
+func TestGetInvoice_DBOnly(t *testing.T) {
+	db := setupPaymentTestDB(t)
+	lavaOID := "lava-off-get-db"
+	userID, _, offerUUID := seedUserAndPlan(t, db, "alice@example.com", &lavaOID)
 
-	app := fiber.New()
-	app.Post("/webhook/stripe", HandleStripeWebhook(logger, cfg, db))
+	// Seed an invoice owned by this user, status=pending.
+	invID := uuid.NewString()
+	inv := &model.Invoice{
+		ID:            invID,
+		UserID:        userID,
+		LavaInvoiceID: "lava-inv-getdb",
+		OfferID:       lavaOID,
+		PlanOfferID:   &offerUUID,
+		Plan:          "pro",
+		Periodicity:   "MONTHLY",
+		Currency:      "USD",
+		Amount:        5.0,
+		Status:        "pending",
+	}
+	if err := db.Create(inv).Error; err != nil {
+		t.Fatalf("seed invoice: %v", err)
+	}
 
-	payload := []byte(`{"id":"evt_test","type":"customer.created","data":{"object":{}}}`)
-	signedHeader := generateStripeSignature(payload, secret)
+	// Lava MUST NOT be called when escalate is not requested.
+	lavaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("lava should not be called for db-only GET; got %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(500)
+	}))
+	defer lavaServer.Close()
+	client := newLavaTestClient(t, lavaServer.URL)
 
-	req := httptest.NewRequest(http.MethodPost, "/webhook/stripe", bytes.NewBuffer(payload))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Stripe-Signature", signedHeader)
-
+	app := mkPaymentApp(t, db, client, userID)
+	req := httptest.NewRequest("GET", "/api/v1/invoices/"+invID, nil)
 	resp, err := app.Test(req)
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatalf("Test: %v", err)
 	}
-	if resp.StatusCode != fiber.StatusOK {
-		t.Errorf("expected 200, got %d", resp.StatusCode)
+	if resp.StatusCode != 200 {
+		buf := new(bytes.Buffer)
+		_, _ = buf.ReadFrom(resp.Body)
+		t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, buf.String())
+	}
+	var body struct {
+		Data struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	decodeJSONBody(t, resp, &body)
+	if body.Data.Status != "pending" {
+		t.Errorf("expected status=pending, got %q", body.Data.Status)
+	}
+	if body.Data.ID != invID {
+		t.Errorf("expected id=%s, got %s", invID, body.Data.ID)
 	}
 }
 
-// ---- CancelSubscription ----
+func TestGetInvoice_EscalateUpdatesPendingToPaid(t *testing.T) {
+	db := setupPaymentTestDB(t)
+	lavaOID := "lava-off-escalate"
+	userID, _, offerUUID := seedUserAndPlan(t, db, "alice@example.com", &lavaOID)
 
-func TestCancelSubscription_NoSubscription(t *testing.T) {
-	logger := zap.NewNop()
-	db := newTestDB(t)
-	cfg := &config.Config{StripeKey: "sk_test_placeholder"}
+	invID := uuid.NewString()
+	inv := &model.Invoice{
+		ID:            invID,
+		UserID:        userID,
+		LavaInvoiceID: "lava-inv-escalate",
+		OfferID:       lavaOID,
+		PlanOfferID:   &offerUUID,
+		Plan:          "pro",
+		Periodicity:   "MONTHLY",
+		Currency:      "USD",
+		Amount:        5.0,
+		Status:        "pending",
+	}
+	if err := db.Create(inv).Error; err != nil {
+		t.Fatalf("seed invoice: %v", err)
+	}
 
-	user := seedUser(t, db, "premium")
-	app := newTestApp(CancelSubscription(logger, cfg, db), user.ID, "premium")
+	// Lava reports COMPLETED (uppercase per RESEARCH §1.2 — handled by both-case mapper).
+	lavaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		w.WriteHeader(200)
+		_ = json.NewEncoder(w).Encode(lava.InvoiceDetailResponse{
+			ID:     "lava-inv-escalate",
+			Status: "COMPLETED",
+			Receipt: lava.InvoiceReceipt{
+				Amount: 5.0, Currency: "USD",
+			},
+		})
+	}))
+	defer lavaServer.Close()
+	client := newLavaTestClient(t, lavaServer.URL)
 
-	req := httptest.NewRequest(http.MethodPost, "/test", nil)
+	app := mkPaymentApp(t, db, client, userID)
+	req := httptest.NewRequest("GET", "/api/v1/invoices/"+invID+"?escalate=true", nil)
 	resp, err := app.Test(req)
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatalf("Test: %v", err)
 	}
-	if resp.StatusCode != fiber.StatusNotFound {
-		t.Errorf("expected 404, got %d", resp.StatusCode)
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var body struct {
+		Data struct {
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	decodeJSONBody(t, resp, &body)
+	if body.Data.Status != "paid" {
+		t.Errorf("expected status=paid after escalate reconciles COMPLETED, got %q", body.Data.Status)
+	}
+
+	// CRITICAL (D-32 §2): users.subscription_tier MUST remain 'free' — escalate path
+	// must NEVER call SetUserPlan (webhook authoritative).
+	var u model.User
+	if err := db.Where("id = ?", userID).First(&u).Error; err != nil {
+		t.Fatalf("reload user: %v", err)
+	}
+	if u.SubscriptionTier != "free" {
+		t.Errorf("D-32 §2 violation: escalate path must not grant tier; expected free, got %q", u.SubscriptionTier)
+	}
+
+	// Verify local invoice row was flipped to paid.
+	reloaded, err := repository.FindInvoiceByID(db, invID)
+	if err != nil {
+		t.Fatalf("FindInvoiceByID: %v", err)
+	}
+	if reloaded.Status != "paid" {
+		t.Errorf("expected stored invoice.status=paid, got %q", reloaded.Status)
 	}
 }
 
-func TestCancelSubscription_NoStripeID(t *testing.T) {
-	t.Skip("Stripe path deleted in 03-05 — see Phase 8 HARD-01 for full removal")
-	logger := zap.NewNop()
-	db := newTestDB(t)
-	cfg := &config.Config{StripeKey: "sk_test_placeholder"}
+func TestGetInvoice_OwnershipCheck_Returns404OnMismatch(t *testing.T) {
+	db := setupPaymentTestDB(t)
+	lavaOID := "lava-off-own"
+	ownerID, _, offerUUID := seedUserAndPlan(t, db, "owner@example.com", &lavaOID)
 
-	user := seedUser(t, db, "premium")
-	seedSubscription(t, db, user.ID, "premium", "", true)
+	// Seed a second user (attacker).
+	attackerID := uuid.NewString()
+	attackerEmail := "attacker@example.com"
+	freePlanID := ""
+	if err := db.Raw(`SELECT id FROM plans WHERE code='free'`).Scan(&freePlanID).Error; err != nil {
+		t.Fatalf("look up free plan id: %v", err)
+	}
+	if err := db.Create(&model.User{
+		ID: attackerID, Email: &attackerEmail, EmailVerified: true, FullName: "x",
+		SubscriptionTier: "free", PlanID: freePlanID, AuthProvider: "google",
+	}).Error; err != nil {
+		t.Fatalf("seed attacker: %v", err)
+	}
 
-	app := newTestApp(CancelSubscription(logger, cfg, db), user.ID, "premium")
+	// Seed invoice owned by ownerID.
+	invID := uuid.NewString()
+	inv := &model.Invoice{
+		ID:            invID,
+		UserID:        ownerID,
+		LavaInvoiceID: "lava-inv-own",
+		OfferID:       lavaOID,
+		PlanOfferID:   &offerUUID,
+		Plan:          "pro",
+		Periodicity:   "MONTHLY",
+		Currency:      "USD",
+		Amount:        5.0,
+		Status:        "pending",
+	}
+	if err := db.Create(inv).Error; err != nil {
+		t.Fatalf("seed invoice: %v", err)
+	}
 
-	req := httptest.NewRequest(http.MethodPost, "/test", nil)
+	// Lava should NOT be called — request is rejected at ownership check.
+	lavaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("lava should not be called for ownership-denied request; got %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(500)
+	}))
+	defer lavaServer.Close()
+	client := newLavaTestClient(t, lavaServer.URL)
+
+	// App is built with attacker's user_id — attempting to fetch owner's invoice.
+	app := mkPaymentApp(t, db, client, attackerID)
+	req := httptest.NewRequest("GET", "/api/v1/invoices/"+invID+"?escalate=true", nil)
 	resp, err := app.Test(req)
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatalf("Test: %v", err)
 	}
-	if resp.StatusCode != fiber.StatusBadRequest {
-		t.Errorf("expected 400 for missing stripe ID, got %d", resp.StatusCode)
-	}
-}
-
-func TestCancelSubscription_StripeAPIError(t *testing.T) {
-	// An invalid key causes the Stripe API call to fail; expect 500.
-	logger := zap.NewNop()
-	db := newTestDB(t)
-	cfg := &config.Config{StripeKey: "sk_test_invalid_for_cancel"}
-
-	user := seedUser(t, db, "premium")
-	seedSubscription(t, db, user.ID, "premium", "sub_placeholder_id", true)
-
-	app := newTestApp(CancelSubscription(logger, cfg, db), user.ID, "premium")
-
-	req := httptest.NewRequest(http.MethodPost, "/test", nil)
-	resp, err := app.Test(req, 5000)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	if resp.StatusCode != fiber.StatusInternalServerError {
-		t.Errorf("expected 500 from Stripe rejection, got %d", resp.StatusCode)
-	}
-}
-
-// ---- handleCheckoutCompleted (internal) ----
-
-func TestHandleCheckoutCompleted_MissingUserID(t *testing.T) {
-	db := newTestDB(t)
-	logger := zap.NewNop()
-
-	sess := stripe.CheckoutSession{
-		ID:       "cs_test",
-		Metadata: map[string]string{"plan": "premium"},
-	}
-	raw, _ := json.Marshal(sess)
-
-	err := handleCheckoutCompleted(logger, db, raw)
-	if err == nil {
-		t.Fatal("expected error for missing user_id in metadata")
-	}
-}
-
-func TestHandleCheckoutCompleted_MissingPlan(t *testing.T) {
-	db := newTestDB(t)
-	logger := zap.NewNop()
-
-	sess := stripe.CheckoutSession{
-		ID:       "cs_test",
-		Metadata: map[string]string{"user_id": "uid-1"},
-	}
-	raw, _ := json.Marshal(sess)
-
-	err := handleCheckoutCompleted(logger, db, raw)
-	if err == nil {
-		t.Fatal("expected error for missing plan in metadata")
-	}
-}
-
-func TestHandleCheckoutCompleted_CreatesSubscription(t *testing.T) {
-	db := newTestDB(t)
-	logger := zap.NewNop()
-
-	user := seedUser(t, db, "free")
-
-	sess := stripe.CheckoutSession{
-		ID: "cs_test",
-		Metadata: map[string]string{
-			"user_id": user.ID,
-			"plan":    "premium",
-		},
-	}
-	raw, _ := json.Marshal(sess)
-
-	if err := handleCheckoutCompleted(logger, db, raw); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Verify user tier was upgraded.
-	var updated model.User
-	db.First(&updated, "id = ?", user.ID)
-	if updated.SubscriptionTier != "premium" {
-		t.Errorf("expected tier=premium, got %q", updated.SubscriptionTier)
-	}
-
-	// Verify subscription row exists.
-	var sub model.Subscription
-	if err := db.Where("user_id = ? AND is_active = ?", user.ID, true).First(&sub).Error; err != nil {
-		t.Fatalf("expected subscription row, got error: %v", err)
-	}
-	if sub.Plan != "premium" {
-		t.Errorf("expected plan=premium, got %q", sub.Plan)
-	}
-}
-
-// ---- handleSubscriptionDeleted (internal) ----
-
-func TestHandleSubscriptionDeleted_UnknownStripeID(t *testing.T) {
-	t.Skip("Stripe path deleted in 03-05 — see Phase 8 HARD-01 for full removal")
-	db := newTestDB(t)
-	logger := zap.NewNop()
-
-	stripeSub := stripe.Subscription{ID: "sub_unknown"}
-	raw, _ := json.Marshal(stripeSub)
-
-	// Should not return an error — unknown IDs are logged and skipped.
-	if err := handleSubscriptionDeleted(logger, db, raw); err != nil {
-		t.Fatalf("unexpected error for unknown stripe ID: %v", err)
-	}
-}
-
-func TestHandleSubscriptionDeleted_DeactivatesSubscription(t *testing.T) {
-	db := newTestDB(t)
-	logger := zap.NewNop()
-
-	user := seedUser(t, db, "premium")
-	seedSubscription(t, db, user.ID, "premium", "sub_abc123", true)
-
-	stripeSub := stripe.Subscription{ID: "sub_abc123"}
-	raw, _ := json.Marshal(stripeSub)
-
-	if err := handleSubscriptionDeleted(logger, db, raw); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var sub model.Subscription
-	db.Where("user_id = ?", user.ID).First(&sub)
-	if sub.IsActive {
-		t.Error("expected subscription to be inactive after deletion event")
-	}
-
-	var updated model.User
-	db.First(&updated, "id = ?", user.ID)
-	if updated.SubscriptionTier != "free" {
-		t.Errorf("expected tier=free after cancellation, got %q", updated.SubscriptionTier)
-	}
-}
-
-// ---- handlePaymentFailed (internal) ----
-
-func TestHandlePaymentFailed_NoSubscriptionField(t *testing.T) {
-	db := newTestDB(t)
-	logger := zap.NewNop()
-
-	invoice := stripe.Invoice{ID: "in_test"}
-	raw, _ := json.Marshal(invoice)
-
-	// No subscription attached — should be a no-op, not an error.
-	if err := handlePaymentFailed(logger, db, raw); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestHandlePaymentFailed_DeactivatesSubscription(t *testing.T) {
-	db := newTestDB(t)
-	logger := zap.NewNop()
-
-	user := seedUser(t, db, "ultimate")
-	seedSubscription(t, db, user.ID, "ultimate", "sub_fail123", true)
-
-	invoice := stripe.Invoice{
-		ID:           "in_fail",
-		Subscription: &stripe.Subscription{ID: "sub_fail123"},
-	}
-	raw, _ := json.Marshal(invoice)
-
-	if err := handlePaymentFailed(logger, db, raw); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var sub model.Subscription
-	db.Where("user_id = ?", user.ID).First(&sub)
-	if sub.IsActive {
-		t.Error("expected subscription to be inactive after payment failure")
+	if resp.StatusCode != 404 {
+		buf := new(bytes.Buffer)
+		_, _ = buf.ReadFrom(resp.Body)
+		t.Fatalf("expected 404 (D-32 §2 — no existence leak), got %d body=%s", resp.StatusCode, buf.String())
 	}
 }
