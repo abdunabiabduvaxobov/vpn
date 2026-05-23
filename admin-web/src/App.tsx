@@ -14,6 +14,12 @@ import { UserDetail } from "@/pages/UserDetail";
 const Servers = lazy(() =>
   import("@/pages/Servers").then((m) => ({ default: m.Servers })),
 );
+const Plans = lazy(() =>
+  import("@/pages/Plans").then((m) => ({ default: m.Plans })),
+);
+const PlanDetail = lazy(() =>
+  import("@/pages/PlanDetail").then((m) => ({ default: m.PlanDetail })),
+);
 const Activity = lazy(() =>
   import("@/pages/Activity").then((m) => ({ default: m.Activity })),
 );
@@ -43,6 +49,22 @@ export default function App() {
           element={
             <Suspense fallback={<LazyFallback />}>
               <Servers />
+            </Suspense>
+          }
+        />
+        <Route
+          path="/plans"
+          element={
+            <Suspense fallback={<LazyFallback />}>
+              <Plans />
+            </Suspense>
+          }
+        />
+        <Route
+          path="/plans/:id"
+          element={
+            <Suspense fallback={<LazyFallback />}>
+              <PlanDetail />
             </Suspense>
           }
         />
