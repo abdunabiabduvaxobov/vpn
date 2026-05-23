@@ -109,8 +109,8 @@ func newServersTestDB(t *testing.T) *gorm.DB {
 // `tier`. Returns the plan_id. Plan 03-04 requires plans + users.plan_id
 // to be populated so GetServerConfig's resolveUserPlanID lookup succeeds.
 //
-// Limits mirror the previous PlanLimits constants for parity with old
-// assertions.
+// Limit values mirror the legacy hardcoded constants for parity with
+// older assertions.
 func seedPlansForServerTests(t *testing.T, db *gorm.DB, userID, tier string) string {
 	t.Helper()
 	if tier == "" {

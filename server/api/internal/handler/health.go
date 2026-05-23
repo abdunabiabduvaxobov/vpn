@@ -31,7 +31,7 @@ func Health() fiber.Handler {
 // Returns the user's active subscription from the database.
 //
 // PAY-11 / D-24: defaults come from the system plan (via FindSystemPlanID); paid-plan
-// limits come from FindPlanByCode(sub.Plan). No more hardcoded PlanLimits map.
+// limits come from FindPlanByCode(sub.Plan). No more legacy in-Go limits map.
 func GetSubscription(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID := c.Locals("user_id").(string)

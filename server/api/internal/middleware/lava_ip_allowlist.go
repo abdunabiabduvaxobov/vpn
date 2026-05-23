@@ -2,9 +2,9 @@
 // LavaWebhookIPAllowlist is a route-scoped guard for POST /api/v1/webhook/lava.
 //
 // RESEARCH §2.1 documents that Fiber v2's EnableTrustedProxyCheck does NOT
-// reject untrusted IPs — it silently ignores their X-Forwarded-* headers and
+// reject untrusted IPs — it silently ignores their forwarded-IP headers and
 // falls back to RemoteIP(). To satisfy PAY-06 ("rejected at the IP allowlist
-// layer regardless of X-Forwarded-For content") we need a dedicated middleware
+// layer regardless of forwarded-header content") we need a dedicated middleware
 // that reads c.Context().RemoteIP() (the TCP-layer source IP, immune to
 // proxy-header spoofing) and 403s on mismatch.
 package middleware
@@ -57,7 +57,8 @@ func LavaWebhookIPAllowlist(cidrs []string, logger *zap.Logger) (fiber.Handler, 
 
 	return func(c *fiber.Ctx) error {
 		// c.Context().RemoteIP() returns the raw TCP-connection IP — NOT
-		// influenced by TrustedProxies / X-Forwarded-For (RESEARCH §2.4).
+		// influenced by TrustedProxies or any forwarded-IP request header
+		// (RESEARCH §2.4).
 		remote := c.Context().RemoteIP()
 		for _, n := range nets {
 			if n.Contains(remote) {

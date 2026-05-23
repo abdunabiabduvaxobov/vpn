@@ -49,10 +49,10 @@ func authedApp(h fiber.Handler, userID string) *fiber.App {
 // seedPlansForDevicesTests seeds free + premium + pro + ultimate rows in the
 // plans table (idempotent). Returns the plan_id matching `tier`. Plan 03-04
 // rewires CreateShareCode + LinkDevice to FindPlanByID(user.PlanID) instead
-// of the deleted PlanLimits map, so device-cap tests must populate the plans
-// table before exercising those handlers.
+// of the legacy hardcoded in-Go limits map, so device-cap tests must populate
+// the plans table before exercising those handlers.
 //
-// Limits mirror the previous PlanLimits constants so existing test
+// Limit values mirror the legacy hardcoded constants so existing test
 // assertions ("premium has 3 device cap") keep working as-is.
 func seedPlansForDevicesTests(t *testing.T, db *gorm.DB, tier string) string {
 	t.Helper()

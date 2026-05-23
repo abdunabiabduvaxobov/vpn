@@ -138,12 +138,13 @@ func seedActiveServer(t *testing.T, db *gorm.DB) *model.VPNServer {
 // seedPlansOnce seeds free + premium + pro + ultimate rows in the plans
 // table (idempotent — INSERT OR IGNORE keyed by code). Returns the plan_id
 // matching `tier`. After plan 03-04 every handler reads MaxDevices/MaxServers
-// via repository.FindPlanByID(planID) instead of the deleted PlanLimits map,
-// so tests must populate the plans table before invoking those handlers.
+// via repository.FindPlanByID(planID) instead of the legacy hardcoded
+// in-Go limits map, so tests must populate the plans table before invoking
+// those handlers.
 //
-// Limits mirror the previous PlanLimits constants so existing test assertions
-// (e.g. "free has 1 device cap", "premium has 3 device cap") keep working
-// without rewriting every test body.
+// Limit values mirror the legacy hardcoded constants so existing test
+// assertions (e.g. "free has 1 device cap", "premium has 3 device cap")
+// keep working without rewriting every test body.
 func seedPlansOnce(t *testing.T, db *gorm.DB, tier string) string {
 	t.Helper()
 	if tier == "" {
@@ -183,7 +184,8 @@ func seedPlansOnce(t *testing.T, db *gorm.DB, tier string) string {
 //
 // PAY-11: also seeds the plans table and sets users.plan_id to the row
 // matching the requested tier; handlers now read MaxDevices via
-// repository.FindPlanByID(user.PlanID) rather than the deleted PlanLimits map.
+// repository.FindPlanByID(user.PlanID) rather than the legacy hardcoded
+// in-Go limits map.
 func seedUserRow(t *testing.T, db *gorm.DB, userID, tier string) {
 	t.Helper()
 	if tier == "" {
