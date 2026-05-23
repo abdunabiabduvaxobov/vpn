@@ -16,9 +16,10 @@ const cleanupInterval = 1 * time.Minute
 
 // scheduler is the internal state for the background worker.
 type scheduler struct {
-	ticker *time.Ticker
-	done   chan struct{}
-	wg     sync.WaitGroup
+	ticker          *time.Ticker
+	done            chan struct{}
+	wg              sync.WaitGroup
+	expiryTickCount int // incremented per tick; downgrade runs every 10
 }
 
 // global instance — only one scheduler is expected per process.
@@ -52,6 +53,11 @@ func Start(db *gorm.DB, logger *zap.Logger, cfg *config.Config) {
 			select {
 			case <-s.ticker.C:
 				runCleanup(db, logger, cfg)
+				s.expiryTickCount++
+				// D-26: run expiry downgrade every ~10 minutes (10 ticks at 1m interval).
+				if s.expiryTickCount%10 == 0 {
+					runExpiryDowngrade(db, logger)
+				}
 			case <-s.done:
 				return
 			}
@@ -137,5 +143,23 @@ func runCleanup(db *gorm.DB, logger *zap.Logger, cfg *config.Config) {
 		logger.Error("stale device cleanup failed", zap.Error(err))
 	} else if deviceCount > 0 {
 		logger.Info("stale devices cleaned up", zap.Int64("count", deviceCount))
+	}
+}
+
+// runExpiryDowngrade flips users with lapsed paid subscriptions back to the
+// system plan. Per ADR §19.10 / D-26. The repository function is idempotent —
+// safe to call on an empty/cold DB.
+//
+// PERF-06 RUN_SCHEDULER gate (Phase 6): single-replica deployment in v2.2.0
+// means this runs in the only API replica. When Phase 6 introduces multi-replica,
+// the scheduler will be gated by the env var so only one replica runs it.
+func runExpiryDowngrade(db *gorm.DB, logger *zap.Logger) {
+	rows, err := repository.DowngradeExpiredPlans(db)
+	if err != nil {
+		logger.Error("expiry downgrade failed", zap.Error(err))
+		return
+	}
+	if rows > 0 {
+		logger.Info("expired plans downgraded to system plan", zap.Int64("count", rows))
 	}
 }
