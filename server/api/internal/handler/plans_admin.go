@@ -116,6 +116,28 @@ func validateOfferTuple(periodicity, currency string, amount float64) error {
 	return nil
 }
 
+// validatePlanServerIDs checks that every server_id in the slice corresponds
+// to a real, active VPN server. Returns the offending server_id and an error
+// on the first miss; ("", nil) when every id resolves.
+//
+// WR-02: AdminCreatePlan and AdminReplacePlanServers share this validator
+// so admins get the same 422 response (with the bad server_id echoed) from
+// both endpoints. The FK constraint in migration 019 is the safety net, but
+// catching the bad id in the handler avoids the 500-from-FK-violation UX
+// and the wasted tx rollback.
+func validatePlanServerIDs(db *gorm.DB, serverIDs []string) (string, error) {
+	for _, sid := range serverIDs {
+		var n int64
+		if err := db.Table("vpn_servers").Where("id = ? AND is_active = ?", sid, true).Count(&n).Error; err != nil {
+			return sid, err
+		}
+		if n == 0 {
+			return sid, errors.New("server not found or inactive")
+		}
+	}
+	return "", nil
+}
+
 // bustPlansCacheBest is a thin wrapper that swallows errors — the cache is
 // best-effort. A bust failure means the next reader gets stale data for up
 // to 60s (the cache TTL), which is acceptable degradation.
@@ -188,6 +210,19 @@ func AdminCreatePlan(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 			if err := validateOfferTuple(of.Periodicity, of.Currency, of.Amount); err != nil {
 				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 			}
+		}
+		// WR-02: validate server_ids BEFORE opening the tx so admins get the
+		// same 422-with-bad-id response that AdminReplacePlanServers returns,
+		// rather than a 500 from a FK violation inside the rolled-back tx.
+		if badSID, err := validatePlanServerIDs(db, req.ServerIDs); err != nil {
+			if badSID != "" {
+				return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
+					"error":     "server not found or inactive",
+					"server_id": badSID,
+				})
+			}
+			logger.Error("AdminCreatePlan validateServerIDs", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
 
 		plan := &model.Plan{
@@ -413,15 +448,17 @@ func AdminReplacePlanServers(logger *zap.Logger, db *gorm.DB, redisClient *redis
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
 		// ADR §19.7.6: every server_id MUST exist + be is_active=true.
-		for _, sid := range req.ServerIDs {
-			var n int64
-			_ = db.Table("vpn_servers").Where("id = ? AND is_active = ?", sid, true).Count(&n).Error
-			if n == 0 {
+		// WR-02: shared helper with AdminCreatePlan so both endpoints behave
+		// identically on bad server_ids (422 with the offending id echoed).
+		if badSID, err := validatePlanServerIDs(db, req.ServerIDs); err != nil {
+			if badSID != "" {
 				return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
 					"error":     "server not found or inactive",
-					"server_id": sid,
+					"server_id": badSID,
 				})
 			}
+			logger.Error("AdminReplacePlanServers validateServerIDs", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
 		if err := repository.ReplacePlanServers(db, planID, req.ServerIDs); err != nil {
 			logger.Error("AdminReplacePlanServers", zap.Error(err))
