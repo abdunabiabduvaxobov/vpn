@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"vpnapp/server/api/internal/cache"
+	"vpnapp/server/api/internal/model"
 	"vpnapp/server/api/internal/repository"
 
 	"github.com/gofiber/fiber/v2"
@@ -16,10 +17,17 @@ import (
 )
 
 // Claims holds the JWT payload.
+//
+// Phase 3 (D-29): adds PlanID with json:"plan_id,omitempty" so in-flight
+// Phase 2 JWTs (issued before this plan landed) still parse — the access
+// token has a 5-minute TTL, so the backward-compat window closes naturally.
+// When the claim is empty AuthRequired falls back to repository.FindUserByID
+// (which it already calls for the HOTFIX-02 existence check).
 type Claims struct {
 	UserID string `json:"sub"`
 	Tier   string `json:"tier"`
 	Role   string `json:"role"`
+	PlanID string `json:"plan_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -84,8 +92,15 @@ func AuthRequired(jwtSecret string, redisClient *redis.Client, db *gorm.DB) fibe
 		// the client's refresh flow fires, which in turn will fail
 		// against a deleted session row and cause the client to fall
 		// back to a fresh /auth/guest — the correct recovery path.
+		//
+		// Phase 3 D-29: reuse the loaded user as the backward-compat
+		// fallback source for the plan_id claim — saves a second DB
+		// lookup in the 5-minute transition window after this plan
+		// ships and JWTs still don't carry the claim.
+		var loadedUser *model.User
 		if db != nil {
-			if _, err := repository.FindUserByID(db, claims.UserID); err != nil {
+			u, err := repository.FindUserByID(db, claims.UserID)
+			if err != nil {
 				if errors.Is(err, repository.ErrNotFound) {
 					return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 						"error": "user no longer exists",
@@ -95,12 +110,23 @@ func AuthRequired(jwtSecret string, redisClient *redis.Client, db *gorm.DB) fibe
 					"error": "internal server error",
 				})
 			}
+			loadedUser = u
 		}
 
 		// Store user info in context for downstream handlers.
 		c.Locals("user_id", claims.UserID)
 		c.Locals("tier", claims.Tier)
 		c.Locals("role", claims.Role)
+
+		// Phase 3 D-29: plan_id from JWT, fall back to the user row already
+		// loaded above when the claim is empty (in-flight Phase 2 JWTs).
+		// After the 5-min access-token TTL elapses post-deploy, every JWT
+		// carries the claim and the fallback branch is dead.
+		planID := claims.PlanID
+		if planID == "" && loadedUser != nil {
+			planID = loadedUser.PlanID
+		}
+		c.Locals("plan_id", planID)
 
 		return c.Next()
 	}
