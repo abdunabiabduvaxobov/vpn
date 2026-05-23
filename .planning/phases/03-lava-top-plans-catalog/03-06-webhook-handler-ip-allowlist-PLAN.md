@@ -30,6 +30,8 @@ Land the inbound webhook stack — the launch security gate. Five components:
 3. `internal/handler/webhook_lava.go` — `HandleLavaWebhook` with X-Api-Key check (PAY-07), payload parse, idempotency insert, 5-way event-type dispatch (PAY-03), and the per-event handlers (payment.success, subscription.recurring.payment.success, payment.failed, subscription.recurring.payment.failed, subscription.cancelled per D-19). Returns 500 on processing error so lava retries (PAY-05).
 4. PAY-08 chain: webhook payload's `contractId` → FindInvoiceByLavaID (initial payments) OR `parentContractId` → FindLavaContractByContractID (renewals) → resolves the lava `offer_id` → FindOfferByLavaOfferID(offer_id).PlanID → SetUserPlan. NEVER reads tier from request body.
 5. Wire the route + middleware in `cmd/main.go` (replaces the 03-05 placeholder comment).
+
+// Note: largest plan in phase; security-critical surface (webhook + IP allowlist). Each task is bounded to one file.
 </objective>
 
 <context>
@@ -763,9 +765,16 @@ func handleLavaPaymentSuccess(logger *zap.Logger, db *gorm.DB, event *lava.Webho
 		}
 		return fmt.Errorf("payment.success: FindInvoiceByLavaID: %w", err)
 	}
-	offer, err := repository.FindOfferByLavaOfferID(db, inv.OfferID)
+	offerRow, err := repository.FindOfferByLavaOfferID(db, inv.OfferID)
 	if err != nil {
 		return fmt.Errorf("payment.success: FindOfferByLavaOfferID(%s): %w", inv.OfferID, err)
+	}
+	// PAY-08 defence-in-depth: re-resolve plan.Code from offerRow.PlanID via FindPlanByID
+	// instead of trusting the denormalised inv.Plan column. The invoice was server-created
+	// in /checkout but the plans table is the authoritative source for tier semantics.
+	plan, err := repository.FindPlanByID(db, offerRow.PlanID)
+	if err != nil {
+		return fmt.Errorf("payment.success: FindPlanByID(%s): %w", offerRow.PlanID, err)
 	}
 
 	// Compute expires_at locally from periodicity.
@@ -779,16 +788,16 @@ func handleLavaPaymentSuccess(logger *zap.Logger, db *gorm.DB, event *lava.Webho
 
 	// 1. SetUserPlan — transactional update of users + subscriptions row.
 	contractID := event.ContractID
-	if err := repository.SetUserPlan(db, inv.UserID, offer.PlanID, &contractID, expiresAt); err != nil {
-		return fmt.Errorf("payment.success: SetUserPlan(%s, %s): %w", inv.UserID, offer.PlanID, err)
+	if err := repository.SetUserPlan(db, inv.UserID, offerRow.PlanID, &contractID, expiresAt); err != nil {
+		return fmt.Errorf("payment.success: SetUserPlan(%s, %s): %w", inv.UserID, offerRow.PlanID, err)
 	}
 
-	// 2. UpsertLavaContract.
+	// 2. UpsertLavaContract. Plan field uses freshly-resolved plan.Code (NOT inv.Plan) — PAY-08 defence-in-depth.
 	if err := repository.UpsertLavaContract(db, &model.LavaContract{
 		UserID:       inv.UserID,
 		ContractID:   contractID,
 		OfferID:      inv.OfferID,
-		Plan:         inv.Plan,
+		Plan:         plan.Code,          // freshly resolved via FindPlanByID, NOT inv.Plan denormalisation
 		Periodicity:  inv.Periodicity,
 		Currency:     inv.Currency,
 		IsActive:     true,
@@ -805,7 +814,7 @@ func handleLavaPaymentSuccess(logger *zap.Logger, db *gorm.DB, event *lava.Webho
 
 	logger.Info("webhook: payment.success applied",
 		zap.String("user_id", inv.UserID),
-		zap.String("plan_id", offer.PlanID),
+		zap.String("plan_id", offerRow.PlanID),
 		zap.String("contract_id", contractID),
 		zap.Timep("expires_at", expiresAt),
 	)
@@ -895,8 +904,13 @@ func handleLavaPaymentFailed(logger *zap.Logger, db *gorm.DB, event *lava.Webhoo
 	return nil
 }
 
-// handleLavaRecurringFailed flips lava_contracts.is_active=false.
-// Tier is NOT downgraded — cron handles that after expires_at lapses (D-19).
+// handleLavaRecurringFailed flips BOTH subscriptions.is_active and
+// lava_contracts.is_active to false in a single transaction, per D-19 literal
+// reading ("set subscriptions.is_active=false and lava_contracts.is_active=false
+// **immediately**"). Tier is NOT downgraded here — the expiry cron in plan 03-09
+// handles the actual plan_id flip once expires_at lapses, regardless of is_active.
+//
+// D-19: flip both rows to is_active=false immediately; cron handles tier downgrade at expires_at via the broader WHERE clause in 03-09.
 func handleLavaRecurringFailed(logger *zap.Logger, db *gorm.DB, event *lava.WebhookEvent) error {
 	parentID := ""
 	if event.ParentContractID != nil {
@@ -905,28 +919,42 @@ func handleLavaRecurringFailed(logger *zap.Logger, db *gorm.DB, event *lava.Webh
 	if parentID == "" {
 		return fmt.Errorf("recurring.failed: missing parentContractId")
 	}
-	if err := db.Model(&model.LavaContract{}).Where("contract_id = ?", parentID).Update("is_active", false).Error; err != nil {
-		return fmt.Errorf("recurring.failed: update contract: %w", err)
-	}
-	// Also flip subscriptions.is_active=false for this user — the cron
-	// downgrade query (03-09) checks subscriptions.is_active = TRUE so we
-	// must keep this denormalised flag in sync.
+
+	// Resolve user_id from parent contract — we need it to find the matching
+	// subscriptions row (subscriptions is keyed by user_id, not contract_id
+	// directly; lava_contract_id is a nullable FK that may or may not equal parentID).
 	parent, ferr := repository.FindLavaContractByContractID(db, parentID)
-	if ferr != nil && !errors.Is(ferr, repository.ErrNotFound) {
+	if ferr != nil {
+		if errors.Is(ferr, repository.ErrNotFound) {
+			logger.Warn("recurring.failed: parent contract not found — skipping",
+				zap.String("parent_contract", parentID))
+			return nil
+		}
 		return fmt.Errorf("recurring.failed: FindLavaContractByContractID: %w", ferr)
 	}
-	if parent != nil {
-		// NOTE: per D-19 we leave subscriptions.is_active=true so the user
-		// keeps paid-for time; the cron checks expires_at < now() to flip.
-		// Some interpretations of D-19 read "is_active=false immediately on
-		// both rows" — the cron query in plan 03-09 must be cross-referenced.
-		// Per ADR §19.10's cron SQL: `WHERE s.is_active = TRUE AND s.expires_at < now()`.
-		// So subscriptions.is_active stays TRUE; the user keeps paid time;
-		// cron downgrades at expiry. Honor that — DO NOT flip is_active here.
-		_ = parent // intentionally unused — see comment above
+
+	// Single transaction: flip both subscriptions.is_active and
+	// lava_contracts.is_active to false atomically. Per D-19 literal reading.
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.Subscription{}).
+			Where("user_id = ? AND lava_contract_id IS NOT NULL", parent.UserID).
+			Update("is_active", false).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.LavaContract{}).
+			Where("contract_id = ?", parentID).
+			Update("is_active", false).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("recurring.failed: tx flip both rows: %w", err)
 	}
-	logger.Info("webhook: recurring.payment.failed — contract deactivated (tier waits for cron)",
-		zap.String("parent_contract", parentID))
+
+	logger.Info("webhook: recurring.payment.failed — both is_active flipped to false (tier waits for cron at expires_at)",
+		zap.String("parent_contract", parentID),
+		zap.String("user_id", parent.UserID))
 	return nil
 }
 
@@ -985,7 +1013,7 @@ func planIDFromContract(db *gorm.DB, contract *model.LavaContract) string {
 }
 ```
 
-    Note on the `handleLavaRecurringFailed` complexity: the `parent != nil` block intentionally documents that we leave `subscriptions.is_active=true` even though D-19 reads "set is_active=false immediately on both rows". This is a discretion call — RESEARCH §19.10 cron SQL `WHERE s.is_active = TRUE AND s.expires_at < now()` REQUIRES is_active to be TRUE for the cron to find it. The contract row IS flipped to is_active=false; the subscriptions row stays active until cron. **The plan 03-09 cron MUST be cross-checked to use `expires_at < now()` not is_active for the qualifier.** If the cron uses is_active, this comment block should be revised.
+    Note on `handleLavaRecurringFailed`: per D-19 literal reading, BOTH `subscriptions.is_active` and `lava_contracts.is_active` flip to false immediately in a single transaction. The expiry cron in plan 03-09 was coordinated to drop `s.is_active = TRUE` from its WHERE clause so users in this state still get downgraded once `expires_at` lapses. See 03-09 T01 for the matching cron SQL.
 
     Run `cd server/api && go build ./internal/handler/webhook_lava.go` (file should compile). Test file in T04.
   </action>
@@ -998,10 +1026,15 @@ func planIDFromContract(db *gorm.DB, contract *model.LavaContract) string {
     - `grep "FindOfferByLavaOfferID" server/api/internal/handler/webhook_lava.go` finds matches (PAY-08 chain)
     - `grep "ParentContractID" server/api/internal/handler/webhook_lava.go` finds matches (RESEARCH §1.5 — renewal parent lookup)
     - `grep "periodicityToDuration" server/api/internal/handler/webhook_lava.go` finds at least 2 matches (definition + caller)
+    - `grep -c 'Update("is_active", false)' server/api/internal/handler/webhook_lava.go` returns at least 2 (D-19 BLOCKER #1 fix — handleLavaRecurringFailed flips BOTH subscriptions.is_active AND lava_contracts.is_active in a single transaction)
+    - `grep -n "db.Transaction(func(tx \*gorm.DB) error" server/api/internal/handler/webhook_lava.go` finds at least one match in handleLavaRecurringFailed (atomic both-rows flip)
+    - `grep -n "FindPlanByID" server/api/internal/handler/webhook_lava.go` finds at least one match in handleLavaPaymentSuccess (Warning #2 fix — freshly resolve plan.Code, do not trust inv.Plan denormalisation)
+    - `grep -n "plan.Code" server/api/internal/handler/webhook_lava.go` finds at least one match (used as UpsertLavaContract.Plan field per Warning #2 fix)
+    - `grep -c "D-19: flip both rows to is_active=false immediately" server/api/internal/handler/webhook_lava.go` returns at least 1 (the new one-line cross-link comment replacing the old deviation block)
     - `cd server/api && go build ./internal/handler/...` exits 0
   </acceptance_criteria>
   <automated>cd server/api && go build ./internal/handler/...</automated>
-  <done>webhook_lava.go compiles; all 5 event types handled; PAY-04 (idempotency), PAY-05 (500 on error), PAY-07 (ConstantTimeCompare), PAY-08 (offerId chain) wired.</done>
+  <done>webhook_lava.go compiles; all 5 event types handled; PAY-04 (idempotency), PAY-05 (500 on error), PAY-07 (ConstantTimeCompare), PAY-08 (offerId chain + FindPlanByID re-resolve per Warning #2) wired. D-19 honored literally: handleLavaRecurringFailed flips BOTH subscriptions.is_active AND lava_contracts.is_active in one transaction (BLOCKER #1 fix).</done>
 </task>
 
 <task type="auto">
@@ -1021,6 +1054,7 @@ func planIDFromContract(db *gorm.DB, contract *model.LavaContract) string {
     - `TestHandleLavaWebhook_TierFromOfferIDNotClient` (PAY-08) — payload includes a stray `plan` field "root" but ignored; tier derives from offerId lookup.
     - `TestHandleLavaWebhook_ExpiresAt_FirstAndRenewal` (PAY-09) — payment.success populates expires_at; recurring.success extends it.
     - `TestHandleLavaWebhook_BadSignature_401` (PAY-07) — X-Api-Key mismatch → 401.
+    - `TestHandleLavaWebhook_RecurringFailed_FlipsBothRows` (D-19 BLOCKER #1 fix) — deliver a `subscription.recurring.payment.failed` event for a user with both an active subscription (lava_contract_id set, is_active=true) and an active lava_contract (is_active=true). After the handler returns 200, assert `subscriptions.is_active == false` AND `lava_contracts.is_active == false`. This is the test that proves the D-19 literal reading: both rows flip immediately in one transaction.
 
     The setup helper extends `setupPaymentTestDB` (plan 03-05 T02) with the `lava_webhook_events` table. Skeleton (executor expands all 6 tests):
 
@@ -1132,11 +1166,14 @@ type httpResp struct {
 	Body   string
 }
 
-// TODO executor: implement these 4 remaining tests:
+// TODO executor: implement these 5 remaining tests:
 //   TestHandleLavaWebhook_AllEvents (5 subtests for the 5 event types)
 //   TestHandleLavaWebhook_ProcessingError_Returns500 (e.g. close the *gorm.DB to induce error)
 //   TestHandleLavaWebhook_TierFromOfferIDNotClient (payload has plan:"root" but stays on configured plan_id)
 //   TestHandleLavaWebhook_ExpiresAt_FirstAndRenewal (assert users.subscription_expires_at populated, then extended)
+//   TestHandleLavaWebhook_RecurringFailed_FlipsBothRows (D-19 fix: seed user with active sub + active lava_contract;
+//      deliver subscription.recurring.payment.failed with parentContractId = the seeded contract.contract_id;
+//      assert subscriptions.is_active == false AND lava_contracts.is_active == false after the handler returns 200.)
 //
 // Each test seeds: plans (free + pro), plan_offers (one with lava_offer_id="off-1"),
 // users (with email), and an invoice whose lava_invoice_id matches the test's contractId.
@@ -1171,10 +1208,11 @@ var _ = repository.ErrNotFound // silence unused import
     - `grep "TestHandleLavaWebhook_BadSignature_401" server/api/internal/handler/webhook_lava_test.go` finds one match (PAY-07)
     - `grep "TestHandleLavaWebhook_TierFromOfferIDNotClient" server/api/internal/handler/webhook_lava_test.go` finds one match (PAY-08)
     - `grep "TestHandleLavaWebhook_ExpiresAt_FirstAndRenewal" server/api/internal/handler/webhook_lava_test.go` finds one match (PAY-09)
+    - `grep "TestHandleLavaWebhook_RecurringFailed_FlipsBothRows" server/api/internal/handler/webhook_lava_test.go` finds one match (D-19 BLOCKER #1 fix — both subscriptions.is_active AND lava_contracts.is_active flip to false)
     - `cd server/api && go test ./internal/handler/ -run "TestHandleLavaWebhook" -count=1 -timeout=60s` exits 0
   </acceptance_criteria>
   <automated>cd server/api && go test ./internal/handler/ -run "TestHandleLavaWebhook" -count=1 -timeout=60s</automated>
-  <done>Webhook handler has 6 named tests covering PAY-03..PAY-09; all pass on sqlite + httptest-style invocation.</done>
+  <done>Webhook handler has 7 named tests covering PAY-03..PAY-09 plus the D-19 RecurringFailed_FlipsBothRows assertion; all pass on sqlite + httptest-style invocation.</done>
 </task>
 
 <task type="auto">
@@ -1274,7 +1312,7 @@ truths:
   - "All 5 event types dispatch to the correct branch: payment.success, subscription.recurring.payment.success, payment.failed, subscription.recurring.payment.failed, subscription.cancelled (PAY-03)."
   - "Tier is derived from the payload's contractId via the chain: contractId → invoices.lava_invoice_id → invoices.offer_id → plan_offers.lava_offer_id → plan_offers.plan_id. The payload's `plan` field is never consulted (PAY-08)."
   - "users.subscription_expires_at populates from periodicityToDuration(periodicity) on first payment.success and extends by one period on subscription.recurring.payment.success (PAY-09)."
-  - "subscription.recurring.payment.failed flips lava_contracts.is_active=false but leaves users.subscription_tier unchanged — the expiry cron (plan 03-09) handles downgrade."
+  - "subscription.recurring.payment.failed flips BOTH subscriptions.is_active AND lava_contracts.is_active to false in a single transaction (D-19 literal reading) but leaves users.subscription_tier unchanged — the expiry cron in plan 03-09 handles tier downgrade once expires_at lapses, and 03-09's cron query was coordinated to NOT filter on s.is_active = TRUE."
   - "subscription.cancelled has no `timestamp` field; the migration 020 UNIQUE uses COALESCE(timestamp, cancelledAt) so the idempotency UNIQUE still works."
 artifacts:
   - path: "server/api/internal/middleware/lava_ip_allowlist.go"
