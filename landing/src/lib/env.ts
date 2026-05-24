@@ -15,7 +15,14 @@ import "server-only";
  * server-side only.
  */
 
-type RequiredKey = "BACKEND_API_URL" | "REVALIDATE_SECRET";
+type RequiredKey =
+  | "BACKEND_API_URL"
+  | "REVALIDATE_SECRET"
+  | "APPLE_SERVICE_ID"
+  | "APPLE_REDIRECT_URI"
+  | "GOOGLE_CLIENT_ID_WEB"
+  | "GOOGLE_REDIRECT_URI"
+  | "APP_URL";
 
 function readRequired(key: RequiredKey): string {
   const v = process.env[key];
@@ -40,6 +47,35 @@ export const env = Object.freeze({
   // Cookie scope. Empty string = host-only cookie (default for local dev).
   // In production set to "risevpn.com" so cookies survive sub-domains.
   COOKIE_DOMAIN: process.env.COOKIE_DOMAIN ?? "",
+
+  // OAuth (Plan 04) — Apple "Sign in with Apple" + Google OAuth Web client.
+  // Sourced from Apple Developer + Google Cloud Console; see .env.example.
+
+  // Apple Service ID — the "Services ID" registered under your Apple Developer
+  // Team's "Sign in with Apple" configuration (e.g., "services.risevpn.web").
+  // This is the `client_id` parameter Apple expects on the authorize URL.
+  APPLE_SERVICE_ID: readRequired("APPLE_SERVICE_ID"),
+
+  // Apple redirect URI — must EXACTLY match the "Return URL" registered for
+  // the Service ID in Apple Developer (e.g.,
+  // "https://risevpn.com/auth/callback?provider=apple"). Apple POSTs the
+  // form_post id_token here.
+  APPLE_REDIRECT_URI: readRequired("APPLE_REDIRECT_URI"),
+
+  // Google OAuth Web client ID — the Web-type client created in Google Cloud
+  // Console > APIs & Services > Credentials. Mirrors Phase 2 backend's
+  // GOOGLE_CLIENT_ID_WEB env so the backend verifier accepts the audience.
+  GOOGLE_CLIENT_ID_WEB: readRequired("GOOGLE_CLIENT_ID_WEB"),
+
+  // Google redirect URI — must match the "Authorized redirect URI" registered
+  // for the Web client (e.g.,
+  // "https://risevpn.com/auth/callback?provider=google").
+  GOOGLE_REDIRECT_URI: readRequired("GOOGLE_REDIRECT_URI"),
+
+  // Landing's public origin (e.g., "https://risevpn.com"). Used to build
+  // absolute redirect_uri values and for any future absolute-URL needs
+  // (sitemap, OG image, etc.). No trailing slash.
+  APP_URL: readRequired("APP_URL"),
 
   // Standard Next.js runtime env. Default to "development" if unset (tests).
   NODE_ENV: (process.env.NODE_ENV ?? "development") as
