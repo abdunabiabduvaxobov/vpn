@@ -61,8 +61,14 @@ const PASSTHROUGH_RESPONSE_HEADERS = [
 ];
 
 function buildUpstreamUrl(segments: string[], origin: URL): string {
+  // Browser-side clients (PricingClient, PollClient, Plan 04 exchange.ts)
+  // call /api/v1/<resource>, so segments already begin with "v1". Forward
+  // the path UNCHANGED to the backend rather than re-prepending /api/v1/
+  // (which would produce /api/v1/v1/... and surface 404 from upstream —
+  // Phase 4 Plan 04-08 Rule 1 fix discovered via Playwright pay-success
+  // smoke).
   const path = segments.map(encodeURIComponent).join("/");
-  const upstream = new URL(`/api/v1/${path}`, env.BACKEND_API_URL);
+  const upstream = new URL(`/api/${path}`, env.BACKEND_API_URL);
   upstream.search = origin.search;
   return upstream.toString();
 }

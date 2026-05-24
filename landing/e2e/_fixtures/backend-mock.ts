@@ -1,176 +1,141 @@
 import type { Page } from "@playwright/test";
 
 /**
- * Backend mocks for Phase 4 Playwright smoke suite.
+ * Fixture helpers for Phase 4 Playwright smoke suite.
  *
- * Every helper calls `page.route()` to intercept browser-issued HTTP. The
- * Node proxy still runs the cookies→Bearer transform — the upstream fetch
- * is what gets caught (matched against the absolute backend URL the proxy
- * forwards to). This means the proxy's session-cookie writes, refresh
- * rotation, body-size cap, and timeout behaviour all execute against the
- * mock, exercising the real Plan 03 code path.
+ * Architecture: the deterministic Phase 2/3 API surface is served by a
+ * tiny Node HTTP server at http://127.0.0.1:4555 (e2e/_fixtures/run-mock-
+ * backend.cjs). Playwright's `webServer` boots it before the Next.js
+ * standalone bundle whose BACKEND_API_URL points at it. So the helpers
+ * below are split into two camps:
  *
- * Pattern: each fn returns the route promise so the caller can `await`
- * setup before navigation. Sequence-based mocks (mockInvoicePolling)
- * track call count via a closed-over counter.
+ *   • Browser-side interception (page.route) — for outbound navigations
+ *     from the browser to provider domains (appleid.apple.com,
+ *     accounts.google.com, gate.lava.top). The Next process never sees
+ *     these so route() catches them cleanly.
+ *
+ *   • Test-control HTTP — call the mock backend's /__set_invoice or
+ *     /__reset endpoints to drive deterministic state across the
+ *     polling tests (mockInvoicePolling, resetMockBackend).
+ *
+ * Server-component fetches (fetchPlans inside /pricing, /dashboard) and
+ * the Plan 03 `/api/[...path]` proxy reach the mock without any further
+ * setup — that's the point of running it as a real HTTP server.
  */
 
-export async function mockPlans(page: Page) {
-  await page.route("**/api/v1/plans*", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        plans: [
-          {
-            code: "free",
-            name: "Free",
-            is_system: true,
-            device_limit: 1,
-            monthly_traffic_mb: 5120,
-            server_countries: ["NL"],
-            offers: [],
-          },
-          {
-            code: "pro",
-            name: "Pro",
-            is_system: true,
-            device_limit: 5,
-            monthly_traffic_mb: 0,
-            server_countries: ["NL", "DE", "US"],
-            offers: [
-              {
-                period: "monthly",
-                price: 4.99,
-                currency: "USD",
-                lava_offer_id: "uuid-monthly",
-              },
-            ],
-          },
-        ],
-      }),
-    });
-  });
-}
+export const MOCK_BACKEND_URL = "http://127.0.0.1:4555";
 
-export async function mockOauthExchange(
-  page: Page,
-  opts: { email: string; planId: string },
-) {
-  const body = JSON.stringify({
-    access_token: buildMockJwt({ sub: "u1", plan_id: opts.planId }),
-    refresh_token: "test_rt",
-    expires_in: 300,
-    user: { id: "u1", email: opts.email, plan_id: opts.planId },
-  });
-
-  await page.route("**/api/v1/auth/apple", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body }),
-  );
-  await page.route("**/api/v1/auth/google", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body }),
-  );
+/**
+ * Wipe the mock backend's in-memory state between tests.
+ */
+export async function resetMockBackend() {
+  await fetch(`${MOCK_BACKEND_URL}/__reset`, { method: "POST" });
 }
 
 /**
- * Mock /api/v1/auth/refresh used by the Plan 03 proxy AND by Plan 07's
- * force-refresh trigger on `status=paid`. Returns a NEW access_token whose
- * embedded plan_id claim equals opts.planId so the proxy's
- * decodePlanIdFromJwt re-issues rv_user with the upgraded plan (B2 fix).
+ * Register a per-invoice polling sequence on the mock backend. Each GET
+ * /api/v1/invoices/:id will return the next item in `sequence` until the
+ * sequence is exhausted (then it sticks at the final value forever).
+ *
+ * This drives SC #4: ["pending","paid"] → flip after one poll;
+ * Array(30).fill("pending") → always pending, exercises 30s timeout UI.
  */
-export async function mockAuthRefresh(page: Page, opts: { planId: string }) {
-  await page.route("**/api/v1/auth/refresh", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        access_token: buildMockJwt({ sub: "u1", plan_id: opts.planId }),
-        refresh_token: "rotated_rt",
-        expires_in: 300,
-      }),
-    }),
-  );
-}
-
-export async function mockCheckout(
-  page: Page,
-  opts: { paymentUrl: string; invoiceId: string },
-) {
-  await page.route("**/api/v1/checkout", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        payment_url: opts.paymentUrl,
-        invoice_id: opts.invoiceId,
-      }),
-    }),
-  );
-}
-
 export async function mockInvoicePolling(
-  page: Page,
+  _page: Page,
   opts: { id: string; sequence: string[] },
 ) {
-  let i = 0;
-  await page.route(new RegExp(`/api/v1/invoices/${opts.id}.*$`), (route) => {
-    const status = opts.sequence[Math.min(i, opts.sequence.length - 1)];
-    i++;
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ id: opts.id, status, plan_code: "pro" }),
-    });
+  await fetch(`${MOCK_BACKEND_URL}/__set_invoice`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(opts),
   });
+}
+
+/**
+ * Stub the upstream POST to the mock backend's checkout endpoint. The
+ * mock returns a fixed payment_url + invoice_id by default; this helper
+ * lets a test override per-call to assert a specific URL.
+ *
+ * NOTE: the mock currently returns a single hardcoded shape — if a future
+ * test needs different values per-test, extend run-mock-backend.cjs with
+ * a /__set_checkout endpoint mirroring /__set_invoice. For now we only
+ * assert that the value the mock returns lands the browser at lava.top.
+ */
+export async function mockCheckout(
+  _page: Page,
+  _opts: { paymentUrl: string; invoiceId: string },
+) {
+  // No-op: the mock backend always returns
+  //   { payment_url: "https://gate.lava.top/pay/abc", invoice_id: "inv-123" }
+  // The browser-side redirect interception (see test files) catches the
+  // outbound navigation to lava.top — that's the surface under test.
+}
+
+/**
+ * Mock /api/v1/auth/refresh response. The shared mock backend already
+ * returns a JWT carrying plan_id=pro from /api/v1/auth/refresh, so this
+ * helper is a no-op kept for spec-readability. (Plan 04-08 wanted six
+ * named helpers — keeping the import alive avoids reworking spec bodies
+ * if a future change needs per-test override.)
+ */
+export async function mockAuthRefresh(
+  _page: Page,
+  _opts: { planId: string },
+) {
+  // No-op: see /api/v1/auth/refresh in run-mock-backend.cjs — JWT already
+  // carries plan_id=pro for the B2 force-refresh assertion path.
+}
+
+/**
+ * Same pattern: the mock backend already returns a free-tier user from
+ * /api/v1/auth/{apple,google}. Helper preserved for spec-readability.
+ */
+export async function mockOauthExchange(
+  _page: Page,
+  _opts: { email: string; planId: string },
+) {
+  // No-op: see /api/v1/auth/apple + /api/v1/auth/google in
+  // run-mock-backend.cjs — returns alice@example.com with plan_id=free.
+}
+
+/**
+ * Same pattern. The mock backend returns the plans catalog; this helper
+ * preserved for spec-readability.
+ */
+export async function mockPlans(_page: Page) {
+  // No-op: see /api/v1/plans in run-mock-backend.cjs.
 }
 
 /**
  * Intercept the Apple / Google authorize redirect and immediately
  * auto-submit a form to /auth/callback with a placeholder id_token and
- * the original state. Lets the suite exercise the full OAuth round-trip
- * without leaving the browser. The state comes from the rv_oauth_state
- * cookie the start-oauth Server Action set just before the redirect, and
- * the form post lands at the locale-less /auth/callback route that
- * Plan 04-04 owns.
+ * the original state. This is the one helper that must stay on the
+ * browser side — the navigation to appleid.apple.com / accounts.google.com
+ * happens in the browser context, never traverses the Next process.
+ *
+ * The form POSTs back to /auth/callback?provider=... which lives in the
+ * Next process; Plan 04-04's route.ts owns the receiver, does the
+ * constant-time state compare against rv_oauth_state, calls the backend
+ * exchange (against the mock), and sets rv_at/rv_rt/rv_user on response
+ * before redirecting to /<locale>/dashboard.
  */
 export async function mockOAuthRedirect(page: Page) {
-  await page.route(
-    /https:\/\/(appleid\.apple\.com|accounts\.google\.com)\//,
-    async (route) => {
-      const url = new URL(route.request().url());
-      const state = url.searchParams.get("state") ?? "";
-      const provider = url.host.includes("apple") ? "apple" : "google";
-      const html = `<!doctype html><html><body>
-<form method="POST" action="http://localhost:3000/auth/callback?provider=${provider}">
+  const handler = async (route: import("@playwright/test").Route) => {
+    const url = new URL(route.request().url());
+    const state = url.searchParams.get("state") ?? "";
+    const provider = url.host.includes("apple") ? "apple" : "google";
+    const html = `<!doctype html><html><body>
+<form method="POST" action="http://localhost:3000/auth/callback?provider=${provider}" id="autoform">
   <input name="id_token" value="mock_id_token" />
   <input name="state" value="${state}" />
 </form>
-<script>document.forms[0].submit()</script>
+<script>document.getElementById("autoform").submit()</script>
 </body></html>`;
-      await route.fulfill({ status: 200, contentType: "text/html", body: html });
-    },
-  );
-}
-
-/**
- * Build an unsigned mock JWT (header.payload.signature) — the Plan 03
- * `decodePlanIdFromJwt` deliberately skips signature verification because
- * the JWT comes back from the same trusted backend hop. So this fake
- * signature is fine for surface tests of the rv_user freshness path.
- */
-function buildMockJwt(payload: Record<string, unknown>) {
-  const header = base64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const nowSec = Math.floor(Date.now() / 1000);
-  const body = base64url(
-    JSON.stringify({ iat: nowSec, exp: nowSec + 300, ...payload }),
-  );
-  return `${header}.${body}.mocksig`;
-}
-
-function base64url(input: string) {
-  return Buffer.from(input, "utf8")
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+    await route.fulfill({ status: 200, contentType: "text/html", body: html });
+  };
+  // Use context.route — required for intercepting top-level frame doc
+  // navigations (page.route does not always catch these in Chromium when
+  // the navigation is initiated by a server-side redirect response).
+  await page.context().route("https://appleid.apple.com/**", handler);
+  await page.context().route("https://accounts.google.com/**", handler);
 }

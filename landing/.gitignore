@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# playwright (Phase 4 Plan 04-08)
+/test-results/
+/playwright-report/
+/playwright/.cache/
