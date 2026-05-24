@@ -14,3 +14,8 @@
 **Mitigation in scope:** Plan 04-07 verified via `npx tsc --noEmit` which passes (exit 0) — type safety of the new files is confirmed even though full Next build is blocked by the pre-existing /auth/callback issue.
 
 **Resolution owner:** Plan 04-08 (deploy + smoke tests) or a follow-up Plan 04-04 fix. Recommended fix: delete `page.tsx`, keep `route.ts` (the form_post POST handler is the documented primary path); query-mode operator hand-testing can still hit `route.ts` via a curl POST.
+
+
+## Resolution Log
+
+- 2026-05-24: Plan 04-04 build conflict resolved by removing /auth/callback/page.tsx; route.ts (POST form_post) is the canonical receiver.
