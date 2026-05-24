@@ -62,6 +62,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Networks: stay on the default bridge so postgres + redis remain
+    # reachable by service name, AND join vpn-net so the landing-node
+    # overlay can dial http://vpn-api:3000 via shared DNS (B3 fix —
+    # Phase 4 Plan 04-08). Compose semantics: declaring `networks:` on
+    # a service detaches it from the default bridge unless `default` is
+    # listed explicitly. Always list both.
+    networks:
+      - default
+      - vpn-net
     restart: unless-stopped
 
   tunnel:
@@ -82,3 +91,12 @@ services:
 
 volumes:
   pgdata:
+
+networks:
+  # Phase 4 Plan 04-08 (B3) — shared bridge that lets the landing-node
+  # container (declared in landing/docker-compose.landing.yml) resolve
+  # vpn-api via service-name DNS. The api service joins this network +
+  # the default bridge so postgres/redis remain reachable too.
+  vpn-net:
+    name: vpn-net
+    driver: bridge

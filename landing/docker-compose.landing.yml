@@ -1,0 +1,54 @@
+# Phase 4 — landing-node compose overlay.
+#
+# Applied alongside docker-compose.prod.yml:
+#
+#   docker compose -f docker-compose.prod.yml \
+#                  -f landing/docker-compose.landing.yml up -d
+#
+# Joins the `vpn-net` shared network declared by docker-compose.prod.yml so
+# landing-node can reach the api container via `http://vpn-api:3000` for the
+# BACKEND_API_URL proxy hop (B3 fix — the previous overlay declared an
+# isolated network and landing-node would silently 502 every backend call).
+#
+# Runtime secrets via `${VAR:?}` — compose refuses to start if any required
+# value is missing from the env / .env file. Fail-fast deployment.
+#
+# For Vercel / standalone deploys (no api container in the same cluster),
+# set BACKEND_API_URL to the public origin (e.g. https://vpnapi.mydayai.uz)
+# in the operator's .env. The `external: true` on vpn-net requires the
+# prod compose to be up first; otherwise drop `external: true` for a
+# standalone test.
+
+services:
+  landing-node:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    image: rise-vpn-landing-node:latest
+    container_name: landing-node
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      # Production cluster (api in the same vpn-net):
+      #   BACKEND_API_URL=http://vpn-api:3000
+      # Vercel / standalone (no api co-located):
+      #   BACKEND_API_URL=https://vpnapi.mydayai.uz
+      BACKEND_API_URL: ${BACKEND_API_URL:?Set BACKEND_API_URL in .env}
+      REVALIDATE_SECRET: ${REVALIDATE_SECRET:?Set REVALIDATE_SECRET in .env}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      APPLE_SERVICE_ID: ${APPLE_SERVICE_ID:?Set APPLE_SERVICE_ID in .env}
+      APPLE_REDIRECT_URI: ${APPLE_REDIRECT_URI:?Set APPLE_REDIRECT_URI in .env}
+      GOOGLE_CLIENT_ID_WEB: ${GOOGLE_CLIENT_ID_WEB:?Set GOOGLE_CLIENT_ID_WEB in .env}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:?Set GOOGLE_REDIRECT_URI in .env}
+      APP_URL: ${APP_URL:?Set APP_URL in .env}
+    networks:
+      - vpn-net
+    expose:
+      - "3000"
+
+networks:
+  vpn-net:
+    external: true
+    name: vpn-net
