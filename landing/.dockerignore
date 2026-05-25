@@ -1,0 +1,17 @@
+# Build context exclusions — keep the image small + secrets out of layers.
+node_modules
+.next
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+!.env.local.example
+e2e
+playwright-report
+test-results
+*.md
+Dockerfile
+.dockerignore
+.vscode
+.idea
