@@ -7,6 +7,32 @@ import { routing } from "@/i18n/routing";
 import { organizationSchema, softwareApplicationSchema } from "@/lib/seo";
 import "../globals.css";
 
+/**
+ * WR-04 closure: serialize an object as JSON safe to drop into a
+ * `<script type="application/ld+json">` body via `dangerouslySetInnerHTML`.
+ *
+ * Plain `JSON.stringify` does NOT escape:
+ *   - `</script>` (or `</Script>`) — would close the surrounding script tag
+ *   - `<!--`      — would start an HTML comment context
+ *   - `<![CDATA[` — XHTML / CDATA injection (XHTML legacy concern)
+ *   - U+2028 / U+2029 — line separators that legacy JS parsers treat as
+ *     newlines in JSON-in-script (the JSON-LD MIME spec doesn't strictly
+ *     need this but it's the canonical hardened-JSON serializer pattern)
+ *
+ * Replacing the FIRST `<` of each tag-like sequence with `<` keeps the
+ * resulting JSON valid (the parsed string still contains the literal `<`)
+ * while making it unparseable as an HTML opening sequence.
+ */
+function safeJsonLd(obj: unknown): string {
+  // Use RegExp constructor with explicit unicode escapes so the source file
+  // contains no literal U+2028 / U+2029 (which the TypeScript regex literal
+  // parser rejects as unterminated regex).
+  return JSON.stringify(obj)
+    .replace(/</g, "\\u003c")
+    .replace(new RegExp("\u2028", "g"), "\\u2028")
+    .replace(new RegExp("\u2029", "g"), "\\u2029");
+}
+
 const inter = Inter({
   variable: "--font-inter",
   subsets: ["cyrillic", "latin"],
@@ -126,11 +152,14 @@ export default async function LocaleLayout({
           type="application/ld+json"
           // Plain string, server-rendered. Next.js statically prerenders the
           // page so the JSON ends up in the HTML and is crawlable.
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(ldOrganization) }}
+          // WR-04: safeJsonLd escapes `<` so an embedded `</script>` cannot
+          // break out of the script context (also closes the U+2028 /
+          // U+2029 line-separator issue and any future `<!--` injection).
+          dangerouslySetInnerHTML={{ __html: safeJsonLd(ldOrganization) }}
         />
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(ldSoftwareApp) }}
+          dangerouslySetInnerHTML={{ __html: safeJsonLd(ldSoftwareApp) }}
         />
       </body>
     </html>
