@@ -209,8 +209,6 @@ export async function proxyToBackend(
 
   const forwardHeaders = buildForwardHeaders(req, at);
 
-  let triedRefresh = false;
-
   // 5. Initial upstream call.
   let upstream: Response;
   try {
@@ -235,18 +233,19 @@ export async function proxyToBackend(
     return pipeUpstream(upstream);
   }
 
-  // 7. 401 path — refresh + retry once.
-  if (!rt || triedRefresh) {
-    // No refresh material — clear cookies + surface 401 to browser.
-    const res = await pipeUpstream(upstream);
-    if (rt) {
-      // Defensive — shouldn't reach here with triedRefresh=true on first pass.
-      clearSessionCookies(res);
-    }
-    return res;
+  // 7. 401 path — refresh + retry ONCE.
+  //
+  // Single-retry guarantee comes from the linear code structure below:
+  // there is no loop, so the retry fetch is physically executed at most
+  // once. WR-05 fix: the previous `let triedRefresh = false` flag was
+  // never observed as `true` on this branch (it was only assigned to true
+  // AFTER this check), so it provided no protection — removed as dead
+  // code that misled future maintainers into thinking a loop existed.
+  if (!rt) {
+    // No refresh material — surface the upstream 401 to the browser.
+    return pipeUpstream(upstream);
   }
 
-  triedRefresh = true;
   const refresh = await callRefresh(rt);
   if (!refresh.ok) {
     const res = NextResponse.json(
