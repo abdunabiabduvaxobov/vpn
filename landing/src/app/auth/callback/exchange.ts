@@ -12,6 +12,7 @@ import {
 import { env } from "@/lib/env";
 import {
   constantTimeEquals,
+  decodeNonceFromIdToken,
   decodeState,
   isSafeNextPath,
 } from "@/lib/oauth";
@@ -89,6 +90,7 @@ const DEFAULT_LOCALE = "ru";
 export async function completeOAuth(args: ExchangeArgs): Promise<never> {
   const jar = await cookies();
   const cookieCsrf = jar.get(COOKIE_NAMES.OAUTH_STATE)?.value ?? "";
+  const cookieNonce = jar.get("rv_oauth_nonce")?.value ?? "";
   const decoded = decodeState(args.state);
   const locale = decoded?.locale ?? DEFAULT_LOCALE;
 
@@ -125,11 +127,39 @@ export async function completeOAuth(args: ExchangeArgs): Promise<never> {
     redirect(`/${locale}/login?error=oauth_denied`);
   }
 
+  // CR-01 closure — Nonce binding gate.
+  //
+  // Apple/Google embed our `nonce` (sent on the authorize URL, also stashed
+  // in the HttpOnly rv_oauth_nonce cookie) into the id_token's `nonce`
+  // claim. A replay attack with an id_token minted in a DIFFERENT context
+  // (e.g. another application's auth flow, a previous session) would pass
+  // the CSRF state check (state is freshly minted per session) but the
+  // id_token's nonce would not match our cookie. Decoding the JWT here
+  // without signature verification is safe — same trust model as
+  // decodePlanIdFromJwt: we received the token on a trusted server-to-
+  // server hop, the backend does the cryptographic verification, this is
+  // a fast-fail edge check.
+  //
+  // The nonce is ALSO forwarded to the backend so the backend's OIDC
+  // verifier can check the JWT nonce claim against the same value the
+  // landing pinned (defense in depth).
+  const idTokenNonce = decodeNonceFromIdToken(args.idToken);
+  if (
+    !cookieNonce ||
+    !idTokenNonce ||
+    !constantTimeEquals(cookieNonce, idTokenNonce)
+  ) {
+    clearOAuthCookies();
+    redirect(`/${locale}/login?error=oauth_state`);
+  }
+
   // Exchange with backend. Single attempt — refresh-retry isn't relevant
   // because we don't have a refresh token yet (this IS sign-in).
   // Resolves to POST /api/v1/auth/apple or POST /api/v1/auth/google
-  // (Phase 2 contract — both endpoints accept { id_token } and return
-  // { access_token, refresh_token, expires_in, user }).
+  // (Phase 2 contract — both endpoints accept { id_token, nonce } and
+  // return { access_token, refresh_token, expires_in, user }). CR-01:
+  // nonce is forwarded so backend can verify the id_token's nonce claim
+  // matches what the landing minted.
   let backend: BackendAuthResponse | null = null;
   try {
     const r = await fetch(
@@ -137,7 +167,7 @@ export async function completeOAuth(args: ExchangeArgs): Promise<never> {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id_token: args.idToken }),
+        body: JSON.stringify({ id_token: args.idToken, nonce: cookieNonce }),
         signal: AbortSignal.timeout(10000),
         credentials: "omit",
         cache: "no-store",

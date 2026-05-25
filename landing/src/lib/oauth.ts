@@ -180,6 +180,38 @@ export function constantTimeEquals(a: string, b: string): boolean {
 }
 
 /**
+ * Decode the `nonce` claim from an Apple/Google id_token (JWT) WITHOUT
+ * signature verification.
+ *
+ * Same trust model as decodePlanIdFromJwt in session-cookie.ts:
+ *   - The id_token arrived on a trusted server-to-server hop (the provider's
+ *     form_post POST to our callback, terminated by us)
+ *   - The backend's /api/v1/auth/<provider> handler does the cryptographic
+ *     id_token verification (JWKs lookup + iss/aud/exp/nonce checks per AUTH-01)
+ *   - This decoder reads the `nonce` claim so the landing can fail-fast at
+ *     the edge BEFORE involving the backend — defense in depth
+ *
+ * Returns "" on any parse failure so callers treat absence as mismatch.
+ *
+ * CR-01 closure: pairs with the `rv_oauth_nonce` cookie set by startOAuth.
+ * The constant-time compare against that cookie value rejects replayed
+ * id_tokens from other contexts (different session, different application).
+ */
+export function decodeNonceFromIdToken(idToken: string | undefined): string {
+  if (!idToken) return "";
+  const parts = idToken.split(".");
+  if (parts.length < 2) return "";
+  try {
+    const payloadJson = Buffer.from(parts[1], "base64url").toString("utf8");
+    const claims = JSON.parse(payloadJson);
+    if (typeof claims?.nonce === "string") return claims.nonce;
+    return "";
+  } catch {
+    return "";
+  }
+}
+
+/**
  * Build the Apple authorize URL.
  * - response_type=code id_token (Apple's spec for native id_token issuance)
  * - response_mode=form_post → Apple POSTs id_token to our redirect_uri
