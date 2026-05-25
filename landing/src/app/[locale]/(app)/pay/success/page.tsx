@@ -4,6 +4,20 @@ import { getSession } from "@/lib/session";
 import { PollClient } from "./poll-client";
 
 /**
+ * WR-03 closure: validate the shape of `invoiceId` BEFORE forwarding it to
+ * the upstream proxy / backend. The backend already performs an ownership
+ * check + UUID parse (404 on miss), but a malformed or absurdly long ID
+ * lands in the URL we construct for `/api/v1/invoices/<id>`. Defensive
+ * landing-side validation keeps the upstream URL bounded and rejects
+ * obvious junk with a redirect rather than a wasted backend call.
+ *
+ * Accepts: 1-64 chars of [A-Za-z0-9_-]. This is a superset of the
+ * canonical UUID format used by lava.top while remaining narrow enough
+ * to reject path-traversal probes and overflow-sized inputs.
+ */
+const RAW_INVOICE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
  * /<locale>/pay/success — auth-gated server page that hosts <PollClient/>.
  *
  * Pre-conditions enforced server-side BEFORE any client JS ships:
@@ -48,6 +62,17 @@ export default async function PaySuccessPage({ params, searchParams }: Props) {
   if (!sp.invoiceId) {
     // No invoice context — send the user to a useful default surface.
     return redirect({ href: "/dashboard", locale });
+  }
+
+  // WR-03: shape-validate invoiceId before propagating it to the proxy /
+  // backend. A junk value here would otherwise build an absurdly-long
+  // upstream URL for `/api/v1/invoices/<id>`. Reject by redirecting to
+  // /pay/fail with a generic reason — same UX as an unknown-invoice 404.
+  if (!RAW_INVOICE_ID_RE.test(sp.invoiceId)) {
+    return redirect({
+      href: { pathname: "/pay/fail", query: { reason: "default" } },
+      locale,
+    });
   }
 
   return (
