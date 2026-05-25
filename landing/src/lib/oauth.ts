@@ -1,6 +1,11 @@
 import "server-only";
 
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
 
 import { env } from "./env";
 
@@ -51,15 +56,74 @@ export function randomB64Url(bytes = 32): string {
   return randomBytes(bytes).toString("base64url");
 }
 
-/** Encode a StatePayload as base64url(JSON) — safe to pass as a URL query param. */
+/**
+ * Derived HMAC key for OAuth state signing.
+ *
+ * WR-02 closure: the state blob carries `next`/`plan`/`period`/`currency`/
+ * `locale` in addition to the csrf token. The csrf cookie compare protects
+ * user-binding but does NOT protect the other state fields — an attacker
+ * who can observe / intercept the authorize URL (browser history, Referer
+ * header, proxy logs) could previously swap `next=/dashboard` for
+ * `next=/pricing?checkout=auto` and change the post-login flow.
+ *
+ * Signing the state with HMAC-SHA256 + verifying the signature on the
+ * return trip rejects ANY tampered state.
+ *
+ * Key derivation: HMAC(REVALIDATE_SECRET, ":oauth-state") — narrow
+ * namespace so a leak of one secret doesn't trivially compromise the
+ * other. Mirrors session-cookie.ts's ":session" namespace pattern.
+ */
+const STATE_HMAC_KEY = createHmac(
+  "sha256",
+  env.REVALIDATE_SECRET + ":oauth-state",
+).digest();
+
+/**
+ * Encode a StatePayload as `<base64url(JSON)>.<base64url(hmac)>`.
+ *
+ * The dot-separator is unambiguous: base64url alphabet never contains `.`.
+ * Verification splits on the LAST dot so future format extensions can
+ * embed extra dots elsewhere if needed.
+ */
 export function encodeState(p: StatePayload): string {
-  return Buffer.from(JSON.stringify(p), "utf8").toString("base64url");
+  const payload = Buffer.from(JSON.stringify(p), "utf8").toString("base64url");
+  const mac = createHmac("sha256", STATE_HMAC_KEY)
+    .update(payload)
+    .digest("base64url");
+  return `${payload}.${mac}`;
 }
 
-/** Decode + shallow-validate a state string. Returns null on any failure. */
+/**
+ * Decode + verify a signed state string. Returns null on:
+ *   - missing dot separator / empty halves
+ *   - HMAC mismatch (tampered payload OR wrong key)
+ *   - JSON parse failure
+ *   - missing required fields (csrf, locale)
+ *
+ * Constant-time MAC compare so an attacker cannot probe valid signatures
+ * byte-by-byte. Length-mismatch path returns null without timing leak —
+ * the expected MAC is always the same fixed length (base64url SHA-256 = 43
+ * chars), so the only way to land in the length-mismatch branch is via a
+ * malformed input which is uniformly null-rejected.
+ */
 export function decodeState(raw: string): StatePayload | null {
+  const dot = raw.lastIndexOf(".");
+  if (dot < 1) return null;
+  const payload = raw.slice(0, dot);
+  const mac = raw.slice(dot + 1);
+  if (!payload || !mac) return null;
+
+  const expected = createHmac("sha256", STATE_HMAC_KEY)
+    .update(payload)
+    .digest("base64url");
+
+  const ma = Buffer.from(mac, "utf8");
+  const mb = Buffer.from(expected, "utf8");
+  if (ma.length !== mb.length) return null;
+  if (!timingSafeEqual(ma, mb)) return null;
+
   try {
-    const json = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+    const json = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
     if (typeof json.csrf !== "string" || typeof json.locale !== "string") {
       return null;
     }
