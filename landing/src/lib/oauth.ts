@@ -1,6 +1,6 @@
 import "server-only";
 
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 import { env } from "./env";
 
@@ -94,12 +94,25 @@ export function isSafeNextPath(p: unknown): p is string {
   return SAFE_NEXT_RE.test(p);
 }
 
-/** Constant-time equality check on two UTF-8 strings. False on length mismatch. */
+/**
+ * Constant-time equality check on two UTF-8 strings.
+ *
+ * Both inputs are first hashed with SHA-256 so the comparison runs on
+ * fixed-length 32-byte digests regardless of the original string lengths.
+ * This closes the WR-01 timing side-channel where the previous length
+ * short-circuit allowed an attacker to distinguish "wrong length" from
+ * "right length, wrong bytes" via response-time probing.
+ *
+ * Trade-off: SHA-256 collisions are computationally infeasible, so this is
+ * equivalent to a direct compare for any realistic input pair, while the
+ * runtime is now independent of input length AND independent of input
+ * content (timingSafeEqual on equal-length buffers is constant-time per
+ * Node's docs).
+ */
 export function constantTimeEquals(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
+  const ha = createHash("sha256").update(Buffer.from(a, "utf8")).digest();
+  const hb = createHash("sha256").update(Buffer.from(b, "utf8")).digest();
+  return timingSafeEqual(ha, hb);
 }
 
 /**
