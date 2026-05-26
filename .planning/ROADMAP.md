@@ -138,7 +138,12 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
   3. `PaymentScreen` shows the current plan limits and exactly one button — "Upgrade to Pro at risevpn.com" — which opens `https://risevpn.com/<locale>/pricing` in the system browser. There is no buy button, no price displayed on a CTA-styled element, no IAP code path.
   4. After paying on the web, the user taps "Open in app" on `/pay/success`; the universal link `vpnapp://payment/success?invoiceId=X` opens the app, the app polls `GET /invoices/{id}`, and the Home screen shows Pro within 5 seconds — without the user manually logging in again.
   5. `app.json` reads `2.2.0`, a TestFlight build is uploaded for iOS, and a Play Internal Track build is uploaded for Android.
-**Plans**: TBD
+**Plans**: 5 plans
+  - [ ] 05-00-PLAN.md (wave 0) — Test scaffolding: Jest mocks for SSO libs + 10 stub test files + 05-HUMAN-UAT.md prereqs gate [APP-01..APP-07]
+  - [ ] 05-01-PLAN.md (wave 1, depends 05-00) — Native config: BLOCKING operator prereqs + install pinned SSO packages + pod install + iOS Bundle ID fix + Info.plist/entitlements/AppDelegate + AndroidManifest intent-filter + strings.xml [APP-01, APP-02, APP-06]
+  - [ ] 05-02-PLAN.md (wave 2, depends 05-01) — Services layer: appleSignIn.ts, googleSignIn.ts, deepLink.ts, payment.ts rewrite, api.ts _skipAuthRefresh patch (T-7), authStore extension, User type extension [APP-01, APP-02, APP-04, APP-05, APP-06]
+  - [ ] 05-03-PLAN.md (wave 3, depends 05-02) — UI layer: LoginScreen, PaymentScreen rewrite (D-14), AccountScreen sync card, LeavingAppSheet, ActivatingProModal (polling 2s × 5 → ?escalate=true → 30s timeout), App.tsx wiring, RootNavigator Login screen, i18n EN+RU + stale-key cleanup [APP-03, APP-04, APP-05, APP-06]
+  - [ ] 05-04-PLAN.md (wave 4, depends 05-03) — Release prep: bump 4 version sources to 2.2.0 (D-17), signed .aab via gradlew bundleRelease, operator manual UAT on physical Android device (D-19) — TestFlight + Play Internal Track uploads DEFERRED per D-18 to end-of-milestone release phase [APP-07]
 **UI hint**: yes
 
 ### Phase 6: Performance & scalability
