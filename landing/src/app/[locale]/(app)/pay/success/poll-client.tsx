@@ -150,8 +150,23 @@ export function PollClient({ invoiceId }: Props) {
     // stopped.current=true (set by the first pass's cleanup → stop()) and
     // strand pollOnce() in an early-return branch. Without these resets,
     // SC#4 happy and SC#4 timeout both fail under NODE_ENV=development.
+    //
+    // WR-02 — Defensively clear any stale timer handles BEFORE re-arming.
+    // Today the cleanup `stop()` already cleared them, but mirroring that
+    // teardown here makes this reset self-sufficient: a future refactor
+    // that moves the cleanup (early-return paths, useSyncExternalStore,
+    // etc.) cannot accidentally orphan the first mount's setInterval
+    // handle and leak a phantom interval.
     stopped.current = false;
     pollNo.current = 0;
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    if (timeoutRef.current !== null) {
+      window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
     // Kick the first poll immediately so the user sees a transition at ~t=0
     // rather than waiting INTERVAL_MS for the first network call.
     pollOnce();
