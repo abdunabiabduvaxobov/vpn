@@ -50,13 +50,25 @@ test("SC#5: /pricing renders + currency switcher persists choice in cookie", asy
   // expect.poll rather than waitForURL.
   await page.getByRole("button", { name: "USD", exact: true }).click();
 
-  // Cookie write is synchronous in the click handler — should be set
-  // immediately. URL rewrite happens via useTransition+replace.
+  // Cookie write is synchronous in the click handler (CurrencySwitcher's
+  // document.cookie assignment runs BEFORE the start() transition). Read
+  // the cookie from the page's own document.cookie rather than via the
+  // Playwright CDP context cookie API — CDP has been observed to miss
+  // host-only cookies written via document.cookie from a click handler
+  // within the 10s polling window, while document.cookie reads always
+  // reflect the live jar from the page's perspective.
   await expect
-    .poll(async () => {
-      const cookies = await page.context().cookies();
-      return cookies.find((c) => c.name === "pricing_currency")?.value;
-    }, { timeout: 10_000 })
+    .poll(
+      async () => {
+        const raw = await page.evaluate(() => document.cookie);
+        const match = raw
+          .split(";")
+          .map((p) => p.trim())
+          .find((p) => p.startsWith("pricing_currency="));
+        return match ? match.split("=")[1] : undefined;
+      },
+      { timeout: 10_000 },
+    )
     .toBe("USD");
 
   await expect.poll(() => page.url(), { timeout: 10_000 }).toMatch(/currency=USD/);
