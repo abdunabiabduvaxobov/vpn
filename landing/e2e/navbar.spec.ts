@@ -56,14 +56,12 @@ test("SC#6 logged-in: navbar shows Pricing + Dashboard + Sign-out (via avatar me
   await expect(trigger).toBeVisible();
   await trigger.click();
 
-  // The Sign-out button is rendered as <button type="submit"> inside a
-  // <form action="/api/auth/logout">. Match by text content (locale aware)
-  // — `name` matching covers both role=button (the <button>) and any
-  // ARIA-button surfaced by base-ui.
+  // Wait for the Popover's Portal content to mount before asserting the
+  // testid — base-ui Popover renders into a Portal that is appended to
+  // the body asynchronously after the trigger click. The data-testid on
+  // the form submit button is the stable selector that survives any
+  // future base-ui DOM-structure changes.
   await expect(
-    page
-      .locator('button[type="submit"], [role="button"]')
-      .filter({ hasText: /Выйти|Sign out|Cerrar/ })
-      .first(),
+    page.getByTestId("sign-out-button"),
   ).toBeVisible({ timeout: 5_000 });
 });

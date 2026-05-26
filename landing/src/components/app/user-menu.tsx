@@ -68,6 +68,7 @@ export function UserMenu({ email }: UserMenuProps) {
             <form action="/api/auth/logout" method="POST" className="pt-1">
               <button
                 type="submit"
+                data-testid="sign-out-button"
                 className="w-full rounded-md px-3 py-2 text-left text-sm text-foreground transition hover:bg-muted"
               >
                 {t("signOut")}
