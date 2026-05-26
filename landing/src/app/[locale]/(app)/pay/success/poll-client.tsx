@@ -145,6 +145,13 @@ export function PollClient({ invoiceId }: Props) {
   }
 
   useEffect(() => {
+    // Reset the one-shot lifecycle refs at the TOP of the effect body so
+    // React Strict Mode's simulated unmount → remount cycle does not leave
+    // stopped.current=true (set by the first pass's cleanup → stop()) and
+    // strand pollOnce() in an early-return branch. Without these resets,
+    // SC#4 happy and SC#4 timeout both fail under NODE_ENV=development.
+    stopped.current = false;
+    pollNo.current = 0;
     // Kick the first poll immediately so the user sees a transition at ~t=0
     // rather than waiting INTERVAL_MS for the first network call.
     pollOnce();
