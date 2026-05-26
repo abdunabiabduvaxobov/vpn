@@ -1,10 +1,12 @@
 ---
 phase: 5
 slug: mobile-sso-pro-cta
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-05-26
+reviewed_at: 2026-05-26
+revisions: 1
 ---
 
 # Phase 5 — UI Design Contract
@@ -313,14 +315,14 @@ Native files are NOT subject to the 6-dimension visual checker (no JSX), but the
 
 ## Checker Sign-Off
 
-- [ ] Dimension 1 Copywriting: PASS
-- [ ] Dimension 2 Visuals: PASS
-- [ ] Dimension 3 Color: PASS
-- [ ] Dimension 4 Typography: PASS
-- [ ] Dimension 5 Spacing: PASS
-- [ ] Dimension 6 Registry Safety: PASS
+- [x] Dimension 1 Copywriting: PASS
+- [x] Dimension 2 Visuals: PASS
+- [x] Dimension 3 Color: PASS
+- [x] Dimension 4 Typography: PASS (documented exception — locked Phase 1 theme carry-forward; zero new tokens)
+- [x] Dimension 5 Spacing: PASS
+- [x] Dimension 6 Registry Safety: PASS (T-6 threat-model enforcement on `@invertase/react-native-apple-authentication` + `@react-native-google-signin/google-signin`)
 
-**Approval:** pending
+**Approval:** approved 2026-05-26 (revision 1 — gsd-ui-checker)
 
 ---
 
