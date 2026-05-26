@@ -83,12 +83,18 @@ export function PricingClient({ plan, period, checkout, currency }: Props) {
         if (r.status === 401) {
           // Session expired between page render and POST. Round-trip back
           // through /login preserving the same auto-checkout intent so the
-          // flow resumes on return (CONTEXT D-19 hand-off).
+          // flow resumes on return (CONTEXT D-19 hand-off). Clear the latch:
+          // the next page-load re-fires the intent and we want it to POST.
+          inflightCheckouts.delete(key);
           const next = `/pricing?plan=${plan}&period=${period}&currency=${currency}&checkout=auto`;
           router.replace(`/login?next=${encodeURIComponent(next)}`);
           return;
         }
         if (!r.ok) {
+          // Failure path — clear the latch so the user can retry without
+          // changing the URL (browser back, locale swap, or a future "Try
+          // again" affordance all re-mount this client on the same query).
+          inflightCheckouts.delete(key);
           setError(t("network"));
           return;
         }
@@ -96,16 +102,20 @@ export function PricingClient({ plan, period, checkout, currency }: Props) {
         const url = json?.payment_url;
         if (typeof url !== "string" || !LAVA_URL_PATTERN.test(url)) {
           // Backend returned a non-lava URL — defensive reject (T-04-07-01).
+          inflightCheckouts.delete(key);
           setError(t("network"));
           return;
         }
-        // Hard navigation to the payment provider — replaces the current
-        // history entry so the back button returns to /pricing rather than
-        // the transient "redirecting" state.
+        // SUCCESS — leave the key in the Set. The hard navigation makes any
+        // re-mount irrelevant, and the surviving key prevents a double-POST
+        // race if the navigation is slow (a true Strict Mode remount in the
+        // gap between fetch resolution and href assignment).
         window.location.href = url;
       } catch {
         // Network / parse failure. Show the i18n network error so the user
-        // knows the click was registered and they can retry.
+        // knows the click was registered and they can retry. Clear the latch
+        // so the retry path is not silently no-op'd (WR-01).
+        inflightCheckouts.delete(key);
         setError(t("network"));
       }
     })();
