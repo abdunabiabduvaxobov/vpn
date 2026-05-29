@@ -1,17 +1,20 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"vpnapp/server/api/internal/cache"
 	"vpnapp/server/api/internal/config"
 	"vpnapp/server/api/internal/lava"
 	"vpnapp/server/api/internal/model"
 	"vpnapp/server/api/internal/repository"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -52,7 +55,14 @@ import (
 //
 // Once the invoice row is resolved, `invoices.offer_id` (the lava-side UUID)
 // is the lookup key for FindOfferByLavaOfferID → PlanID → SetUserPlan.
-func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lavaClient *lava.Client) fiber.Handler {
+// PERF-04 / D-06 (redisClient): on a successful Pro-grant / renewal the
+// success handlers synchronously bust user:<id> so the buyer's Pro unlocks on
+// the next AuthRequired pass (the core-value path). The bust lives on the
+// SUCCESS side-effect path ONLY — a duplicate event short-circuits on the
+// lava_webhook_events UNIQUE (the !isNew branch below returns BEFORE dispatch)
+// and therefore neither re-applies nor re-busts (T-06-WEBHOOK-IDEMP). A bust
+// error logs but never changes the 200/500 contract (the 5s TTL is the backstop).
+func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lavaClient *lava.Client, redisClient *redis.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// 1. X-Api-Key check (PAY-07). The IP allowlist middleware already 403'd
 		//    anyone outside the CIDR list before we got here.
@@ -100,9 +110,9 @@ func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lava
 		var processErr error
 		switch event.EventType {
 		case "payment.success":
-			processErr = handleLavaPaymentSuccess(logger, db, &event)
+			processErr = handleLavaPaymentSuccess(logger, db, redisClient, &event)
 		case "subscription.recurring.payment.success":
-			processErr = handleLavaRecurringSuccess(logger, db, &event)
+			processErr = handleLavaRecurringSuccess(logger, db, redisClient, &event)
 		case "payment.failed":
 			processErr = handleLavaPaymentFailed(logger, db, &event)
 		case "subscription.recurring.payment.failed":
@@ -172,7 +182,7 @@ func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lava
 //  4. SetUserPlan(userID, planID, &contractId, expires_at) — transactional.
 //  5. UpsertLavaContract.
 //  6. UpdateInvoiceStatus to "paid".
-func handleLavaPaymentSuccess(logger *zap.Logger, db *gorm.DB, event *lava.WebhookEvent) error {
+func handleLavaPaymentSuccess(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client, event *lava.WebhookEvent) error {
 	inv, err := repository.FindInvoiceByLavaID(db, event.ContractID)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
@@ -227,6 +237,17 @@ func handleLavaPaymentSuccess(logger *zap.Logger, db *gorm.DB, event *lava.Webho
 		return fmt.Errorf("payment.success: UpdateInvoiceStatus: %w", err)
 	}
 
+	// PERF-04 / D-06: Pro is now granted — bust user:<id> so the buyer's
+	// next AuthRequired pass reflects Pro immediately (the core-value path:
+	// "pays on risevpn.com → Pro unlocks on every device"). Reached ONLY on
+	// the success path; a duplicate webhook short-circuited before dispatch
+	// so this never double-busts. A bust error logs but does NOT fail the
+	// handler — the 200 idempotency contract and the 5s TTL backstop hold.
+	if berr := cache.BustUserCache(context.Background(), redisClient, inv.UserID); berr != nil {
+		logger.Warn("webhook: BustUserCache failed on payment.success (5s TTL is the backstop)",
+			zap.String("user_id", inv.UserID), zap.Error(berr))
+	}
+
 	logger.Info("webhook: payment.success applied",
 		zap.String("user_id", inv.UserID),
 		zap.String("plan_id", offerRow.PlanID),
@@ -242,7 +263,7 @@ func handleLavaPaymentSuccess(logger *zap.Logger, db *gorm.DB, event *lava.Webho
 // ORIGINAL contract; the event's contractId is the renewal's invoice id.
 // We look up the parent contract to find the user, then compute new
 // expires_at = old_expires_at + periodicity.
-func handleLavaRecurringSuccess(logger *zap.Logger, db *gorm.DB, event *lava.WebhookEvent) error {
+func handleLavaRecurringSuccess(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client, event *lava.WebhookEvent) error {
 	parentID := ""
 	if event.ParentContractID != nil {
 		parentID = *event.ParentContractID
@@ -299,6 +320,15 @@ func handleLavaRecurringSuccess(logger *zap.Logger, db *gorm.DB, event *lava.Web
 	// Also refresh parent's expires_at so the local view stays consistent.
 	if err := db.Model(&model.LavaContract{}).Where("contract_id = ?", parentID).Update("expires_at", &newExp).Error; err != nil {
 		return fmt.Errorf("recurring.success: update parent expires_at: %w", err)
+	}
+
+	// PERF-04 / D-06: expiry just extended — bust user:<id> so the renewed
+	// expires_at is reflected immediately (a user whose entry was about to
+	// expire keeps Pro without waiting for the next cache fill). Success path
+	// only; duplicate-safe; bust error logs but never fails the handler.
+	if berr := cache.BustUserCache(context.Background(), redisClient, parent.UserID); berr != nil {
+		logger.Warn("webhook: BustUserCache failed on recurring.success (5s TTL is the backstop)",
+			zap.String("user_id", parent.UserID), zap.Error(berr))
 	}
 
 	logger.Info("webhook: recurring.payment.success extended",

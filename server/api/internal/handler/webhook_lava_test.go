@@ -177,7 +177,7 @@ func mkWebhookApp(t *testing.T, db *gorm.DB, secret, previous string) *fiber.App
 	t.Helper()
 	app := fiber.New()
 	cfg := &config.Config{LavaWebhookSecret: secret, LavaWebhookSecretPrevious: previous}
-	app.Post("/api/v1/webhook/lava", HandleLavaWebhook(zap.NewNop(), cfg, db, nil))
+	app.Post("/api/v1/webhook/lava", HandleLavaWebhook(zap.NewNop(), cfg, db, nil, nil))
 	return app
 }
 

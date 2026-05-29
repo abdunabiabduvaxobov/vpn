@@ -2,12 +2,15 @@
 package scheduler
 
 import (
+	"context"
 	"sync"
 	"time"
 
+	"vpnapp/server/api/internal/cache"
 	"vpnapp/server/api/internal/config"
 	"vpnapp/server/api/internal/repository"
 
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -29,7 +32,12 @@ var mu sync.Mutex
 // Start launches the background goroutine that cleans up expired sessions
 // once per cleanupInterval. Calling Start more than once is safe — subsequent
 // calls are no-ops if a scheduler is already running.
-func Start(db *gorm.DB, logger *zap.Logger, cfg *config.Config) {
+//
+// PERF-04 / D-06: redisClient is threaded through so the bulk-downgrade passes
+// can synchronously bust user:<id> for every user they flip to free (zero-lag
+// entitlement freshness everywhere, not just admin/webhook). redisClient may
+// be nil (Redis-disabled deployments / tests) — BustUserCache no-ops on nil.
+func Start(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redisClient *redis.Client) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -47,16 +55,16 @@ func Start(db *gorm.DB, logger *zap.Logger, cfg *config.Config) {
 		defer s.wg.Done()
 
 		// Run once immediately so the first cleanup does not wait a full interval.
-		runCleanup(db, logger, cfg)
+		runCleanup(db, logger, cfg, redisClient)
 
 		for {
 			select {
 			case <-s.ticker.C:
-				runCleanup(db, logger, cfg)
+				runCleanup(db, logger, cfg, redisClient)
 				s.expiryTickCount++
 				// D-26: run expiry downgrade every ~10 minutes (10 ticks at 1m interval).
 				if s.expiryTickCount%10 == 0 {
-					runExpiryDowngrade(db, logger)
+					runExpiryDowngrade(db, logger, redisClient)
 				}
 			case <-s.done:
 				return
@@ -86,7 +94,7 @@ func Stop() {
 }
 
 // runCleanup deletes expired sessions and stale connections, and logs results.
-func runCleanup(db *gorm.DB, logger *zap.Logger, cfg *config.Config) {
+func runCleanup(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redisClient *redis.Client) {
 	// Clean expired sessions
 	count, err := repository.DeleteExpiredSessions(db)
 	if err != nil {
@@ -127,11 +135,16 @@ func runCleanup(db *gorm.DB, logger *zap.Logger, cfg *config.Config) {
 	// so the worst-case window where an expired user still has premium
 	// limits is 60 seconds — an acceptable trade-off vs per-request
 	// expiry checks on every API call.
-	expiredCount, err := repository.DowngradeExpiredSubscriptions(db)
+	expiredIDs, err := repository.DowngradeExpiredSubscriptions(db)
 	if err != nil {
 		logger.Error("subscription expiry check failed", zap.Error(err))
-	} else if expiredCount > 0 {
-		logger.Info("expired subscriptions downgraded to free", zap.Int64("count", expiredCount))
+	} else if len(expiredIDs) > 0 {
+		// PERF-04 / D-06: bust user:<id> for each just-downgraded user so the
+		// next AuthRequired pass sees the free tier instantly (the cron is the
+		// authoritative downgrade trigger for time-based expiry). Best-effort
+		// per id — a bust failure is backstopped by the 5s TTL.
+		bustExpiredUsers(logger, redisClient, expiredIDs)
+		logger.Info("expired subscriptions downgraded to free", zap.Int("count", len(expiredIDs)))
 	}
 
 	// Free quota slots occupied by devices that have not been seen for the
@@ -153,13 +166,36 @@ func runCleanup(db *gorm.DB, logger *zap.Logger, cfg *config.Config) {
 // PERF-06 RUN_SCHEDULER gate (Phase 6): single-replica deployment in v2.2.0
 // means this runs in the only API replica. When Phase 6 introduces multi-replica,
 // the scheduler will be gated by the env var so only one replica runs it.
-func runExpiryDowngrade(db *gorm.DB, logger *zap.Logger) {
-	rows, err := repository.DowngradeExpiredPlans(db)
+func runExpiryDowngrade(db *gorm.DB, logger *zap.Logger, redisClient *redis.Client) {
+	downgradedIDs, err := repository.DowngradeExpiredPlans(db)
 	if err != nil {
 		logger.Error("expiry downgrade failed", zap.Error(err))
 		return
 	}
-	if rows > 0 {
-		logger.Info("expired plans downgraded to system plan", zap.Int64("count", rows))
+	if len(downgradedIDs) > 0 {
+		// PERF-04 / D-06: synchronously bust user:<id> for each plan-downgraded
+		// user (RETURNING-id source) so a lapsed subscription never keeps Pro
+		// in cache past the cron pass.
+		bustExpiredUsers(logger, redisClient, downgradedIDs)
+		logger.Info("expired plans downgraded to system plan", zap.Int("count", len(downgradedIDs)))
+	}
+}
+
+// bustExpiredUsers synchronously busts user:<id> for every id a bulk-downgrade
+// pass flipped to free (PERF-04 / D-06 — "zero-lag everywhere"). Each bust is
+// best-effort: a DEL failure is logged and the 5s user-cache TTL is the
+// backstop, so a single Redis hiccup never leaves a downgraded user with stale
+// Pro for more than the TTL. context.Background() is fine — these are
+// fire-and-forget DELs on the scheduler goroutine, not request-scoped.
+func bustExpiredUsers(logger *zap.Logger, redisClient *redis.Client, ids []string) {
+	if redisClient == nil || len(ids) == 0 {
+		return
+	}
+	ctx := context.Background()
+	for _, id := range ids {
+		if err := cache.BustUserCache(ctx, redisClient, id); err != nil {
+			logger.Warn("scheduler: BustUserCache failed for downgraded user (5s TTL is the backstop)",
+				zap.String("user_id", id), zap.Error(err))
+		}
 	}
 }

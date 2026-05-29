@@ -455,6 +455,12 @@ func resolveUserPlanID(c *fiber.Ctx, db *gorm.DB) (string, error) {
 	if userID == "" {
 		return "", fiber.ErrUnauthorized
 	}
+	// PERF-04 / D-07: prefer the *model.User AuthRequired already loaded on a
+	// cache miss (c.Locals("user")) over a fresh DB read. On a user-cache HIT
+	// the local is absent, so fall back to the single FindUserByID below.
+	if u, ok := c.Locals("user").(*model.User); ok && u != nil {
+		return u.PlanID, nil
+	}
 	user, err := repository.FindUserByID(db, userID)
 	if err != nil {
 		return "", err

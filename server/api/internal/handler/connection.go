@@ -32,16 +32,28 @@ func RegisterConnection(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		// embeds the tier at login time and lives for the access-token TTL,
 		// so admin upgrades/downgrades would otherwise take up to that long
 		// to take effect — bad for paying users and for revoking abuse.
-		// One extra DB lookup per connect is cheap.
-		userRecord, err := repository.FindUserByID(db, userID)
-		if err != nil {
-			logger.Error("RegisterConnection: failed to load user",
-				zap.String("user_id", userID),
-				zap.Error(err),
-			)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "internal server error",
-			})
+		//
+		// PERF-04 / D-07: AuthRequired already loaded this row on a cache
+		// MISS and stashed it in c.Locals("user") — reuse it and skip the
+		// redundant second lookup (audit §1.2). On a cache HIT the local is
+		// absent (the user cache stores only tier, not the full row), so we
+		// fall back to a single FindUserByID. Either way there is now at most
+		// ONE users SELECT per connect instead of two.
+		var userRecord *model.User
+		if u, ok := c.Locals("user").(*model.User); ok && u != nil {
+			userRecord = u
+		} else {
+			loaded, err := repository.FindUserByID(db, userID)
+			if err != nil {
+				logger.Error("RegisterConnection: failed to load user",
+					zap.String("user_id", userID),
+					zap.Error(err),
+				)
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "internal server error",
+				})
+			}
+			userRecord = loaded
 		}
 		tier := userRecord.SubscriptionTier
 		if tier == "" {

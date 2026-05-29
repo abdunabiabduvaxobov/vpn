@@ -154,7 +154,9 @@ func main() {
 	logger.Info("connected to redis")
 
 	// Start background session cleanup scheduler.
-	scheduler.Start(db, logger, cfg)
+	// PERF-04 / D-06: redisClient lets the bulk-downgrade passes bust
+	// user:<id> for each downgraded user (zero-lag entitlement freshness).
+	scheduler.Start(db, logger, cfg, redisClient)
 
 	// Create Fiber app.
 	//
@@ -263,7 +265,7 @@ func main() {
 	//   1. LavaWebhookIPAllowlist (TCP-layer RemoteIP check, 403 on miss).
 	//   2. X-Api-Key header inside the handler (crypto/subtle.ConstantTimeCompare).
 	// The old Stripe webhook route has been removed (D-02).
-	api.Post("/webhook/lava", lavaIPAllowlist, handler.HandleLavaWebhook(logger, cfg, db, lavaClient))
+	api.Post("/webhook/lava", lavaIPAllowlist, handler.HandleLavaWebhook(logger, cfg, db, lavaClient, redisClient))
 
 	// Debug endpoint — logs only the "error" and "action" fields from
 	// client-side error reports. The body is intentionally NOT logged in
@@ -339,7 +341,7 @@ func main() {
 	)
 	admin.Get("/users", handler.AdminListUsers(logger, db))
 	admin.Get("/users/:id", handler.AdminGetUser(logger, db))
-	admin.Patch("/users/:id", handler.AdminUpdateUser(logger, db))
+	admin.Patch("/users/:id", handler.AdminUpdateUser(logger, db, redisClient))
 	admin.Get("/servers", handler.AdminListServers(logger, db))
 	admin.Post("/servers", handler.AdminCreateServer(logger, db, redisClient))
 	admin.Patch("/servers/:id", handler.AdminUpdateServer(logger, db, redisClient))

@@ -118,7 +118,13 @@ type adminUpdateUserRequest struct {
 // AdminUpdateUser handles PATCH /admin/users/:id.
 // Accepts subscription_tier, role, subscription_expires_at, and/or extend_days.
 // Only provided fields are updated.
-func AdminUpdateUser(logger *zap.Logger, db *gorm.DB) fiber.Handler {
+//
+// PERF-04 / D-06: after a successful update this synchronously busts the
+// user:<id> entitlement cache so a tier/role/expiry change is reflected on
+// the very next AuthRequired pass (no waiting for the 5s TTL). The bust
+// failing must NOT fail the update — log and continue (the TTL is the
+// backstop).
+func AdminUpdateUser(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID := c.Params("id")
 		if userID == "" {
@@ -215,6 +221,14 @@ func AdminUpdateUser(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "internal server error",
 			})
+		}
+
+		// PERF-04 / D-06: synchronously bust user:<id> so the tier/role/expiry
+		// change takes effect on the next AuthRequired pass. Best-effort —
+		// a bust failure must not fail the update (the 5s TTL is the backstop).
+		if err := cache.BustUserCache(c.Context(), redisClient, userID); err != nil {
+			logger.Warn("admin: BustUserCache failed (5s TTL is the backstop)",
+				zap.String("user_id", userID), zap.Error(err))
 		}
 
 		logger.Info("admin: updated user", zap.String("user_id", userID), zap.Any("updates", updates))

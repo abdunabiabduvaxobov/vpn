@@ -39,21 +39,26 @@ import (
 // Idempotent: re-running immediately is a no-op (the first run flipped them;
 // subsequent runs find no eligible rows because users.plan_id is now system).
 //
-// Returns the rows-affected count for logging. Safe on an empty table.
+// Returns the IDs of the downgraded users (PERF-04 / D-06 — Pitfall 3:
+// RETURNING id) so the scheduler can synchronously bust user:<id> for each,
+// giving zero-lag entitlement freshness everywhere (not just the admin/webhook
+// paths). len(ids) is the downgrade count for logging. Safe on an empty table.
 //
 // Implementation note: we resolve system_plan_id once at function-entry and
 // substitute it into the GORM query so the WHERE clause is a simple equality
 // (vs a sub-SELECT). This makes the query plan stable across drivers — and
 // crucially, makes the same call work on SQLite for unit tests (SQLite has
-// limited support for correlated sub-SELECT in UPDATE FROM).
-func DowngradeExpiredPlans(db *gorm.DB) (int64, error) {
+// limited support for correlated sub-SELECT in UPDATE FROM). The same
+// select-ids-then-UPDATE shape doubles as the RETURNING-id source — the ids
+// we Pluck are exactly the rows the UPDATE touches.
+func DowngradeExpiredPlans(db *gorm.DB) ([]string, error) {
 	systemPlanID, err := FindSystemPlanID(db)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	// Resolve the user IDs first (driver-agnostic), then UPDATE them.
 	// On Postgres this could be a single UPDATE ... FROM, but the two-step
-	// approach is portable and the row count remains accurate.
+	// approach is portable and the id set is exactly what the caller busts.
 	// NOTE: `is_active` is intentionally NOT in the WHERE clause — see the
 	// doc comment above for the D-19 coordination with plan 03-06.
 	var userIDs []string
@@ -63,10 +68,10 @@ func DowngradeExpiredPlans(db *gorm.DB) (int64, error) {
 			systemPlanID, time.Now()).
 		Pluck("users.id", &userIDs).Error
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if len(userIDs) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	result := db.Model(&model.User{}).
 		Where("id IN ?", userIDs).
@@ -74,5 +79,8 @@ func DowngradeExpiredPlans(db *gorm.DB) (int64, error) {
 			"plan_id":           systemPlanID,
 			"subscription_tier": "free",
 		})
-	return result.RowsAffected, result.Error
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return userIDs, nil
 }

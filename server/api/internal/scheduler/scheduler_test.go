@@ -77,7 +77,7 @@ func TestScheduler_StartStop_DoesNotPanic(t *testing.T) {
 	db := openTestDB(t)
 	log := zap.NewNop()
 
-	scheduler.Start(db, log, testCfg())
+	scheduler.Start(db, log, testCfg(), nil)
 	// Give the immediate cleanup goroutine a moment to run.
 	time.Sleep(50 * time.Millisecond)
 	scheduler.Stop()
@@ -92,7 +92,7 @@ func TestScheduler_CleansExpiredSessionsOnStart(t *testing.T) {
 		t.Fatalf("expected 1 session before scheduler starts, got %d", count)
 	}
 
-	scheduler.Start(db, log, testCfg())
+	scheduler.Start(db, log, testCfg(), nil)
 	// The scheduler runs cleanup immediately on start; give it a moment.
 	time.Sleep(100 * time.Millisecond)
 	scheduler.Stop()
@@ -106,7 +106,7 @@ func TestScheduler_StartTwice_IsNoop(t *testing.T) {
 	db := openTestDB(t)
 	log := zap.NewNop()
 
-	scheduler.Start(db, log, testCfg())
-	scheduler.Start(db, log, testCfg()) // second call must be a no-op, not a panic
+	scheduler.Start(db, log, testCfg(), nil)
+	scheduler.Start(db, log, testCfg(), nil) // second call must be a no-op, not a panic
 	scheduler.Stop()
 }
