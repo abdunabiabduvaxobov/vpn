@@ -4,10 +4,12 @@ import (
 	"errors"
 	"time"
 
+	"vpnapp/server/api/internal/cache"
 	"vpnapp/server/api/internal/model"
 	"vpnapp/server/api/internal/repository"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -280,9 +282,18 @@ func UnregisterConnection(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 }
 
 // HeartbeatConnection handles PATCH /connections/:id/heartbeat.
-// Updates last_heartbeat_at for an active connection so the stale cleanup
-// scheduler does not mark it as disconnected.
-func HeartbeatConnection(logger *zap.Logger, db *gorm.DB) fiber.Handler {
+//
+// PERF-02 / D-03 / D-04: the heartbeat path no longer writes to Postgres per
+// call (it was ~167 write-q/s at 10k connections — the hottest write path).
+// Instead it pipelines the beat into Redis via cache.TouchHeartbeat and a
+// dedicated 10s scheduler ticker collapses every dirty id into ONE bulk UPDATE.
+// Postgres stays the source of truth.
+//
+// The FindConnectionByID ownership pre-read is RETAINED: it is a cheap indexed
+// PK read that enforces per-request ownership (the 404 / 403) so a client cannot
+// refresh a connection it does not own (T-06-HB-OWNERSHIP). The PERF-02 win is
+// removing the WRITE, not the read.
+func HeartbeatConnection(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		connID := c.Params("id")
 		userID := c.Locals("user_id").(string)
@@ -304,12 +315,16 @@ func HeartbeatConnection(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
 		}
 
-		if err := repository.UpdateHeartbeat(db, connID); err != nil {
-			if errors.Is(err, repository.ErrNotFound) {
-				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "connection already disconnected"})
-			}
-			logger.Error("heartbeat update failed", zap.String("id", connID), zap.Error(err))
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		// Pipeline the beat into Redis (SET hb:<id> EX 600 + SADD hb:dirty). The
+		// 10s scheduler ticker flushes the dirty set into one bulk UPDATE.
+		//
+		// Fail-open (T-06-HB-FAILOPEN): a Redis error is LOGGED but we still
+		// return 204 — heartbeat is non-critical, the 3-min StaleConnectionAfter
+		// grace plus the next beat cover a missed write, and PG remains the
+		// source of truth. A Redis outage must never surface as a 5xx here.
+		if err := cache.TouchHeartbeat(c.Context(), redisClient, connID); err != nil {
+			logger.Warn("heartbeat touch failed (fail-open: returning 204; 3-min grace + next beat cover it)",
+				zap.String("id", connID), zap.Error(err))
 		}
 
 		return c.Status(fiber.StatusNoContent).Send(nil)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -27,6 +28,15 @@ type Config struct {
 	StaleConnectionAfter time.Duration // marks connections without heartbeat as stale
 	StaleDeviceAfter     time.Duration // auto-removes idle device rows
 	LinkCodeTTL          time.Duration // share-code lifetime before expiry
+
+	// RunScheduler gates whether THIS process runs the background scheduler
+	// (cleanup, expiry downgrades, the 10s heartbeat flush, weekly prune).
+	// PERF-06 / D-09b: when the API scales to multiple replicas (Tranche 3),
+	// only the primary should run periodic jobs — set RUN_SCHEDULER=false on
+	// the others. Defaults to true so the single-replica v2.2.0 deploy keeps
+	// running periodic work with no config change. Computed from
+	// ShouldRunScheduler(getEnv("RUN_SCHEDULER","true")) in Load().
+	RunScheduler bool
 
 	// Telegram recovery bot (ADR-006). All three fields are optional —
 	// the bot goroutine only starts when RecoveryBotToken is non-empty,
@@ -107,6 +117,7 @@ func Load() (*Config, error) {
 		StaleConnectionAfter: getEnvDuration("STALE_CONNECTION_AFTER", 3*time.Minute, &parseWarnings),
 		StaleDeviceAfter:     getEnvDuration("STALE_DEVICE_AFTER", 30*24*time.Hour, &parseWarnings),
 		LinkCodeTTL:          getEnvDuration("LINK_CODE_TTL", 5*time.Minute, &parseWarnings),
+		RunScheduler:         ShouldRunScheduler(getEnv("RUN_SCHEDULER", "true")),
 
 		RecoveryBotToken:    getEnv("TELEGRAM_RECOVERY_BOT_TOKEN", ""),
 		RecoveryBotUsername: getEnv("TELEGRAM_RECOVERY_BOT_USERNAME", "risevp_bot"),
@@ -159,6 +170,25 @@ func getEnv(key, fallback string) string {
 		return val
 	}
 	return fallback
+}
+
+// ShouldRunScheduler decides, from the raw RUN_SCHEDULER env value, whether this
+// process should run the background scheduler (PERF-06 / D-09b). It is a PURE,
+// side-effect-free helper so main.go's branch is unit-testable without spinning
+// a real second replica (the load-bearing PERF-06 (d) assertion).
+//
+// Default ON: ANY value EXCEPT the explicit falsey set {"false","0","no"}
+// (case-insensitive, trimmed) enables the scheduler — including the empty string
+// (env var unset), so the single-replica v2.2.0 deploy keeps running periodic
+// work with no config change. To DISABLE on a non-primary replica, set
+// RUN_SCHEDULER to one of false / 0 / no.
+func ShouldRunScheduler(envValue string) bool {
+	switch strings.ToLower(strings.TrimSpace(envValue)) {
+	case "false", "0", "no":
+		return false
+	default:
+		return true
+	}
 }
 
 // getEnvDuration parses a Go duration string from the environment, falling

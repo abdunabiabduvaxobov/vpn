@@ -230,7 +230,10 @@ func buildApp(t *testing.T, db *gorm.DB, userID, tier string) *fiber.App {
 	app.Post("/connections", handler.RegisterConnection(log, db))
 	app.Delete("/connections/:id", handler.UnregisterConnection(log, db))
 	app.Get("/connections", handler.ListActiveConnections(log, db))
-	app.Patch("/connections/:id/heartbeat", handler.HeartbeatConnection(log, db))
+	// PERF-02: HeartbeatConnection now pipelines to Redis. A nil client is
+	// fail-open (TouchHeartbeat returns nil), so the route still returns 204 in
+	// these DB-only handler tests without standing up miniredis.
+	app.Patch("/connections/:id/heartbeat", handler.HeartbeatConnection(log, db, nil))
 
 	return app
 }

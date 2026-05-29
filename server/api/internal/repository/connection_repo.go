@@ -158,6 +158,12 @@ func CleanupStaleReservations(db *gorm.DB, maxAge time.Duration) (int64, error) 
 
 // UpdateHeartbeat refreshes the last_heartbeat_at timestamp for an active connection.
 // Returns ErrNotFound if the connection does not exist or is already disconnected.
+//
+// Deprecated (PERF-02 / D-03): the heartbeat handler no longer calls this — beats
+// are pipelined into Redis (cache.TouchHeartbeat) and flushed in one bulk UPDATE
+// by the 10s scheduler ticker (cache.FlushHeartbeats). Retained as a single-row
+// helper / for tests; the per-call PG write it embodies is intentionally gone
+// from the hot path.
 func UpdateHeartbeat(db *gorm.DB, id string) error {
 	result := db.Model(&model.Connection{}).
 		Where("id = ? AND disconnected_at IS NULL", id).
@@ -169,6 +175,23 @@ func UpdateHeartbeat(db *gorm.DB, id string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// PruneOldConnections permanently DELETEs disconnected connection rows whose
+// disconnected_at is older than cutoff, bounding unbounded history growth
+// (PERF-08 / D-10c, audit §2.5). Returns the number of rows deleted.
+//
+// Safety: only rows with disconnected_at IS NOT NULL AND disconnected_at < cutoff
+// are removed — ACTIVE connections (disconnected_at IS NULL) are NEVER touched
+// (T-06-PRUNE). The scheduler calls this on a WEEKLY cadence with a 90-day
+// cutoff; the predicate is served by idx_connections_connected_at (plan 02).
+func PruneOldConnections(db *gorm.DB, cutoff time.Time) (int64, error) {
+	result := db.Where("disconnected_at IS NOT NULL AND disconnected_at < ?", cutoff).
+		Delete(&model.Connection{})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return result.RowsAffected, nil
 }
 
 // FindConnectionByID looks up a connection by UUID.
