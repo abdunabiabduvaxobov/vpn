@@ -43,6 +43,10 @@ export function ActivatingProModal() {
 
   const [modalState, setModalState] = useState<ModalState>('polling');
   const cancelledRef = useRef(false);
+  // WR-03: track the 3s success-display timer so it can be cleared on unmount
+  // (otherwise it fires setModalState/stopActivatingPro on an unmounted
+  // component → set-state-after-unmount warning + wasted work).
+  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!isActivatingPro || !pendingInvoiceId) {
@@ -70,7 +74,8 @@ export function ActivatingProModal() {
           await fetchAccount();
           if (cancelledRef.current) return;
           setModalState('success');
-          setTimeout(() => {
+          successTimerRef.current = setTimeout(() => {
+            if (cancelledRef.current) return;
             stopActivatingPro();
             setModalState('polling');
           }, 3000);
@@ -95,6 +100,12 @@ export function ActivatingProModal() {
 
     return () => {
       cancelledRef.current = true;
+      // WR-03: clear any pending success timer so it cannot fire setState
+      // after unmount.
+      if (successTimerRef.current) {
+        clearTimeout(successTimerRef.current);
+        successTimerRef.current = null;
+      }
     };
   }, [isActivatingPro, pendingInvoiceId, isAuthenticated, fetchAccount, stopActivatingPro]);
 
@@ -108,10 +119,15 @@ export function ActivatingProModal() {
     if (!pendingInvoiceId) return;
     try {
       const inv = await getInvoice(pendingInvoiceId, true);
+      // WR-03: guard against an unmount that happened during the await so we
+      // don't setState on an unmounted component.
+      if (cancelledRef.current) return;
       await fetchAccount();
+      if (cancelledRef.current) return;
       if (inv.status === 'paid') {
         setModalState('success');
-        setTimeout(() => {
+        successTimerRef.current = setTimeout(() => {
+          if (cancelledRef.current) return;
           stopActivatingPro();
           setModalState('polling');
         }, 3000);

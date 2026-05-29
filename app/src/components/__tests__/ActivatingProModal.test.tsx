@@ -114,4 +114,105 @@ describe('ActivatingProModal polling', () => {
     });
     expect(tree.toJSON()).toBeNull();
   });
+
+  // QA P0-3 — terminal failed state stops polling.
+  it('enters the failed state on status=failed and stops polling', async () => {
+    (getInvoice as jest.Mock).mockResolvedValueOnce({id: 'inv_X', status: 'failed'});
+    let component: any;
+    await act(async () => {
+      component = TestRenderer.create(<ActivatingProModal />);
+      await Promise.resolve();
+    });
+    expect(getInvoice).toHaveBeenCalledTimes(1);
+    const text = JSON.stringify(component.toJSON());
+    expect(text).toContain('payment.activating.failedTitle');
+    // No further polling after the terminal state.
+    await act(async () => {
+      jest.advanceTimersByTime(2000);
+      await Promise.resolve();
+    });
+    expect(getInvoice).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      component.unmount();
+    });
+  });
+
+  // QA P0-3 — 15-poll budget boundary → takingLonger.
+  it('shows takingLonger after the 15-poll budget elapses', async () => {
+    (getInvoice as jest.Mock).mockResolvedValue({id: 'inv_X', status: 'pending'});
+    let component: any;
+    await act(async () => {
+      component = TestRenderer.create(<ActivatingProModal />);
+      await Promise.resolve();
+    });
+    // Poll 1 already fired on mount; advance through polls 2..15.
+    for (let i = 0; i < 14; i += 1) {
+      await act(async () => {
+        jest.advanceTimersByTime(2000);
+        await Promise.resolve();
+      });
+    }
+    expect(getInvoice).toHaveBeenCalledTimes(15);
+    const text = JSON.stringify(component.toJSON());
+    expect(text).toContain('payment.takingLonger.title');
+    // Budget exhausted — no 16th poll.
+    await act(async () => {
+      jest.advanceTimersByTime(2000);
+      await Promise.resolve();
+    });
+    expect(getInvoice).toHaveBeenCalledTimes(15);
+    await act(async () => {
+      component.unmount();
+    });
+  });
+
+  // QA P0-3 + FIX 4 — unmount mid-poll: no further getInvoice, no setState warning.
+  it('does not poll or setState after unmount mid-poll', async () => {
+    (getInvoice as jest.Mock).mockResolvedValue({id: 'inv_X', status: 'pending'});
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    let component: any;
+    await act(async () => {
+      component = TestRenderer.create(<ActivatingProModal />);
+      await Promise.resolve();
+    });
+    expect(getInvoice).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      component.unmount();
+    });
+    const callsAfterUnmount = (getInvoice as jest.Mock).mock.calls.length;
+    // Advance past several poll intervals — no new polls should fire.
+    await act(async () => {
+      jest.advanceTimersByTime(10000);
+      await Promise.resolve();
+    });
+    expect((getInvoice as jest.Mock).mock.calls.length).toBe(callsAfterUnmount);
+    // No "state update on unmounted component" warning.
+    const warned = errorSpy.mock.calls.some(args =>
+      String(args[0]).includes('unmounted'),
+    );
+    expect(warned).toBe(false);
+    errorSpy.mockRestore();
+  });
+
+  // FIX 4 — success timer cleared on unmount within the 3s window.
+  it('clears the 3s success timer on unmount (no setState after unmount)', async () => {
+    (getInvoice as jest.Mock).mockResolvedValueOnce({id: 'inv_X', status: 'paid'});
+    let component: any;
+    await act(async () => {
+      component = TestRenderer.create(<ActivatingProModal />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockStoreState.fetchAccount).toHaveBeenCalled();
+    // Unmount BEFORE the 3s success display elapses.
+    await act(async () => {
+      component.unmount();
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(3000);
+      await Promise.resolve();
+    });
+    // Timer was cleared → stopActivatingPro never fired after unmount.
+    expect(mockStoreState.stopActivatingPro).not.toHaveBeenCalled();
+  });
 });
