@@ -1,22 +1,76 @@
-// app/src/services/__tests__/deepLink.test.ts
-// Phase 5 Wave 0 scaffold — Wave 2 fills in implementations.
-// Tracks: 05-VALIDATION.md task 5-SVC-06.
+// Phase 5 — Tests for deepLink service.
+// Tracks: 05-VALIDATION.md 5-SVC-06.
 
-describe.skip('parseInvoiceFromUrl', () => {
-  it('extracts invoiceId from vpnapp://payment/success?invoiceId=X', () => {
-    // Wave 2: import parseInvoiceFromUrl from '../deepLink';
-    // expect parseInvoiceFromUrl('vpnapp://payment/success?invoiceId=abc123') to equal 'abc123'
+import {parseInvoiceFromUrl, registerDeepLinkHandler} from '../deepLink';
+import {Linking} from 'react-native';
+
+jest.mock('react-native', () => ({
+  Linking: {
+    addEventListener: jest.fn(),
+    getInitialURL: jest.fn(),
+    removeEventListener: jest.fn(),
+  },
+}));
+
+jest.mock('../../stores/authStore', () => ({
+  useAuthStore: {
+    getState: jest.fn(() => ({startActivatingPro: jest.fn()})),
+  },
+}));
+
+describe('parseInvoiceFromUrl', () => {
+  it('extracts invoiceId from canonical URL', () => {
+    expect(
+      parseInvoiceFromUrl('vpnapp://payment/success?invoiceId=abc123'),
+    ).toBe('abc123');
   });
-
+  it('URL-decodes encoded values', () => {
+    expect(
+      parseInvoiceFromUrl('vpnapp://payment/success?invoiceId=enc%20oded'),
+    ).toBe('enc oded');
+  });
   it('returns null for wrong scheme', () => {
-    // Wave 2: expect parseInvoiceFromUrl('https://payment/success?invoiceId=abc123') to be null
+    expect(
+      parseInvoiceFromUrl('https://risevpn.com/pay/success?invoiceId=X'),
+    ).toBeNull();
+  });
+  it('returns null when invoiceId param is missing', () => {
+    expect(parseInvoiceFromUrl('vpnapp://payment/success')).toBeNull();
+  });
+  it('returns null for wrong path (not /payment/success)', () => {
+    expect(parseInvoiceFromUrl('vpnapp://payment/cancel?invoiceId=X')).toBeNull();
+  });
+  it('returns null for null input', () => {
+    expect(parseInvoiceFromUrl(null)).toBeNull();
+  });
+});
+
+describe('registerDeepLinkHandler', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (Linking.getInitialURL as jest.Mock).mockResolvedValue(null);
+    (Linking.addEventListener as jest.Mock).mockReturnValue({
+      remove: jest.fn(),
+    });
   });
 
-  it('returns null for missing invoiceId param', () => {
-    // Wave 2: expect parseInvoiceFromUrl('vpnapp://payment/success') to be null
+  it('subscribes to url events AND queries getInitialURL', () => {
+    const unsubscribe = registerDeepLinkHandler();
+    expect(Linking.getInitialURL).toHaveBeenCalledTimes(1);
+    expect(Linking.addEventListener).toHaveBeenCalledWith(
+      'url',
+      expect.any(Function),
+    );
+    expect(typeof unsubscribe).toBe('function');
   });
 
-  it('decodeURIComponents the captured value', () => {
-    // Wave 2: expect parseInvoiceFromUrl('vpnapp://payment/success?invoiceId=a%20b') to equal 'a b'
+  it('returns an unsubscribe function that removes the listener', () => {
+    const removeMock = jest.fn();
+    (Linking.addEventListener as jest.Mock).mockReturnValue({
+      remove: removeMock,
+    });
+    const unsubscribe = registerDeepLinkHandler();
+    unsubscribe();
+    expect(removeMock).toHaveBeenCalled();
   });
 });

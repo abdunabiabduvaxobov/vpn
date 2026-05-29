@@ -12,7 +12,10 @@ export interface AppleSignInResult {
   identityToken: string;
   authorizationCode: string | null;
   user: string;
-  fullName: {givenName?: string; familyName?: string} | null;
+  // givenName/familyName are `string | null` to match the real
+  // @invertase AppleRequestResponseFullName shape (the native sheet
+  // returns null — not undefined — when a name component is absent).
+  fullName: {givenName?: string | null; familyName?: string | null} | null;
   email: string | null;
 }
 

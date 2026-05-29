@@ -2,6 +2,15 @@ import axios from 'axios';
 import {useAuthStore} from '../stores/authStore';
 import {APP_VERSION} from '../config/version';
 
+// T-7: allow callers to opt out of the 401→refresh→retry cycle for
+// auth-establishing endpoints. Use on /auth/apple + /auth/google calls.
+declare module 'axios' {
+  export interface AxiosRequestConfig {
+    _skipAuthRefresh?: boolean;
+    _retry?: boolean;
+  }
+}
+
 // Base API URL — points to the Go Fiber backend behind Cloudflare.
 // In development (__DEV__) connects to the local machine; in production uses the live API.
 const API_BASE_URL = __DEV__
@@ -53,7 +62,22 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    // T-7: short-circuit refresh-on-401 for SSO endpoints. The existing
+    // interceptor on a /auth/apple or /auth/google 401 would call
+    // /auth/refresh (which itself 401s because the SSO call had no valid
+    // refresh token), which triggers logout() + initialize(), which mints
+    // a new guest. Result: Apple/Google sign-in fails silently and user
+    // becomes a fresh guest. Defense: skip refresh for any request flagged
+    // _skipAuthRefresh OR for any /auth/* URL.
+    const requestUrl: string = originalRequest.url || '';
+    const skipAuthRefresh =
+      originalRequest._skipAuthRefresh === true ||
+      requestUrl.startsWith('/auth/');
+    if (
+      error.response?.status === 401 &&
+      !originalRequest._retry &&
+      !skipAuthRefresh
+    ) {
       if (isRefreshing) {
         // Another request is already refreshing — wait for it
         return new Promise((resolve, reject) => {
