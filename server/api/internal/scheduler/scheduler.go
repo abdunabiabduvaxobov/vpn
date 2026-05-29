@@ -83,7 +83,11 @@ func Start(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redisClient *red
 		defer s.wg.Done()
 
 		// Run once immediately so the first cleanup does not wait a full interval.
-		s.cleanupTickCount++
+		// The boot pass runs EVERY registry job once (tickCount 0 ⇒ 0 % N == 0
+		// for all N), so a restart cleans expired sessions/devices/old
+		// connections right away — preserving the long-standing "cleanup on
+		// start" contract. cleanupTickCount stays 0 here; the per-job modulo
+		// cadence (D-10c) then governs subsequent ticks (first ticker tick is 1).
 		runCleanup(db, logger, cfg, redisClient, s.cleanupTickCount)
 
 		for {

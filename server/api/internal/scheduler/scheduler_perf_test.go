@@ -2,6 +2,7 @@ package scheduler_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -122,11 +123,11 @@ func TestSchedulerGateNoJobs(t *testing.T) {
 	// cleanupInterval must leave the stale row untouched.
 	time.Sleep(10 * time.Millisecond)
 
-	var disconnected *time.Time
+	var disconnected sql.NullTime
 	if err := db.Raw(`SELECT disconnected_at FROM connections WHERE id = 'stale-1'`).Scan(&disconnected).Error; err != nil {
 		t.Fatalf("read stale row: %v", err)
 	}
-	if disconnected != nil {
+	if disconnected.Valid {
 		t.Errorf("PERF-06: gated-off scheduler must not disconnect stale rows")
 	}
 }
