@@ -97,26 +97,81 @@ func AuthRequired(jwtSecret string, redisClient *redis.Client, db *gorm.DB) fibe
 		// fallback source for the plan_id claim — saves a second DB
 		// lookup in the 5-minute transition window after this plan
 		// ships and JWTs still don't carry the claim.
+		//
+		// PERF-04 / D-06: the existence check is the single most-hit query
+		// in the system (~333 q/s at 10k DAU — audit §6.1). Front it with
+		// the user:<id> Redis cache (key user:<id>, TTL ≤5s, fail-open).
+		//
+		// Two-layer entitlement-freshness guarantee (T-06-USERCACHE):
+		//   1. EVERY mutation path synchronously busts user:<id>, so a
+		//      downgraded/expired/deleted user loses the cache entry the
+		//      instant the mutation commits.
+		//   2. The ≤5s TTL is the backstop if a bust ever fails.
+		// A Redis outage falls through to the DB (GetUserCache returns
+		// found=false) so the deleted-user 401 guard still fires
+		// (T-06-USERCACHE-FAILOPEN). role/tier for AUTHZ still come from
+		// the JWT claim + AdminRequired's DB re-read — this cache only
+		// fronts the EXISTENCE gate, so a stale value cannot grant admin.
+		//
+		// D-07 tradeoff on c.Locals("user"): the cache stores ONLY the
+		// tier (the existence+tier signal), not the full row. So:
+		//   - Cache HIT  → existence confirmed cheaply; we have NO full
+		//     *model.User. Handlers that switched to c.Locals("user")
+		//     (Task 2) fall back to a single FindUserByID when the local
+		//     is absent. Net: the 333 q/s existence query collapses to
+		//     ~cache-hit-rate, while the per-handler self-row is loaded at
+		//     most once per request.
+		//   - Cache MISS → load the full row from the DB (preserving the
+		//     401/500 semantics), populate the cache, AND stash the row in
+		//     c.Locals("user") so the switched handlers skip their second
+		//     lookup on this request.
+		// We deliberately do NOT cache a serialized full user row — that
+		// would add a second staleness surface for fields the cache
+		// doesn't need.
 		var loadedUser *model.User
 		if db != nil {
-			u, err := repository.FindUserByID(db, claims.UserID)
-			if err != nil {
-				if errors.Is(err, repository.ErrNotFound) {
-					return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-						"error": "user no longer exists",
+			var cacheHit bool
+			if redisClient != nil {
+				if _, found, _ := cache.GetUserCache(c.Context(), redisClient, claims.UserID); found {
+					// Existence confirmed from cache — skip the users SELECT.
+					cacheHit = true
+				}
+			}
+			if !cacheHit {
+				// Cache miss (or no Redis): authoritative DB existence check.
+				// Preserve the existing 401-on-deleted / 500-on-error
+				// semantics EXACTLY.
+				u, err := repository.FindUserByID(db, claims.UserID)
+				if err != nil {
+					if errors.Is(err, repository.ErrNotFound) {
+						return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+							"error": "user no longer exists",
+						})
+					}
+					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+						"error": "internal server error",
 					})
 				}
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-					"error": "internal server error",
-				})
+				loadedUser = u
+				// Best-effort populate — a failed Set just means the next
+				// request misses and re-reads (no correctness impact).
+				if redisClient != nil {
+					_ = cache.SetUserCache(c.Context(), redisClient, claims.UserID, u.SubscriptionTier)
+				}
 			}
-			loadedUser = u
 		}
 
 		// Store user info in context for downstream handlers.
 		c.Locals("user_id", claims.UserID)
 		c.Locals("tier", claims.Tier)
 		c.Locals("role", claims.Role)
+
+		// D-07: stash the full row ONLY when we actually loaded it (the
+		// cache-miss path). On a cache hit it is intentionally absent and
+		// the switched handlers fall back to a single FindUserByID.
+		if loadedUser != nil {
+			c.Locals("user", loadedUser)
+		}
 
 		// Phase 3 D-29: plan_id from JWT, fall back to the user row already
 		// loaded above when the claim is empty (in-flight Phase 2 JWTs).
