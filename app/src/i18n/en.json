@@ -116,31 +116,6 @@
     "shareMessage": "My ID: {{id}}"
   },
   "payment": {
-    "title": "Choose a Plan",
-    "subtitle": "Unlock full protection with a premium plan",
-    "mostPopular": "Most Popular",
-    "currentPlan": "Current Plan",
-    "contactSupport": "Contact Support",
-    "yourId": "Your ID",
-    "idMissing": "User ID not available. Please restart the app.",
-    "telegramMessage": "Hi! I want to upgrade to {{plan}}.\nMy ID: {{id}}",
-    "telegramError": "Could not open Telegram. Please message {{handle}} manually.",
-    "howItWorksTitle": "How to activate",
-    "howItWorksBody": "1. Tap \"Contact Support\" on the plan you want.\n2. Telegram will open with a pre-filled message containing your ID.\n3. Send the message and complete the payment as instructed.\n4. Your plan will be activated within a few hours.",
-    "errorTitle": "Payment Error",
-    "errorMessage": "Unable to start checkout. Please try again.",
-    "disclaimer": "Manual activation. Contact support to purchase.",
-    "plans": {
-      "free": {
-        "name": "Free"
-      },
-      "premium": {
-        "name": "Premium"
-      },
-      "ultimate": {
-        "name": "Ultimate"
-      }
-    },
     "upgrade": {
       "title": "Your plan",
       "currentPlanLabel": "Your current plan",

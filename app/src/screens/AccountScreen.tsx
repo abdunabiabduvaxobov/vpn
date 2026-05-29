@@ -11,6 +11,7 @@ import {
   Alert,
   Share,
   RefreshControl,
+  Platform,
 } from 'react-native';
 import {useQueryClient} from '@tanstack/react-query';
 import {useTranslation} from 'react-i18next';
@@ -376,6 +377,34 @@ export function AccountScreen() {
             </TouchableOpacity>
           )}
         </View>
+
+        {/* Phase 5 D-03: "Sign in to sync Pro" card — visible ONLY to guests
+            (auth_provider === 'guest' or undefined for v2.1.0 carry-over).
+            Disappears once SSO flips auth_provider to apple/google. */}
+        {(!user?.auth_provider || user.auth_provider === 'guest') && (
+          <View style={styles.syncCard}>
+            <Text style={styles.syncCardTitle}>{t('account.signInToSync.title')}</Text>
+            <Text style={styles.syncCardBody}>{t('account.signInToSync.body')}</Text>
+            <View style={styles.syncCardButtons}>
+              {Platform.OS === 'ios' && (
+                <TouchableOpacity
+                  style={styles.syncBtn}
+                  onPress={() => navigation.navigate('Login')}
+                  activeOpacity={0.85}
+                  accessibilityLabel={t('account.signInToSync.apple')}>
+                  <Text style={styles.syncBtnText}>{t('account.signInToSync.apple')}</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={styles.syncBtn}
+                onPress={() => navigation.navigate('Login')}
+                activeOpacity={0.85}
+                accessibilityLabel={t('account.signInToSync.google')}>
+                <Text style={styles.syncBtnText}>{t('account.signInToSync.google')}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
 
         {/* Subscription card */}
         <View style={styles.card}>
@@ -874,6 +903,30 @@ const styles = StyleSheet.create({
     ...typography.h3,
     color: colors.textPrimary,
   },
+
+  // Phase 5 D-03 — "Sign in to sync Pro" guest card. Same surface visual
+  // language as the other cards (surface bg, rounded corners, border).
+  syncCard: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    padding: spacing.lg,
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  syncCardTitle: {...typography.bodyBold, color: colors.textPrimary, marginBottom: spacing.xs},
+  syncCardBody: {...typography.caption, color: colors.textSecondary, marginBottom: spacing.md},
+  syncCardButtons: {flexDirection: 'row', gap: spacing.sm},
+  syncBtn: {
+    flex: 1,
+    backgroundColor: colors.primary,
+    borderRadius: borderRadius.sm,
+    paddingVertical: spacing.sm,
+    alignItems: 'center',
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  syncBtnText: {...typography.bodyBold, color: colors.textPrimary},
 
   // Upgrade button inside subscription card (also re-used for share/link primary actions)
   upgradeButton: {

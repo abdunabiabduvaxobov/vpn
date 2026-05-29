@@ -67,7 +67,7 @@ export function RootNavigator() {
       <Stack.Screen
         name="Payment"
         component={PaymentScreen}
-        options={{title: t('payment.title')}}
+        options={{title: t('payment.upgrade.title')}}
       />
       <Stack.Screen
         name="SplitTunnel"
