@@ -107,15 +107,23 @@ func ListActiveConnectionsByUser(db *gorm.DB, userID string) ([]model.Connection
 	return connections, result.Error
 }
 
-// CleanupStaleConnections marks connections as disconnected when their last heartbeat
-// (COALESCE(last_heartbeat_at, connected_at)) is older than staleDuration and they
-// still have no disconnected_at. Returns the number of rows affected.
+// CleanupStaleConnections marks connections as disconnected when their last_heartbeat_at
+// is older than staleDuration and they still have no disconnected_at. Returns the number
+// of rows affected.
+//
+// The predicate is `disconnected_at IS NULL AND last_heartbeat_at < cutoff`. The COALESCE
+// wrapper on last_heartbeat_at was intentionally dropped (PERF-05): an active
+// (disconnected_at IS NULL) row always has a non-null last_heartbeat_at — migration 008
+// backfilled it for then-active rows, and both CreateConnection and CreateConnectionAtomic
+// set LastHeartbeatAt = &now on every insert — so the COALESCE was a no-op for live rows.
+// Dropping it lets the planner range-scan the partial index idx_connections_heartbeat_active
+// (migration 022) instead of sequential-scanning the full connections history.
 func CleanupStaleConnections(db *gorm.DB, staleDuration time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-staleDuration)
 	now := time.Now()
 
 	result := db.Model(&model.Connection{}).
-		Where("disconnected_at IS NULL AND COALESCE(last_heartbeat_at, connected_at) < ?", cutoff).
+		Where("disconnected_at IS NULL AND last_heartbeat_at < ?", cutoff).
 		Updates(map[string]interface{}{
 			"disconnected_at": now,
 		})
@@ -129,6 +137,11 @@ func CleanupStaleConnections(db *gorm.DB, staleDuration time.Duration) (int64, e
 // when they are older than maxAge and have no disconnected_at.
 // These are connections that were reserved but never transitioned to connected status.
 // Returns the number of rows affected.
+//
+// This intentionally RETAINS the COALESCE(last_heartbeat_at, connected_at) wrapper. It
+// filters the status='connecting' subset — a tiny, low-volume set of reservations — so the
+// COALESCE is harmless here and is out of PERF-05's strict scope (which targets the
+// high-volume CleanupStaleConnections sweep above).
 func CleanupStaleReservations(db *gorm.DB, maxAge time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-maxAge)
 	now := time.Now()
