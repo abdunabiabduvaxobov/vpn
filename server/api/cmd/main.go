@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"vpnapp/server/api/internal/auth/apple"
 	"vpnapp/server/api/internal/auth/google"
@@ -26,6 +27,34 @@ import (
 	"github.com/gofiber/fiber/v2/utils"
 	"go.uber.org/zap"
 )
+
+// buildFiberConfig assembles the Fiber server configuration. It is extracted
+// from main() so the PERF-09 / D-09c hardening values can be unit-tested
+// (TestServerConfig in server_config_test.go) without booting the full app.
+//
+// The four timeout/limit fields are the hardening this phase adds:
+//   - BodyLimit caps oversized-body memory pressure (T-06-BODYDOS).
+//   - ReadTimeout + IdleTimeout close slow/idle clients (T-06-SLOWLORIS,
+//     audit §6.2).
+//   - WriteTimeout bounds slow-consumer write stalls.
+//
+// errorHandler is injected because it closes over the request logger
+// (constructed in main); the rest of the config is static.
+func buildFiberConfig(errorHandler fiber.ErrorHandler) fiber.Config {
+	return fiber.Config{
+		AppName:                 "VPN API Server",
+		ServerHeader:            "",
+		ErrorHandler:            errorHandler,
+		EnableTrustedProxyCheck: true,
+		TrustedProxies:          []string{},
+		BodyLimit:               64 * 1024,         // PERF-09 / D-09c — caps request-body DoS surface
+		ReadTimeout:             15 * time.Second,  // PERF-09 / D-09c — slowloris defense
+		WriteTimeout:            30 * time.Second,  // PERF-09 / D-09c
+		IdleTimeout:             120 * time.Second, // audit §6.2 — close idle keepalive sockets
+		// Prefork left false (default): prefork forks separate processes, each
+		// with its OWN DB pool — that breaks the shared, tuned pool below.
+	}
+}
 
 func main() {
 	// Initialize logger
@@ -143,13 +172,7 @@ func main() {
 	// LAVA_WEBHOOK_ALLOWED_CIDRS. The webhook route still gets its own
 	// LavaWebhookIPAllowlist middleware on top — that one correctly uses
 	// c.Context().RemoteIP() (TCP-layer, unspoofable) per PAY-06.
-	app := fiber.New(fiber.Config{
-		AppName:                 "VPN API Server",
-		ServerHeader:            "",
-		ErrorHandler:            handler.ErrorHandler(logger),
-		EnableTrustedProxyCheck: true,
-		TrustedProxies:          []string{},
-	})
+	app := fiber.New(buildFiberConfig(handler.ErrorHandler(logger)))
 
 	// Global middleware.
 	//
