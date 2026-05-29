@@ -30,6 +30,16 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent-filter>
+        <!-- Payment-return deep link: vpnapp://payment/success?invoiceId=X.
+             BROWSABLE is REQUIRED so Chrome will navigate from a link tap
+             (CONTEXT Pitfall 3). Scoped to host="payment" so only
+             vpnapp://payment/* reaches the app (T-1 spoofing scope-down). -->
+        <intent-filter android:autoVerify="false">
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="vpnapp" android:host="payment" />
+        </intent-filter>
       </activity>
 
       <!-- VPN Tunnel Service — runs in a separate :vpn process so a native crash

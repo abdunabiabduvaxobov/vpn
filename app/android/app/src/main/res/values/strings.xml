@@ -1,3 +1,10 @@
 <resources>
     <string name="app_name">Rise VPN</string>
+    <!-- Google Sign-In Web OAuth Client ID. Passed to GoogleSignin.configure({webClientId})
+         in JS at app boot; this string resource exists for native consumers that may
+         emerge later. The value is the same Web Client ID Phase 2 issued for the landing
+         site (the audience the backend validates) — MUST be identical across web + mobile.
+         PLACEHOLDER_WEB is the operator-authorized deferred cred; replace with the real
+         Web Client ID before store upload (DEF-05-CREDS). -->
+    <string name="server_client_id">PLACEHOLDER_WEB.apps.googleusercontent.com</string>
 </resources>
