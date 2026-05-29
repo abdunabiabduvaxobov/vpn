@@ -11,6 +11,7 @@ import {SettingsScreen} from '../screens/SettingsScreen';
 import {AccountScreen} from '../screens/AccountScreen';
 import {PaymentScreen} from '../screens/PaymentScreen';
 import {SplitTunnelScreen} from '../screens/SplitTunnelScreen';
+import {LoginScreen} from '../screens/LoginScreen';
 import {useAuthStore} from '../stores/authStore';
 import {colors, typography, spacing} from '../theme';
 
@@ -21,6 +22,7 @@ export type RootStackParamList = {
   Account: undefined;
   Payment: undefined;
   SplitTunnel: undefined;
+  Login: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -71,6 +73,11 @@ export function RootNavigator() {
         name="SplitTunnel"
         component={SplitTunnelScreen}
         options={{title: t('splitTunnel.title')}}
+      />
+      <Stack.Screen
+        name="Login"
+        component={LoginScreen}
+        options={{title: t('login.title'), headerBackTitle: ''}}
       />
     </Stack.Navigator>
   );

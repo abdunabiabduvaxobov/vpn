@@ -44,6 +44,17 @@
     "lightTheme": "Светлая",
     "systemTheme": "Системная"
   },
+  "login": {
+    "title": "Sign in to RiseVPN",
+    "subtitle": "Sign in so your Pro plan follows you to every device.",
+    "continueWithApple": "Continue with Apple",
+    "continueWithGoogle": "Continue with Google",
+    "continueAsGuest": "Continue as Guest",
+    "guestHint": "You can sign in later from Account.",
+    "appleCancelled": "Apple sign-in was cancelled.",
+    "googleCancelled": "Google sign-in was cancelled.",
+    "signInFailed": "Couldn't sign in. Please try again."
+  },
   "account": {
     "title": "Аккаунт",
     "profile": "Профиль",
@@ -63,7 +74,13 @@
     "saveName": "Сохранить",
     "emailVerified": "Email подтверждён",
     "memberSince": "Участник с",
-    "activeDevices": "Активные устройства"
+    "activeDevices": "Активные устройства",
+    "signInToSync": {
+      "title": "Sign in to sync Pro",
+      "body": "Sign in with Apple or Google to keep your Pro across devices.",
+      "apple": "Apple",
+      "google": "Google"
+    }
   },
   "register": {
     "namePlaceholder": "Ваше полное имя",
@@ -103,7 +120,6 @@
     "subtitle": "Получите полную защиту с премиум-подпиской",
     "mostPopular": "Популярный",
     "currentPlan": "Текущий план",
-    "upgrade": "Подключить",
     "contactSupport": "Связаться с поддержкой",
     "yourId": "Ваш ID",
     "idMissing": "ID пользователя недоступен. Перезапустите приложение.",
@@ -124,6 +140,50 @@
       "ultimate": {
         "name": "Максимальный"
       }
+    },
+    "upgrade": {
+      "title": "Your plan",
+      "currentPlanLabel": "Your current plan",
+      "freeLimits": {
+        "devices": "1 device",
+        "data": "10 GB / month",
+        "servers": "5 server locations"
+      },
+      "proIncludesHeading": "Pro includes",
+      "proFeatures": {
+        "speed": "Unlimited speed",
+        "servers": "All servers worldwide",
+        "devices": "Up to 5 devices",
+        "ads": "No ads"
+      },
+      "cta": "Upgrade to Pro at risevpn.com",
+      "alreadyPaid": "Already paid? Refresh",
+      "refreshNoChange": "No change. Still on Free.",
+      "refreshUpgraded": "Pro is now active!",
+      "proActiveTitle": "Your current plan: Pro",
+      "manageSubscription": "Manage subscription",
+      "leaving": {
+        "title": "You're leaving the app",
+        "body": "You'll continue to risevpn.com in your browser to upgrade. Pro will activate on this device automatically once payment is complete.",
+        "continue": "Continue",
+        "cancel": "Cancel"
+      }
+    },
+    "activating": {
+      "title": "Activating your Pro subscription…",
+      "subtitle": "This usually takes a few seconds.",
+      "successTitle": "Pro is active!",
+      "successToast": "Pro is now active on this device.",
+      "failedTitle": "Payment didn't go through",
+      "failedBody": "Your card wasn't charged. You can try again from Account.",
+      "failedRetry": "Back to Account"
+    },
+    "takingLonger": {
+      "title": "We're processing your payment — we'll email you when it's active.",
+      "body": "It can occasionally take a few minutes for the payment to clear. You don't need to do anything.",
+      "refresh": "Refresh",
+      "contactSupport": "Need help? Contact support on Telegram.",
+      "close": "Close"
     }
   },
   "devices": {
