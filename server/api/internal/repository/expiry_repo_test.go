@@ -41,8 +41,13 @@ func TestDowngradeExpiredPlans_FlipsLapsedUsers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DowngradeExpiredPlans: %v", err)
 	}
-	if rows != 1 {
-		t.Errorf("expected 1 row flipped, got %d", rows)
+	if len(rows) != 1 {
+		t.Errorf("expected 1 row flipped, got %d (%v)", len(rows), rows)
+	}
+	// PERF-04 / D-06: the returned id must be the downgraded user (A), so the
+	// scheduler can bust user:<A>.
+	if len(rows) == 1 && rows[0] != userA {
+		t.Errorf("expected returned id to be userA=%s, got %s", userA, rows[0])
 	}
 	// Verify A flipped, B + C unchanged.
 	var a, b, c model.User
@@ -64,8 +69,8 @@ func TestDowngradeExpiredPlans_FlipsLapsedUsers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second DowngradeExpiredPlans: %v", err)
 	}
-	if rows2 != 0 {
-		t.Errorf("D-26 idempotent: second call must return 0 rows, got %d", rows2)
+	if len(rows2) != 0 {
+		t.Errorf("D-26 idempotent: second call must return 0 rows, got %d (%v)", len(rows2), rows2)
 	}
 }
 
@@ -101,8 +106,8 @@ func TestRunExpiryDowngrade_FindsUsersRegardlessOfSubActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DowngradeExpiredPlans: %v", err)
 	}
-	if rows != 1 {
-		t.Errorf("BLOCKER #1 / D-19: expected 1 row flipped (sub.is_active=FALSE must NOT exclude the user), got %d", rows)
+	if len(rows) != 1 {
+		t.Errorf("BLOCKER #1 / D-19: expected 1 row flipped (sub.is_active=FALSE must NOT exclude the user), got %d (%v)", len(rows), rows)
 	}
 	var d model.User
 	_ = db.First(&d, "id = ?", userD).Error
@@ -118,7 +123,7 @@ func TestDowngradeExpiredPlans_EmptyTable_NoOp(t *testing.T) {
 	if err != nil {
 		t.Errorf("empty users: expected no error, got %v", err)
 	}
-	if rows != 0 {
-		t.Errorf("empty table: expected 0 rows, got %d", rows)
+	if len(rows) != 0 {
+		t.Errorf("empty table: expected 0 rows, got %d (%v)", len(rows), rows)
 	}
 }

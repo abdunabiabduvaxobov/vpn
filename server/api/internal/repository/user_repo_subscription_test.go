@@ -164,8 +164,13 @@ func TestDowngradeExpiredSubscriptions_DowngradesPastDueProUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DowngradeExpiredSubscriptions returned error: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("expected 1 user downgraded, got %d", count)
+	if len(count) != 1 {
+		t.Errorf("expected 1 user downgraded, got %d (%v)", len(count), count)
+	}
+	// PERF-04 / D-06: the returned id must be the downgraded user so the
+	// scheduler can bust user:<id>.
+	if len(count) == 1 && count[0] != userID {
+		t.Errorf("expected returned id to be %s, got %s", userID, count[0])
 	}
 
 	got, err := repository.FindUserByID(db, userID)
@@ -204,8 +209,8 @@ func TestDowngradeExpiredSubscriptions_LeavesFutureProUserAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DowngradeExpiredSubscriptions returned error: %v", err)
 	}
-	if count != 0 {
-		t.Errorf("expected 0 users downgraded for future-dated expiry, got %d", count)
+	if len(count) != 0 {
+		t.Errorf("expected 0 users downgraded for future-dated expiry, got %d (%v)", len(count), count)
 	}
 
 	got, err := repository.FindUserByID(db, userID)
@@ -231,8 +236,8 @@ func TestDowngradeExpiredSubscriptions_IgnoresNullExpiresAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DowngradeExpiredSubscriptions returned error: %v", err)
 	}
-	if count != 0 {
-		t.Errorf("expected 0 users downgraded for NULL expiry, got %d", count)
+	if len(count) != 0 {
+		t.Errorf("expected 0 users downgraded for NULL expiry, got %d (%v)", len(count), count)
 	}
 
 	got, err := repository.FindUserByID(db, userID)

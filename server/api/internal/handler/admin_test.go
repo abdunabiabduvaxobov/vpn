@@ -113,7 +113,7 @@ func TestAdminGetUser_MissingID_Returns400(t *testing.T) {
 
 func TestAdminUpdateUser_InvalidBody_Returns400(t *testing.T) {
 	app := fiber.New()
-	app.Patch("/:id", handler.AdminUpdateUser(stubLogger(), stubDB()))
+	app.Patch("/:id", handler.AdminUpdateUser(stubLogger(), stubDB(), nil))
 	req := httptest.NewRequest(http.MethodPatch, "/some-uuid", bytes.NewBufferString("not-json"))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
@@ -127,7 +127,7 @@ func TestAdminUpdateUser_InvalidBody_Returns400(t *testing.T) {
 
 func TestAdminUpdateUser_InvalidRole_Returns400(t *testing.T) {
 	app := fiber.New()
-	app.Patch("/:id", handler.AdminUpdateUser(stubLogger(), stubDB()))
+	app.Patch("/:id", handler.AdminUpdateUser(stubLogger(), stubDB(), nil))
 
 	body, _ := json.Marshal(map[string]string{"role": "superadmin"})
 	req := httptest.NewRequest(http.MethodPatch, "/some-uuid", bytes.NewBuffer(body))
@@ -143,7 +143,7 @@ func TestAdminUpdateUser_InvalidRole_Returns400(t *testing.T) {
 
 func TestAdminUpdateUser_NoFields_Returns400(t *testing.T) {
 	app := fiber.New()
-	app.Patch("/:id", handler.AdminUpdateUser(stubLogger(), stubDB()))
+	app.Patch("/:id", handler.AdminUpdateUser(stubLogger(), stubDB(), nil))
 
 	body, _ := json.Marshal(map[string]string{})
 	req := httptest.NewRequest(http.MethodPatch, "/some-uuid", bytes.NewBuffer(body))
@@ -385,7 +385,7 @@ func TestAdminUpdateUser_NonExistentID_Returns404(t *testing.T) {
 	db := newAdminTestDB(t)
 
 	app := fiber.New(fiber.Config{ErrorHandler: handler.ErrorHandler(stubLogger())})
-	app.Patch("/admin/users/:id", handler.AdminUpdateUser(stubLogger(), db))
+	app.Patch("/admin/users/:id", handler.AdminUpdateUser(stubLogger(), db, nil))
 
 	body, _ := json.Marshal(map[string]string{"role": "admin"})
 	req := httptest.NewRequest(http.MethodPatch, "/admin/users/00000000-0000-0000-0000-000000000000", bytes.NewBuffer(body))

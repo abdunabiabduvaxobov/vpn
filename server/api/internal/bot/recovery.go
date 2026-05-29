@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"vpnapp/server/api/internal/cache"
 	"vpnapp/server/api/internal/config"
 	"vpnapp/server/api/internal/model"
 	"vpnapp/server/api/internal/recovery"
@@ -381,6 +382,19 @@ func (r *Recovery) handleCallback(ctx context.Context, cq *tgbotapi.CallbackQuer
 		zap.Int64("devices_rebound", result.DevicesRebound),
 		zap.Int64("sessions_deleted", result.SessionsDeleted),
 	)
+	// PERF-04 / D-06: PerformRestore rebinds devices from the new guest row to
+	// the old (recovered) user and deletes sessions — both user ids change
+	// state, so bust BOTH user:<id> entries. Without this, a recovered user
+	// could be served a stale tier from cache, or the orphaned new-guest id
+	// could linger. Best-effort — the 5s TTL is the backstop.
+	if berr := cache.BustUserCache(context.Background(), r.rdb, result.OldUserID); berr != nil {
+		logger.Warn("telegram recovery bot: BustUserCache(old) failed (5s TTL backstop)",
+			zap.String("user_id", result.OldUserID), zap.Error(berr))
+	}
+	if berr := cache.BustUserCache(context.Background(), r.rdb, result.NewUserID); berr != nil {
+		logger.Warn("telegram recovery bot: BustUserCache(new) failed (5s TTL backstop)",
+			zap.String("user_id", result.NewUserID), zap.Error(berr))
+	}
 	r.writeAudit("tg_restore", pending.oldUserID, pending.tgUserID, cq.Message.Chat.ID)
 	r.editMessage(cq.Message,
 		"✅ Подписка восстановлена.\n\n"+

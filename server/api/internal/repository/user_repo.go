@@ -272,19 +272,35 @@ func CountTelegramLinkedUsers(db *gorm.DB) (int64, error) {
 // subscription_expires_at timestamp is left intact as a historical marker
 // so the admin panel can show "expired on X" instead of just "free".
 //
-// Returns the count of users downgraded. Called by the background
-// scheduler every minute.
-func DowngradeExpiredSubscriptions(db *gorm.DB) (int64, error) {
+// Returns the IDs of the users downgraded (PERF-04 / D-06 — Pitfall 3:
+// RETURNING id). The scheduler busts user:<id> for each so a just-expired
+// user loses Pro the instant the cron flips them, not 5s later. len(ids) is
+// the downgrade count for logging.
+//
+// Implementation note: we resolve the eligible ids first (Pluck), then UPDATE
+// by id IN (...). The two-step approach is driver-portable (SQLite unit tests
+// have limited UPDATE ... RETURNING support, and the id set is what the caller
+// needs anyway). Called by the background scheduler every minute.
+func DowngradeExpiredSubscriptions(db *gorm.DB) ([]string, error) {
 	if db == nil {
-		return 0, errNilDB
+		return nil, errNilDB
+	}
+	var userIDs []string
+	if err := db.Model(&model.User{}).
+		Where("subscription_tier <> ? AND subscription_expires_at IS NOT NULL AND subscription_expires_at < NOW()", "free").
+		Pluck("id", &userIDs).Error; err != nil {
+		return nil, fmt.Errorf("downgrading expired subscriptions (select ids): %w", err)
+	}
+	if len(userIDs) == 0 {
+		return nil, nil
 	}
 	result := db.Model(&model.User{}).
-		Where("subscription_tier <> ? AND subscription_expires_at IS NOT NULL AND subscription_expires_at < NOW()", "free").
+		Where("id IN ?", userIDs).
 		Update("subscription_tier", "free")
 	if result.Error != nil {
-		return 0, fmt.Errorf("downgrading expired subscriptions: %w", result.Error)
+		return nil, fmt.Errorf("downgrading expired subscriptions: %w", result.Error)
 	}
-	return result.RowsAffected, nil
+	return userIDs, nil
 }
 
 // UpdateUserName sets the full_name on the users row identified by id.
