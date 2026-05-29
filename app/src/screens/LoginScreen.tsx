@@ -37,10 +37,11 @@ export function LoginScreen() {
       await ssoAppleAction();
       goHome(); // D-05: silent transition
     } catch (e: any) {
-      // D-02: cancellation returns silently to LoginScreen.
+      // D-02: user cancellation returns silently to LoginScreen.
       if (e?.code === appleAuth.Error.CANCELED) return;
-      // Other errors — also return silently per UI-SPEC interaction contract
-      // (no Alert). Per-provider toasts are deferred (CONTEXT.md <deferred>).
+      // WR-05: non-cancellation errors (network, backend 4xx/5xx, missing
+      // identityToken) surface a non-fatal generic Alert. Do NOT navigate Home.
+      Alert.alert(t('login.signInFailed'));
     } finally {
       setIsBusy(null);
     }
@@ -52,7 +53,12 @@ export function LoginScreen() {
       await ssoGoogleAction();
       goHome();
     } catch (e: any) {
+      // D-02: user cancellation returns silently.
       if (e?.code === statusCodes.SIGN_IN_CANCELLED) return;
+      // WR-05: onGoogle previously had no non-cancellation catch — a real
+      // error escaped the handler as an unhandled rejection. Surface a
+      // non-fatal Alert and stay on LoginScreen.
+      Alert.alert(t('login.signInFailed'));
     } finally {
       setIsBusy(null);
     }
