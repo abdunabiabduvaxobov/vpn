@@ -37,6 +37,12 @@ export function HomeScreen() {
 
   // Refresh user data (subscription_tier) when app returns to foreground
   // so ad gating picks up changes made via the admin panel.
+  //
+  // Phase 5 D-09: foreground safety-net for users who paid on web but
+  // closed the browser before tapping "Open in app". /account returns
+  // the updated subscription_tier (Phase 2 contract), so the existing
+  // fetchAccount() call below already covers this case — no additional
+  // network call needed.
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   useEffect(() => {
     if (isAuthenticated) fetchAccount();

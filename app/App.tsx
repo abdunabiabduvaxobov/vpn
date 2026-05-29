@@ -9,6 +9,9 @@ import {RootNavigator} from './src/navigation/RootNavigator';
 import {useAuthStore} from './src/stores/authStore';
 import {useSettingsStore} from './src/stores/settingsStore';
 import {ErrorBoundary} from './src/components/ErrorBoundary';
+import {ActivatingProModal} from './src/components/ActivatingProModal';
+import {configureGoogleSignIn} from './src/services/googleSignIn';
+import {registerDeepLinkHandler} from './src/services/deepLink';
 import {colors} from './src/theme';
 
 // Import i18n to initialize translations
@@ -47,10 +50,20 @@ function App(): React.JSX.Element {
     useAuthStore.getState().initialize();
     useSettingsStore.getState().initialize();
 
+    // Phase 5: Google Sign-In must be configured before the first sign-in
+    // attempt; register the vpnapp:// deep-link handler so payment-return
+    // links surface the Activating-Pro modal (cold start + warm foreground).
+    configureGoogleSignIn();
+    const unsubscribeDeepLink = registerDeepLinkHandler();
+
     // Initialize Yandex Ads SDK (fire-and-forget, failure is non-fatal)
     MobileAds.initialize().catch(() => {
       console.warn('[Ads] SDK initialization failed');
     });
+
+    return () => {
+      unsubscribeDeepLink();
+    };
   }, []);
 
   return (
@@ -60,6 +73,7 @@ function App(): React.JSX.Element {
           <StatusBar barStyle="light-content" backgroundColor={colors.background} />
           <NavigationContainer theme={navTheme}>
             <RootNavigator />
+            <ActivatingProModal />
           </NavigationContainer>
         </SafeAreaProvider>
       </QueryClientProvider>
