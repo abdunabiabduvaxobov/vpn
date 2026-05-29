@@ -5,11 +5,13 @@ import (
 	"strconv"
 	"time"
 
+	"vpnapp/server/api/internal/cache"
 	"vpnapp/server/api/internal/repository"
 
 	"vpnapp/server/api/internal/model"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -306,7 +308,9 @@ type adminCreateServerRequest struct {
 
 // AdminCreateServer handles POST /admin/servers.
 // Creates a new VPN server with all fields; capacity defaults to 500 if omitted.
-func AdminCreateServer(logger *zap.Logger, db *gorm.DB) fiber.Handler {
+// On a successful create it synchronously busts cache:servers:active (PERF-01)
+// so the next /servers request reflects the new server within one request.
+func AdminCreateServer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var req adminCreateServerRequest
 		if err := c.BodyParser(&req); err != nil {
@@ -363,6 +367,17 @@ func AdminCreateServer(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 
+		// Synchronously invalidate the shared /servers cache BEFORE returning so
+		// the next /servers request sees the new server within one request
+		// (PERF-01 invalidation criterion). Best-effort: log on error but never
+		// fail the write — the 60s TTL is the safety net (T-06-SRVCACHE-02).
+		// Server writes bust cache:servers:active ONLY, never cache:plans:public:*
+		// (RESEARCH Pitfall 5 — distinct namespaces).
+		if err := cache.BustServersCache(c.Context(), redisClient); err != nil {
+			logger.Warn("admin: failed to bust servers cache after create",
+				zap.String("server_id", server.ID), zap.Error(err))
+		}
+
 		logger.Info("admin: created server",
 			zap.String("server_id", server.ID),
 			zap.String("hostname", server.Hostname),
@@ -387,7 +402,9 @@ type adminUpdateServerRequest struct {
 
 // AdminUpdateServer handles PATCH /admin/servers/:id.
 // Only explicitly-provided fields are updated. Supports toggling is_active.
-func AdminUpdateServer(logger *zap.Logger, db *gorm.DB) fiber.Handler {
+// On a successful update it synchronously busts cache:servers:active (PERF-01)
+// so a toggled is_active / changed field is reflected on the next /servers read.
+func AdminUpdateServer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		serverID := c.Params("id")
 		if serverID == "" {
@@ -444,6 +461,14 @@ func AdminUpdateServer(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 
+		// Synchronously bust the shared /servers cache before returning so the
+		// update (including is_active toggles that add/remove a server from the
+		// active list) is visible on the next /servers read (PERF-01).
+		if err := cache.BustServersCache(c.Context(), redisClient); err != nil {
+			logger.Warn("admin: failed to bust servers cache after update",
+				zap.String("server_id", serverID), zap.Error(err))
+		}
+
 		logger.Info("admin: updated server", zap.String("server_id", serverID), zap.Any("updates", updates))
 
 		return c.JSON(fiber.Map{
@@ -457,7 +482,9 @@ func AdminUpdateServer(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 
 // AdminDeleteServer handles DELETE /admin/servers/:id.
 // Performs a soft delete by setting is_active = false.
-func AdminDeleteServer(logger *zap.Logger, db *gorm.DB) fiber.Handler {
+// On a successful soft-delete it synchronously busts cache:servers:active
+// (PERF-01) so the removed server disappears from the next /servers read.
+func AdminDeleteServer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		serverID := c.Params("id")
 		if serverID == "" {
@@ -476,6 +503,13 @@ func AdminDeleteServer(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "internal server error",
 			})
+		}
+
+		// Synchronously bust the shared /servers cache before returning so the
+		// soft-deleted server is gone from the next /servers read (PERF-01).
+		if err := cache.BustServersCache(c.Context(), redisClient); err != nil {
+			logger.Warn("admin: failed to bust servers cache after delete",
+				zap.String("server_id", serverID), zap.Error(err))
 		}
 
 		logger.Info("admin: soft-deleted server", zap.String("server_id", serverID))

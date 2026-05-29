@@ -296,7 +296,7 @@ func main() {
 	// the in-tree "token:blacklist:" prefix), subsequent requests with the
 	// same access token return 401 automatically.
 	protected.Post("/auth/logout", handler.Logout(logger, redisClient, db))
-	protected.Get("/servers", handler.ListServers(logger, db))
+	protected.Get("/servers", handler.ListServersCached(logger, db, redisClient))
 	protected.Get("/servers/:id/config", handler.GetServerConfig(logger, db, cfg))
 	protected.Get("/subscription", handler.GetSubscription(logger, db))
 	protected.Get("/account", handler.GetAccount(logger, db))
@@ -341,9 +341,9 @@ func main() {
 	admin.Get("/users/:id", handler.AdminGetUser(logger, db))
 	admin.Patch("/users/:id", handler.AdminUpdateUser(logger, db))
 	admin.Get("/servers", handler.AdminListServers(logger, db))
-	admin.Post("/servers", handler.AdminCreateServer(logger, db))
-	admin.Patch("/servers/:id", handler.AdminUpdateServer(logger, db))
-	admin.Delete("/servers/:id", handler.AdminDeleteServer(logger, db))
+	admin.Post("/servers", handler.AdminCreateServer(logger, db, redisClient))
+	admin.Patch("/servers/:id", handler.AdminUpdateServer(logger, db, redisClient))
+	admin.Delete("/servers/:id", handler.AdminDeleteServer(logger, db, redisClient))
 	admin.Get("/stats", handler.AdminGetStats(logger, db))
 	admin.Get("/stats/timeseries", handler.AdminGetStatsTimeseries(logger, db))
 	admin.Get("/analytics", handler.AdminGetAnalytics(logger, db))
