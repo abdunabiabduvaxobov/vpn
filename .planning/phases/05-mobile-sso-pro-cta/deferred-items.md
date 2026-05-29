@@ -18,3 +18,21 @@ Out-of-scope discoveries logged during execution. NOT fixed in the discovering p
   - Hit the 3-attempt auto-fix limit chasing the cascade; stopped per deviation rules.
 - **Impact on 05-00 gate:** None for the Wave-0 stubs. All 9 stub suites pass as skipped (`npm test -- --testPathIgnorePatterns='version.test|App.test'` exits 0). `version.test.ts` is the single intentional RED (turns green in Wave 4). The only other red is this pre-existing `App.test.tsx`.
 - **Recommended owner:** Wave 3 (when real component tests need `react-test-renderer` to render screens) or Phase 8 HARD-15. Likely fix: add `setupFiles`/`setupFilesAfterEnv` with native-module mocks (netinfo shipped mock, `@react-native-async-storage/async-storage/jest/async-storage-mock`, a `vpnBridge` stub) + a `transformIgnorePatterns` allow-list for `@react-navigation/*` and other RN-ecosystem ESM packages.
+
+## From orchestrator (Phase 5 execution kickoff)
+
+### DEF-05-CREDS — Placeholder OAuth credentials MUST be replaced before store upload
+
+- **Decided by:** Operator on 2026-05-29 — "just leave placeholders for those, we will fill them in while uploading to the store in the end."
+- **Status:** Intentional deferral. Phase 5 executes with placeholder OAuth secrets so the native wiring is complete and the build compiles; real values get filled at the end-of-milestone release phase.
+- **Real values already set (no action needed):**
+  - Apple Bundle ID = `com.vpnapp` (matches Android `applicationId`).
+  - Android debug keystore SHA-1 = `5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25`.
+- **Placeholders that MUST be replaced before store upload (greppable sentinel `PLACEHOLDER_`):**
+  - `PLACEHOLDER_WEB.apps.googleusercontent.com` → real Google Web Client ID (= landing `GOOGLE_CLIENT_ID_WEB`; backend JWT audience — must be identical web+mobile). Wired into `android/app/src/main/res/values/strings.xml` `server_client_id` + `GoogleSignin.configure({webClientId})`.
+  - `PLACEHOLDER_IOS` → real Google iOS Client ID. Wired into `ios/VpnApp/Info.plist` reversed-client-id (`com.googleusercontent.apps.PLACEHOLDER_IOS`).
+  - `PLACEHOLDER_ANDROID.apps.googleusercontent.com` → real Google Android Client ID (registered against `com.vpnapp` + SHA-1 above).
+  - `PLACEHOLDER_APPLE_SERVICE_ID` → real Apple Service ID (= landing `APPLE_SERVICE_ID`).
+- **Pre-upload verification command:** `grep -rn "PLACEHOLDER_" app/ios app/android app/src` — every hit must be replaced.
+- **Also at release time:** confirm server `MIN_APP_VERSION` bumps to `2.2.0` simultaneous with the mobile store release (RESEARCH.md Open Q #3).
+- **Recommended owner:** end-of-milestone release phase (store upload).

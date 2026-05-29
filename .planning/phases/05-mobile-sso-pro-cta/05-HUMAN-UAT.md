@@ -17,33 +17,45 @@ created: 2026-05-26
 
 Operator MUST confirm each item below by checking the box AND filling the value. If any "Required this phase" item is missing, ABORT — Wave 1 cannot proceed.
 
+> ## ⚠️ PLACEHOLDER VALUES — MUST BE REPLACED BEFORE STORE UPLOAD
+>
+> **Operator decision (2026-05-29):** Phase 5 proceeds with **placeholder OAuth credentials**. Real Apple/Google Client IDs + Apple Service ID will be filled in at **store-upload time** (end-of-milestone release phase).
+>
+> The four `PLACEHOLDER_*` sentinels below are wired into native config so the build compiles and the integration is correct — but **SSO sign-in will NOT authenticate until they are replaced with real values**. Before any store upload, run:
+> ```
+> grep -rn "PLACEHOLDER_" app/ios app/android app/src
+> ```
+> Every hit MUST be replaced. The Apple Bundle ID (`com.vpnapp`) and Android debug SHA-1 are **real** and need no change.
+>
+> **Tracked obligation:** see `DEF-05-CREDS` in `deferred-items.md`.
+
 ### Required this phase
 
-- [ ] **Apple Bundle ID**: registered in Apple Developer Portal with "Sign in with Apple" capability enabled.
-    - Value: `____________________` (likely `com.vpnapp` to match Android `applicationId`)
+- [x] **Apple Bundle ID**: registered in Apple Developer Portal with "Sign in with Apple" capability enabled.
+    - Value: `com.vpnapp` (REAL — matches Android `applicationId`. Operator must register + enable "Sign in with Apple" in Apple Developer Portal before iOS sign-in works at store time.)
     - Verified via: Apple Developer Portal → Identifiers → Bundle IDs → search for the value above, confirm "Sign In with Apple" appears in Capabilities list.
-    - **Open Q #1 from RESEARCH.md:** Current iOS Bundle ID in `app/ios/VpnApp.xcodeproj/project.pbxproj` is the RN template placeholder (`org.reactjs.native.example.*`). Wave 1 Task 1 MUST replace both occurrences (line 274 + line 303) with the confirmed value above.
+    - **Open Q #1 from RESEARCH.md:** Current iOS Bundle ID in `app/ios/VpnApp.xcodeproj/project.pbxproj` is the RN template placeholder (`org.reactjs.native.example.*`). Wave 1 Task 1 MUST replace both occurrences (line 274 + line 303) with `com.vpnapp`.
 
-- [ ] **Apple Service ID**: registered (already needed for Phase 2 — re-confirm operator has it).
-    - Value: `____________________`
+- [x] **Apple Service ID**: registered (already needed for Phase 2 — re-confirm operator has it).
+    - Value: `PLACEHOLDER_APPLE_SERVICE_ID` (deferred — reuse the real `APPLE_SERVICE_ID` from landing `.env` at store time. Not wired into iOS native config; native Sign-in-with-Apple uses the Bundle ID entitlement.)
 
-- [ ] **Google OAuth Web Client ID** (the audience that backend validates — already issued for Phase 2 landing).
-    - Value: `____________________.apps.googleusercontent.com`
+- [x] **Google OAuth Web Client ID** (the audience that backend validates — already issued for Phase 2 landing).
+    - Value: `PLACEHOLDER_WEB.apps.googleusercontent.com` (deferred — reuse the real `GOOGLE_CLIENT_ID_WEB` from landing `.env`. MUST be identical across web + mobile; it is the backend JWT audience. Wired into `android/.../strings.xml` `server_client_id` + `GoogleSignin.configure({webClientId})`.)
 
-- [ ] **Google OAuth iOS Client ID** (new this phase — tied to iOS Bundle ID above).
-    - Value: `____________________.apps.googleusercontent.com`
-    - Reversed-client-id format for Info.plist: `com.googleusercontent.apps.<IOS_CLIENT_ID>`
+- [x] **Google OAuth iOS Client ID** (new this phase — tied to iOS Bundle ID above).
+    - Value: `PLACEHOLDER_IOS.apps.googleusercontent.com` (deferred — create in Google Cloud Console at store time, iOS client tied to `com.vpnapp`.)
+    - Reversed-client-id wired into Info.plist as: `com.googleusercontent.apps.PLACEHOLDER_IOS`
 
-- [ ] **Google OAuth Android Client ID** (new this phase — tied to `com.vpnapp` + debug keystore SHA-1).
-    - Value: `____________________.apps.googleusercontent.com`
+- [x] **Google OAuth Android Client ID** (new this phase — tied to `com.vpnapp` + debug keystore SHA-1).
+    - Value: `PLACEHOLDER_ANDROID.apps.googleusercontent.com` (deferred — create in Google Cloud Console at store time, Android client tied to `com.vpnapp` + the SHA-1 below. Not directly referenced in config; Android uses `webClientId` + SHA-1 registration.)
 
-- [ ] **Android debug keystore SHA-1** registered with the Android OAuth client.
+- [x] **Android debug keystore SHA-1** registered with the Android OAuth client.
     - Extract via: `keytool -list -v -keystore app/android/app/debug.keystore -alias androiddebugkey -storepass android -keypass android | grep SHA1`
-    - Value: `__:__:__:__:__:__:__:__:__:__:__:__:__:__:__:__:__:__:__:__`
+    - Value: `5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25` (REAL — extracted from the committed debug.keystore. Operator must register this with the Android OAuth client at store time.)
 
-- [ ] **Server `MIN_APP_VERSION` env value** (so backend doesn't reject 2.2.0 as below-min). Confirm operator has scheduled the bump to `2.2.0` on the production API AT THE SAME TIME as the mobile release (per RESEARCH.md Open Q #3).
-    - Current value: `____________________`
-    - Will bump to `2.2.0` when: `____________________`
+- [x] **Server `MIN_APP_VERSION` env value** (so backend doesn't reject 2.2.0 as below-min). Confirm operator has scheduled the bump to `2.2.0` on the production API AT THE SAME TIME as the mobile release (per RESEARCH.md Open Q #3).
+    - Current value: `PLACEHOLDER — confirm at release time` (deferred to store-upload coordination)
+    - Will bump to `2.2.0` when: `simultaneous with mobile store release (end-of-milestone release phase)`
 
 ### NOT required this phase (deferred to end-of-milestone release phase per D-21)
 
