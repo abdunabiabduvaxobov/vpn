@@ -1,33 +1,147 @@
-// app/src/stores/__tests__/authStore.test.ts
-// Phase 5 Wave 0 scaffold — Wave 2 fills in implementations.
-// Tracks: 05-VALIDATION.md task 5-SVC-01, 5-SVC-03, 5-SVC-05.
+// Phase 5 — Tests for authStore SSO + Activating-Pro extensions.
+// Tracks: 05-VALIDATION.md 5-SVC-01, 5-SVC-03, 5-SVC-05.
 
-describe.skip('signInWithApple action', () => {
-  it('POSTs identity_token+device fingerprint to /auth/apple', () => {
-    // Wave 2: expect api.post to have been called with '/auth/apple' and {identity_token, ...fingerprint}
+import {useAuthStore} from '../authStore';
+
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  setItem: jest.fn().mockResolvedValue(undefined),
+  getItem: jest.fn().mockResolvedValue(null),
+  removeItem: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../../services/api', () => ({
+  __esModule: true,
+  default: {
+    post: jest.fn(),
+    get: jest.fn(),
+  },
+}));
+
+jest.mock('../../services/appleSignIn', () => ({
+  signInWithApple: jest.fn().mockResolvedValue({
+    identityToken: 'apple-id-token',
+    authorizationCode: 'apple-auth-code',
+    user: 'apple-sub',
+    fullName: {givenName: 'Test', familyName: 'User'},
+    email: 'test@example.com',
+  }),
+  appleAuth: {Error: {CANCELED: '1001'}},
+}));
+
+jest.mock('../../services/googleSignIn', () => ({
+  signInWithGoogle: jest.fn().mockResolvedValue({idToken: 'google-id-token'}),
+  statusCodes: {SIGN_IN_CANCELLED: 'SIGN_IN_CANCELLED'},
+}));
+
+jest.mock('../../services/deviceFingerprint', () => ({
+  getDeviceFingerprint: jest.fn().mockResolvedValue({
+    device_id: 'dev_1',
+    device_secret: 'sec_1',
+    platform: 'ios',
+  }),
+}));
+
+import api from '../../services/api';
+
+function resetStore() {
+  useAuthStore.setState({
+    user: null,
+    tokens: null,
+    isAuthenticated: false,
+    isLoading: false,
+    pendingInvoiceId: null,
+    isActivatingPro: false,
+  });
+}
+
+describe('signInWithApple action', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetStore();
+    (api.post as jest.Mock).mockResolvedValue({
+      data: {data: {access_token: 'AT', refresh_token: 'RT', expires_in: 300}},
+    });
+    (api.get as jest.Mock).mockResolvedValue({
+      data: {data: {id: 'u1', full_name: 'T U', subscription_tier: 'free', subscription_expires_at: null, created_at: '', auth_provider: 'apple'}},
+    });
   });
 
-  it('preserves guest JWT in Authorization header (in-place promotion)', () => {
-    // Wave 2: when a guest token exists, the /auth/apple call carries Authorization: Bearer <guest JWT>
+  it('POSTs identity_token + device fingerprint + _skipAuthRefresh to /auth/apple', async () => {
+    await useAuthStore.getState().signInWithApple();
+    expect(api.post).toHaveBeenCalledWith(
+      '/auth/apple',
+      expect.objectContaining({
+        identity_token: 'apple-id-token',
+        authorization_code: 'apple-auth-code',
+        device_id: 'dev_1',
+        device_secret: 'sec_1',
+        platform: 'ios',
+        full_name: 'Test User',
+        email: 'test@example.com',
+      }),
+      expect.objectContaining({_skipAuthRefresh: true}),
+    );
   });
 
-  it('catches CANCELED error silently', () => {
-    // Wave 2: a {code: '1001'} cancellation must not throw to the UI nor show an Alert
+  it('sets tokens + isAuthenticated and calls fetchAccount on success', async () => {
+    await useAuthStore.getState().signInWithApple();
+    const state = useAuthStore.getState();
+    expect(state.tokens?.access_token).toBe('AT');
+    expect(state.isAuthenticated).toBe(true);
+    expect(state.isLoading).toBe(false);
+    expect(api.get).toHaveBeenCalledWith('/account');
+  });
+
+  it('rethrows cancellation (code 1001) so LoginScreen can return silently', async () => {
+    const {signInWithApple: applePerform} = require('../../services/appleSignIn');
+    applePerform.mockRejectedValueOnce(Object.assign(new Error('cancelled'), {code: '1001'}));
+    await expect(useAuthStore.getState().signInWithApple()).rejects.toMatchObject({code: '1001'});
+    expect(useAuthStore.getState().isLoading).toBe(false);
   });
 });
 
-describe.skip('signInWithGoogle action', () => {
-  it('POSTs id_token+device fingerprint to /auth/google', () => {
-    // Wave 2: expect api.post to have been called with '/auth/google' and {id_token, ...fingerprint}
+describe('signInWithGoogle action', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetStore();
+    (api.post as jest.Mock).mockResolvedValue({
+      data: {data: {access_token: 'AT', refresh_token: 'RT', expires_in: 300}},
+    });
+    (api.get as jest.Mock).mockResolvedValue({
+      data: {data: {id: 'u1', full_name: 'T U', subscription_tier: 'free', subscription_expires_at: null, created_at: '', auth_provider: 'google'}},
+    });
+  });
+
+  it('POSTs id_token + device fingerprint + _skipAuthRefresh to /auth/google', async () => {
+    await useAuthStore.getState().signInWithGoogle();
+    expect(api.post).toHaveBeenCalledWith(
+      '/auth/google',
+      expect.objectContaining({
+        id_token: 'google-id-token',
+        device_id: 'dev_1',
+        device_secret: 'sec_1',
+        platform: 'ios',
+      }),
+      expect.objectContaining({_skipAuthRefresh: true}),
+    );
   });
 });
 
-describe.skip('startActivatingPro / stopActivatingPro', () => {
-  it('sets pendingInvoiceId + isActivatingPro=true', () => {
-    // Wave 2: startActivatingPro('abc123') sets state.pendingInvoiceId='abc123', state.isActivatingPro=true
+describe('startActivatingPro / stopActivatingPro', () => {
+  beforeEach(() => resetStore());
+
+  it('startActivatingPro sets pendingInvoiceId + isActivatingPro=true', () => {
+    useAuthStore.getState().startActivatingPro('inv_X');
+    const s = useAuthStore.getState();
+    expect(s.pendingInvoiceId).toBe('inv_X');
+    expect(s.isActivatingPro).toBe(true);
   });
 
-  it('clears them on stop', () => {
-    // Wave 2: stopActivatingPro() resets pendingInvoiceId=null, isActivatingPro=false
+  it('stopActivatingPro clears both fields', () => {
+    useAuthStore.getState().startActivatingPro('inv_X');
+    useAuthStore.getState().stopActivatingPro();
+    const s = useAuthStore.getState();
+    expect(s.pendingInvoiceId).toBeNull();
+    expect(s.isActivatingPro).toBe(false);
   });
 });

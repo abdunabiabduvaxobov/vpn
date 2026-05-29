@@ -2,7 +2,9 @@ import {create} from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from '../services/api';
 import {getDeviceFingerprint} from '../services/deviceFingerprint';
-import type {User, AuthTokens} from '../types/api';
+import {signInWithApple as performAppleSignIn} from '../services/appleSignIn';
+import {signInWithGoogle as performGoogleSignIn} from '../services/googleSignIn';
+import type {User, AuthTokens, ApiResponse} from '../types/api';
 
 const TOKENS_KEY = 'auth-tokens';
 
@@ -12,6 +14,11 @@ interface AuthState {
   isAuthenticated: boolean;
   isLoading: boolean;
 
+  // Phase 5: Activating-Pro modal state (D-CD: extend authStore rather
+  // than a separate paymentReturnStore — two fields, two actions).
+  pendingInvoiceId: string | null;
+  isActivatingPro: boolean;
+
   // Actions
   initialize: () => void;
   fetchAccount: () => Promise<void>;
@@ -20,6 +27,14 @@ interface AuthState {
   linkWithCode: (code: string) => Promise<void>;
   logout: () => Promise<void>;
   setLoading: (loading: boolean) => void;
+
+  // Phase 5: SSO actions.
+  signInWithApple: () => Promise<void>;
+  signInWithGoogle: () => Promise<void>;
+
+  // Phase 5: deep-link → polling-modal bridge.
+  startActivatingPro: (invoiceId: string) => void;
+  stopActivatingPro: () => void;
 }
 
 // Concurrency guard for initialize() — StrictMode double-mounts and rapid
@@ -32,6 +47,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   tokens: null,
   isAuthenticated: false,
   isLoading: false,
+  // Phase 5: Activating-Pro modal state.
+  pendingInvoiceId: null,
+  isActivatingPro: false,
 
   // Called once on app startup — restores tokens from storage or auto-creates a guest session.
   // The guest call sends the device fingerprint (id + secret) so the server
@@ -94,6 +112,80 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({isLoading: false});
       throw error;
     }
+  },
+
+  // Phase 5 — Apple Sign-In. D-06: guest JWT MUST be sent in the request
+  // Authorization header so backend takes the in-place promotion path.
+  // The existing axios request interceptor reads tokens from state and
+  // attaches Authorization automatically — we do NOT clear tokens before
+  // invoking the Apple sheet. The /auth/apple call is flagged
+  // {_skipAuthRefresh: true} so a 401 there cannot recurse the refresh
+  // interceptor and re-mint a guest (T-7).
+  signInWithApple: async () => {
+    set({isLoading: true});
+    try {
+      const appleResult = await performAppleSignIn();
+      const fingerprint = await getDeviceFingerprint();
+      const fullName = appleResult.fullName
+        ? `${appleResult.fullName.givenName ?? ''} ${appleResult.fullName.familyName ?? ''}`.trim()
+        : undefined;
+      const {data} = await api.post<ApiResponse<AuthTokens>>(
+        '/auth/apple',
+        {
+          identity_token: appleResult.identityToken,
+          authorization_code: appleResult.authorizationCode,
+          device_id: fingerprint.device_id,
+          device_secret: fingerprint.device_secret,
+          platform: fingerprint.platform,
+          full_name: fullName || undefined,
+          email: appleResult.email ?? undefined,
+        },
+        {_skipAuthRefresh: true},
+      );
+      const tokens = data.data;
+      await AsyncStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
+      set({tokens, isAuthenticated: true, isLoading: false, user: null});
+      await get().fetchAccount();
+    } catch (error) {
+      set({isLoading: false});
+      throw error; // re-throw so LoginScreen can detect cancellation
+    }
+  },
+
+  // Phase 5 — Google Sign-In. Same D-06 in-place promotion path + T-7 flag.
+  signInWithGoogle: async () => {
+    set({isLoading: true});
+    try {
+      const googleResult = await performGoogleSignIn();
+      const fingerprint = await getDeviceFingerprint();
+      const {data} = await api.post<ApiResponse<AuthTokens>>(
+        '/auth/google',
+        {
+          id_token: googleResult.idToken,
+          device_id: fingerprint.device_id,
+          device_secret: fingerprint.device_secret,
+          platform: fingerprint.platform,
+        },
+        {_skipAuthRefresh: true},
+      );
+      const tokens = data.data;
+      await AsyncStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
+      set({tokens, isAuthenticated: true, isLoading: false, user: null});
+      await get().fetchAccount();
+    } catch (error) {
+      set({isLoading: false});
+      throw error;
+    }
+  },
+
+  // Phase 5 — Activating-Pro modal bridge. Called by deepLink.ts on
+  // vpnapp://payment/success?invoiceId=X receive.
+  startActivatingPro: (invoiceId: string) => {
+    set({pendingInvoiceId: invoiceId, isActivatingPro: true});
+  },
+
+  stopActivatingPro: () => {
+    set({pendingInvoiceId: null, isActivatingPro: false});
   },
 
   fetchAccount: async () => {

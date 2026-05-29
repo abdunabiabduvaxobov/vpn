@@ -12,6 +12,10 @@ export interface User {
   subscription_tier: 'free' | 'premium' | 'ultimate';
   subscription_expires_at: string | null;
   created_at: string;
+  // Phase 5 — Apple/Google SSO additions (backend Phase 2 D-11 columns).
+  auth_provider?: 'guest' | 'apple' | 'google';
+  email?: string;
+  email_verified?: boolean;
 }
 
 export interface AuthTokens {
