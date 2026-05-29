@@ -36,3 +36,31 @@ Out-of-scope discoveries logged during execution. NOT fixed in the discovering p
 - **Pre-upload verification command:** `grep -rn "PLACEHOLDER_" app/ios app/android app/src` — every hit must be replaced.
 - **Also at release time:** confirm server `MIN_APP_VERSION` bumps to `2.2.0` simultaneous with the mobile store release (RESEARCH.md Open Q #3).
 - **Recommended owner:** end-of-milestone release phase (store upload).
+
+## From 05-01 (Wave 1 native config)
+
+### DEF-05-01-01 — `pod install` fails: Podfile references missing `VpnAppNetworkExtension` target
+
+- **Discovered during:** Plan 05-01, Task 2 (`cd app/ios && pod install`).
+- **Symptom:** `[!] Unable to find a target named 'VpnAppNetworkExtension' in project 'VpnApp.xcodeproj', did find 'VpnApp'.` (non-zero exit; no `Podfile.lock` produced).
+- **Status:** PRE-EXISTING project-config mismatch, NOT caused by this plan. Verified:
+  - `git show HEAD:app/ios/Podfile` already declares `target 'VpnAppNetworkExtension' do` (line 38) — predates this plan.
+  - `app/ios/VpnApp.xcodeproj/project.pbxproj` contains **zero** references to `VpnAppNetworkExtension` (the target was never added to the Xcode project).
+  - No `app/ios/Podfile.lock` is tracked on HEAD — `pod install` has never succeeded in this checkout, so the plan's expectation of a committed `Podfile.lock` was never met by the prior native setup.
+- **Impact on 05-01:** The npm packages ARE installed + pinned (`@invertase/react-native-apple-authentication@2.5.1`, `@react-native-google-signin/google-signin@16.1.2`) and React Native auto-link config + Codegen recognized them (`pod install` Codegen phase generated `RNGoogleSignInCGen` before failing on the missing target). All native config files (Info.plist, entitlements, AppDelegate, pbxproj Bundle ID, AndroidManifest, strings.xml) are completed — the durable deliverable. Only the iOS `Podfile.lock` regeneration is blocked.
+- **Two paths to resolve (release phase, on a machine that builds iOS):**
+  1. Add the `VpnAppNetworkExtension` target to `VpnApp.xcodeproj` (the NetworkExtension that runs the Go tunnel — referenced in CLAUDE.md + entitlements `packet-tunnel-provider`), OR
+  2. Remove/guard the `VpnAppNetworkExtension` block in `app/ios/Podfile` if that target is built outside CocoaPods.
+  Then re-run `cd app/ios && pod install` and commit the resulting `Podfile.lock` (verify it names `RNAppleAuthentication` + `GoogleSignIn`).
+- **Recommended owner:** end-of-milestone release phase (iOS build), or whoever owns the iOS NetworkExtension target wiring.
+
+### DEF-05-01-02 — Pre-existing high-severity prod npm vulnerabilities (axios, picomatch)
+
+- **Discovered during:** Plan 05-01, Task 2 (`npm audit --omit=dev`).
+- **Symptom:** `npm audit --omit=dev` reports 2 high prod vulnerabilities: `axios` (multiple advisories incl. SSRF / prototype-pollution) and `picomatch` (ReDoS / method-injection, transitive via `tinyglobby` + build tooling).
+- **Status:** PRE-EXISTING, NOT introduced by the two new SSO packages. Verified:
+  - `axios@^1.13.6` is a direct dependency present on committed HEAD `app/package.json` before this plan.
+  - `picomatch` appears 10× in the HEAD `package-lock.json` (pre-existing transitive dep).
+  - Scoped analysis confirms **zero** vulnerabilities (high, critical, or otherwise) attributable to `@invertase/react-native-apple-authentication` or `@react-native-google-signin/google-signin` — the T-6 supply-chain gate PASSES for the new packages.
+- **Why deferred (SCOPE BOUNDARY):** Only issues directly caused by this task's changes are auto-fixed. axios/picomatch are unrelated pre-existing dependency advisories; bumping axios is an API-client change (touches `app/src/services/api.ts` behavior) out of this plan's native-config scope.
+- **Recommended owner:** a dedicated dependency-hardening pass (likely Phase 8 hardening). Suggested fix: bump `axios` to the latest patched 1.x and re-resolve `picomatch` via `npm audit fix` / lockfile dedupe, then re-run the mobile test + tsc suite.
