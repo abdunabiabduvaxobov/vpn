@@ -426,7 +426,7 @@ sqlDB.SetConnMaxIdleTime(5 * time.Minute)       // D-10b (new)
 | A3 | The bulk-flush `[]string` ids bind cleanly to Postgres `= ANY(?::uuid[])` / `IN (?)` via GORM/pgx. | Code Examples | LOW — worst case use GORM's native `IN ?` slice expansion (definitely works). Verify the exact form during implementation. |
 | A4 | No protected/admin endpoint legitimately posts a body > 64KB (so `BodyLimit: 64*1024` is safe). | PERF-09 confirm | LOW — server/plan/user CRUD bodies are tiny; lava webhook payloads are small JSON. Confirmed by inspection; if a future bulk-import endpoint is added it would need a per-route override. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Bulk-downgrade bust precision (Pitfall 3).**
    - What we know: CONTEXT D-06 wants zero-lag busts everywhere; the two downgrade functions return only counts.
