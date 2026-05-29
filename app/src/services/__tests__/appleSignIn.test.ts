@@ -1,16 +1,51 @@
-// app/src/services/__tests__/appleSignIn.test.ts
-// Phase 5 Wave 0 scaffold — Wave 2 fills in implementations.
-// Tracks: 05-VALIDATION.md task 5-SVC-01, 5-SVC-02.
+// Phase 5 — Tests for appleSignIn service.
+// Tracks: 05-VALIDATION.md 5-SVC-01, 5-SVC-02.
 
-describe.skip('signInWithApple', () => {
-  it('returns identityToken on success', () => {
-    // Wave 2: import signInWithApple from '../appleSignIn';
-    // jest.mock('@invertase/react-native-apple-authentication');
-    // expect await signInWithApple() to resolve with identityToken: 'mock-apple-id-token'
+import {signInWithApple} from '../appleSignIn';
+import {appleAuth} from '@invertase/react-native-apple-authentication';
+
+jest.mock('@invertase/react-native-apple-authentication');
+
+describe('signInWithApple', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
   });
 
-  it('throws on Apple sheet cancellation with code 1001', () => {
-    // Wave 2: override appleAuth.performRequest to reject with {code: '1001'}
-    // expect await signInWithApple() to throw with code === appleAuth.Error.CANCELED
+  it('returns identityToken + authorizationCode + user + fullName + email on success', async () => {
+    const result = await signInWithApple();
+    expect(result.identityToken).toBe('mock-apple-id-token');
+    expect(result.authorizationCode).toBe('mock-apple-auth-code');
+    expect(result.user).toBe('mock-apple-sub');
+    expect(result.fullName).toEqual({givenName: 'Test', familyName: 'User'});
+    expect(result.email).toBe('test@example.com');
+  });
+
+  it('invokes appleAuth.performRequest with LOGIN + FULL_NAME + EMAIL scopes', async () => {
+    await signInWithApple();
+    expect(appleAuth.performRequest).toHaveBeenCalledWith({
+      requestedOperation: appleAuth.Operation.LOGIN,
+      requestedScopes: [appleAuth.Scope.FULL_NAME, appleAuth.Scope.EMAIL],
+    });
+  });
+
+  it('re-throws cancellation (code 1001) from the native sheet', async () => {
+    (appleAuth.performRequest as jest.Mock).mockRejectedValueOnce(
+      Object.assign(new Error('User cancelled'), {code: '1001'}),
+    );
+    await expect(signInWithApple()).rejects.toMatchObject({code: '1001'});
+    expect(appleAuth.Error.CANCELED).toBe('1001');
+  });
+
+  it('throws when identityToken is null', async () => {
+    (appleAuth.performRequest as jest.Mock).mockResolvedValueOnce({
+      identityToken: null,
+      authorizationCode: null,
+      user: 'sub',
+      fullName: null,
+      email: null,
+    });
+    await expect(signInWithApple()).rejects.toThrow(
+      /did not return an identityToken/,
+    );
   });
 });
