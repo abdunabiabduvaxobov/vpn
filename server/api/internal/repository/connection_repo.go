@@ -177,6 +177,23 @@ func UpdateHeartbeat(db *gorm.DB, id string) error {
 	return nil
 }
 
+// PruneOldConnections permanently DELETEs disconnected connection rows whose
+// disconnected_at is older than cutoff, bounding unbounded history growth
+// (PERF-08 / D-10c, audit §2.5). Returns the number of rows deleted.
+//
+// Safety: only rows with disconnected_at IS NOT NULL AND disconnected_at < cutoff
+// are removed — ACTIVE connections (disconnected_at IS NULL) are NEVER touched
+// (T-06-PRUNE). The scheduler calls this on a WEEKLY cadence with a 90-day
+// cutoff; the predicate is served by idx_connections_connected_at (plan 02).
+func PruneOldConnections(db *gorm.DB, cutoff time.Time) (int64, error) {
+	result := db.Where("disconnected_at IS NOT NULL AND disconnected_at < ?", cutoff).
+		Delete(&model.Connection{})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return result.RowsAffected, nil
+}
+
 // FindConnectionByID looks up a connection by UUID.
 // Returns ErrNotFound if no row exists.
 func FindConnectionByID(db *gorm.DB, id string) (*model.Connection, error) {

@@ -156,7 +156,17 @@ func main() {
 	// Start background session cleanup scheduler.
 	// PERF-04 / D-06: redisClient lets the bulk-downgrade passes bust
 	// user:<id> for each downgraded user (zero-lag entitlement freshness).
-	scheduler.Start(db, logger, cfg, redisClient)
+	//
+	// PERF-06 / D-09b: gate the scheduler behind RUN_SCHEDULER (cfg.RunScheduler
+	// is ShouldRunScheduler(getEnv("RUN_SCHEDULER","true")) computed in Load()).
+	// Default true → single-replica v2.2.0 keeps running periodic jobs. Set
+	// RUN_SCHEDULER=false on non-primary replicas (Tranche 3 multi-replica) so
+	// only one replica fires the cleanup / 10s heartbeat flush / weekly prune.
+	if cfg.RunScheduler {
+		scheduler.Start(db, logger, cfg, redisClient)
+	} else {
+		logger.Info("scheduler disabled (RUN_SCHEDULER=false) — this replica runs no periodic jobs")
+	}
 
 	// Create Fiber app.
 	//
