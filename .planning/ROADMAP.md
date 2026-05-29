@@ -157,7 +157,16 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
   4. A second API replica started with `RUN_SCHEDULER=false` runs cleanly without firing the scheduler twice; the primary replica with `RUN_SCHEDULER=true` is the only one running periodic jobs.
   5. The stale-connection sweep query uses `idx_connections_heartbeat_active` (EXPLAIN shows index-only scan) and completes in O(connected), not O(history).
   6. Every GORM query inherits the request `ctx`; killing a long-running client request via `ctx` cancellation aborts the underlying DB query (verifiable via `pg_stat_activity`).
-**Plans**: TBD
+**Plans**: 8 plans (Wave 0 test infra; Waves 1–6 implementation + runbook)
+  - [ ] 06-00-PLAN.md (wave 0) — Nyquist test infra: 7 test files (perf_indexes, servers/user/heartbeat cache, scheduler gate, ctx-cancel, servers-no-SELECT) RED-first against the 5 D-09 assertions [PERF-01,02,04,05,06,07,08]
+  - [ ] 06-01-PLAN.md (wave 1, depends 00) — Data-tier split: docker-compose.data.yml (PG+Redis, maxmemory, postgresql.conf) + host-param DB_HOST/REDIS_HOST + Fiber timeouts/BodyLimit + PG pool + PrepareStmt [PERF-03, PERF-09]
+  - [ ] 06-02-PLAN.md (wave 1, depends 00) — Migrations 022 (idx_connections_heartbeat_active partial) + 023 (idx_connections_connected_at) CONCURRENTLY + COALESCE-drop on stale sweep [PERF-05, PERF-08]
+  - [ ] 06-03-PLAN.md (wave 2, depends 00+01) — /servers cache: cache:servers:active (60s, fail-open) + in-Go plan filter + synchronous bust on 3 admin server-writes [PERF-01]
+  - [ ] 06-04-PLAN.md (wave 3, depends 00+03) — user:<id> cache (5s, fail-open) + c.Locals("user") refactor + bust on all mutation paths (admin/webhook/delete/restore/bulk-downgrade via RETURNING id) [PERF-04]
+  - [ ] 06-05-PLAN.md (wave 4, depends 00+04) — Heartbeat→Redis (hb:<id>+hb:dirty) + dedicated 10s flush goroutine + RUN_SCHEDULER gate + per-job intervals + weekly 90-day prune [PERF-02, PERF-06, PERF-08]
+  - [ ] 06-06-PLAN.md (wave 5, depends 00+03+04+05) — ctx propagation: thread ctx through ALL repo signatures + db.WithContext(ctx) + all call sites; ctx-cancel pg_stat_activity assertion (sequenced last to avoid repo merge conflicts) [PERF-07]
+  - [ ] 06-07-PLAN.md (wave 6, depends 01+02+05+06) — Production runbook (live-DB index backfill + off-host move) + 06-HUMAN-UAT.md (deferred ~10k load test) + human checkpoint [PERF-03, PERF-05, PERF-08]
+**UI hint**: no
 
 ### Phase 7: Admin panel overhaul
 **Goal**: The operator can run RiseVPN day-to-day from `admin-web` — see live KPIs, take per-user actions (suspend, force-Pro, force-disconnect) with concurrency safety against payment webhooks, manage system-wide controls, and replay any lava.top webhook from the audit log.
@@ -220,10 +229,10 @@ Phase 4  Phase 5  Phase 6  Phase 7  Phase 8
 | 3. Lava.top + plans catalog | 0/? | Not started | - |
 | 4. Landing surfaces | 0/8 | Not started | - |
 | 5. Mobile SSO + Pro CTA | 0/? | Not started | - |
-| 6. Performance & scalability | 0/? | Not started | - |
+| 6. Performance & scalability | 0/8 | Planned | - |
 | 7. Admin panel overhaul | 0/? | Not started | - |
 | 8. Cleanup & hardening | 0/? | Not started | - |
 
 ---
 *Roadmap defined: 2026-05-22*
-*Last updated: 2026-05-22 — Phase 2 plan list revised (W-3): plan 03 moved to Wave 1 (parallel with plans 01 & 02); plan 04 picks up AUTH-08 dependency + ReassignDevicesByUserID per W-1.*
+*Last updated: 2026-05-29 — Phase 6 planned: 8 plans across 7 waves (W0 test infra; W1 compose+indexes; W2 servers-cache; W3 user-cache; W4 heartbeat/scheduler; W5 ctx-propagation; W6 runbook). Decision coverage D-01..D-10 at full fidelity; all 9 PERF reqs mapped.*
