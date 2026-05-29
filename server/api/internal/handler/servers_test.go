@@ -199,7 +199,9 @@ func buildServerConfigAppWithRole(db *gorm.DB, userID, tier, role string) *fiber
 		return c.Next()
 	})
 
-	app.Get("/servers", handler.ListServers(log, db))
+	// nil redisClient → GetServersCache treats it as a permanent cache miss
+	// (fail-open), so this still exercises the DB path the existing tests assert.
+	app.Get("/servers", handler.ListServersCached(log, db, nil))
 	app.Get("/servers/:id/config", handler.GetServerConfig(log, db, cfg))
 	return app
 }

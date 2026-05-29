@@ -1,14 +1,17 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"math/rand"
 
+	"vpnapp/server/api/internal/cache"
 	"vpnapp/server/api/internal/config"
 	"vpnapp/server/api/internal/model"
 	"vpnapp/server/api/internal/repository"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -94,19 +97,52 @@ type WebSocketClientConfig struct {
 	Path string `json:"path"`
 }
 
-// ListServers handles GET /servers.
-// Returns active VPN servers limited by the user's plan.
-// Admins bypass the plan filter and see all active servers (PAY-11, D-21).
-func ListServers(logger *zap.Logger, db *gorm.DB) fiber.Handler {
+// ListServersCached handles GET /servers (PERF-01 / D-05).
+//
+// Returns active VPN servers limited by the user's plan. Admins bypass the plan
+// filter and see all active servers (PAY-11, D-21).
+//
+// Cache: the FULL active-server list (repository.ListActiveServers) is cached as
+// a single global blob `cache:servers:active` (TTL 60s). On a cache hit the heavy
+// ListActiveServers SELECT is skipped entirely for BOTH paths:
+//   - admin       → returns the cached blob as-is (zero servers SELECT, D-09 (b)).
+//   - non-admin   → resolves the plan's allowed server IDs and INTERSECTS them
+//     with the cached blob IN GO (the entitlement filter stays server-side and
+//     per-request — T-06-SRVCACHE-01). The small ListServersForPlan JOIN is the
+//     residual cost Fork 3 accepted (sub-ms indexed); the cached blob is what
+//     removes the ~833 q/s amplifier (audit §5.2).
+//
+// Fail-open: a Redis outage makes GetServersCache return "" → the handler falls
+// through to the DB (T-06-SRVCACHE-03). /servers never breaks.
+//
+// NOTE on the symbol name: the Wave 0 RED test (servers_cache_test.go,
+// TestServersCacheNoSelect) pins this handler to `ListServersCached` with the
+// (logger, db, redisClient) signature — see SUMMARY deviation [Rule 3]. The old
+// non-cached ListServers(logger, db) is removed to avoid a dead duplicate.
+func ListServersCached(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID, _ := c.Locals("user_id").(string)
 		role, _ := c.Locals("role").(string)
 
+		// Resolve the FULL active-server list, cache-first. On a hit this emits
+		// ZERO ListActiveServers SELECT (D-09 (b)); on a miss/outage it loads the
+		// DB and best-effort populates the cache.
+		fullServers, err := loadActiveServersCached(c, db, redisClient, logger)
+		if err != nil {
+			logger.Error("failed to list servers", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "internal server error",
+			})
+		}
+
+		// Apply the plan filter LIVE IN GO (D-05). The cached blob is the full
+		// list; admins get it unfiltered, non-admins get the plan-intersected
+		// subset. The filter NEVER comes from cache — it runs per request so a
+		// non-admin can never receive servers outside their plan.
 		var servers []model.VPNServer
-		var err error
 		if role == "admin" {
 			// Admin bypass — sees all active servers regardless of plan.
-			servers, err = repository.ListActiveServers(db)
+			servers = fullServers
 		} else {
 			planID, perr := resolveUserPlanID(c, db)
 			if perr != nil {
@@ -116,13 +152,27 @@ func ListServers(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 					"error": "internal server error",
 				})
 			}
-			servers, err = repository.ListServersForPlan(db, planID)
-		}
-		if err != nil {
-			logger.Error("failed to list servers", zap.Error(err))
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "internal server error",
-			})
+			// Build the allowed-ID set from the live, sub-ms indexed JOIN
+			// (Fork 3: do NOT cache plan_servers membership), then intersect it
+			// with the cached full blob so the cache win benefits non-admins too.
+			allowed, perr := repository.ListServersForPlan(db, planID)
+			if perr != nil {
+				logger.Error("failed to list servers for plan", zap.Error(perr))
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "internal server error",
+				})
+			}
+			allowedIDs := make(map[string]struct{}, len(allowed))
+			for _, s := range allowed {
+				allowedIDs[s.ID] = struct{}{}
+			}
+			// Preserve the cached blob's current_load ordering by iterating it.
+			servers = make([]model.VPNServer, 0, len(allowedIDs))
+			for _, s := range fullServers {
+				if _, ok := allowedIDs[s.ID]; ok {
+					servers = append(servers, s)
+				}
+			}
 		}
 
 		logger.Debug("listing servers",
@@ -134,6 +184,41 @@ func ListServers(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			"data": servers,
 		})
 	}
+}
+
+// loadActiveServersCached returns the full active-server list, reading the
+// cache:servers:active blob first and falling through to ListActiveServers on a
+// miss / Redis outage. On a DB load it best-effort re-populates the cache.
+//
+// CRITICAL for the D-09 (b) zero-SELECT assertion: when the cache hit succeeds
+// this function returns BEFORE any ListActiveServers DB read — the cached blob
+// short-circuits the heavy SELECT in both the admin and non-admin branches of
+// ListServersCached.
+func loadActiveServersCached(c *fiber.Ctx, db *gorm.DB, redisClient *redis.Client, logger *zap.Logger) ([]model.VPNServer, error) {
+	if cached, _ := cache.GetServersCache(c.Context(), redisClient); cached != "" {
+		var servers []model.VPNServer
+		if uerr := json.Unmarshal([]byte(cached), &servers); uerr == nil {
+			return servers, nil
+		}
+		// A corrupt/unparseable cache entry must not break /servers — fall
+		// through to the DB (fail-open) and let the next Set overwrite it.
+		logger.Warn("servers cache entry unparseable — falling through to DB")
+	}
+
+	// Miss / outage / corrupt — load the heavy blob from the DB.
+	servers, err := repository.ListActiveServers(db)
+	if err != nil {
+		return nil, err
+	}
+
+	// Best-effort cache write (errors are non-fatal — next request re-populates).
+	if blob, mErr := json.Marshal(servers); mErr == nil {
+		_ = cache.SetServersCache(c.Context(), redisClient, string(blob))
+	} else {
+		logger.Warn("failed to marshal servers for cache", zap.Error(mErr))
+	}
+
+	return servers, nil
 }
 
 // GetServerConfig handles GET /servers/:id/config.
