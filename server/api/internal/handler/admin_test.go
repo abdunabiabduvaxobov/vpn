@@ -10,6 +10,7 @@ import (
 	"vpnapp/server/api/internal/handler"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -20,6 +21,12 @@ import (
 // do not exercise DB calls can still build a handler. Tests that need DB
 // behaviour use table-driven stubs via the repository layer instead.
 func stubDB() *gorm.DB { return nil }
+
+// stubRedis returns a nil *redis.Client. The server-write handlers call
+// cache.BustServersCache(ctx, redisClient), which is nil-safe (returns nil
+// without touching Redis), so the bust is a no-op in these unit tests — the
+// DB-write behaviour and status-code assertions are unaffected.
+func stubRedis() *redis.Client { return nil }
 
 func stubLogger() *zap.Logger {
 	l, _ := zap.NewDevelopment()
@@ -165,7 +172,7 @@ func TestAdminCreateServer_MissingRequiredFields_Returns400(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			app := fiber.New()
-			app.Post("/", handler.AdminCreateServer(stubLogger(), stubDB()))
+			app.Post("/", handler.AdminCreateServer(stubLogger(), stubDB(), stubRedis()))
 
 			body, _ := json.Marshal(tc.body)
 			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBuffer(body))
@@ -185,7 +192,7 @@ func TestAdminCreateServer_MissingRequiredFields_Returns400(t *testing.T) {
 
 func TestAdminUpdateServer_MissingID_Returns400(t *testing.T) {
 	app := fiber.New()
-	app.Patch("/", handler.AdminUpdateServer(stubLogger(), stubDB()))
+	app.Patch("/", handler.AdminUpdateServer(stubLogger(), stubDB(), stubRedis()))
 	req := httptest.NewRequest(http.MethodPatch, "/", bytes.NewBufferString("{}"))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
@@ -199,7 +206,7 @@ func TestAdminUpdateServer_MissingID_Returns400(t *testing.T) {
 
 func TestAdminUpdateServer_NoFields_Returns400(t *testing.T) {
 	app := fiber.New()
-	app.Patch("/:id", handler.AdminUpdateServer(stubLogger(), stubDB()))
+	app.Patch("/:id", handler.AdminUpdateServer(stubLogger(), stubDB(), stubRedis()))
 
 	body, _ := json.Marshal(map[string]interface{}{})
 	req := httptest.NewRequest(http.MethodPatch, "/some-uuid", bytes.NewBuffer(body))
@@ -217,7 +224,7 @@ func TestAdminUpdateServer_NoFields_Returns400(t *testing.T) {
 
 func TestAdminDeleteServer_MissingID_Returns400(t *testing.T) {
 	app := fiber.New()
-	app.Delete("/", handler.AdminDeleteServer(stubLogger(), stubDB()))
+	app.Delete("/", handler.AdminDeleteServer(stubLogger(), stubDB(), stubRedis()))
 	req := httptest.NewRequest(http.MethodDelete, "/", nil)
 	resp, err := app.Test(req)
 	if err != nil {
@@ -244,7 +251,7 @@ func TestAdminCreateServer_DuplicateHostname_IsRejected(t *testing.T) {
 
 	// Register the server route with a real DB.
 	app := fiber.New(fiber.Config{ErrorHandler: handler.ErrorHandler(stubLogger())})
-	app.Post("/admin/servers", handler.AdminCreateServer(stubLogger(), db))
+	app.Post("/admin/servers", handler.AdminCreateServer(stubLogger(), db, stubRedis()))
 
 	validBody := map[string]interface{}{
 		"hostname":     "dup-server",
@@ -360,7 +367,7 @@ func TestAdminDeleteServer_NonExistentID_Returns404(t *testing.T) {
 	db := newAdminTestDB(t)
 
 	app := fiber.New(fiber.Config{ErrorHandler: handler.ErrorHandler(stubLogger())})
-	app.Delete("/admin/servers/:id", handler.AdminDeleteServer(stubLogger(), db))
+	app.Delete("/admin/servers/:id", handler.AdminDeleteServer(stubLogger(), db, stubRedis()))
 
 	req := httptest.NewRequest(http.MethodDelete, "/admin/servers/00000000-0000-0000-0000-000000000000", nil)
 	resp, err := app.Test(req)
@@ -398,7 +405,7 @@ func TestAdminUpdateServer_NonExistentID_Returns404(t *testing.T) {
 	db := newAdminTestDB(t)
 
 	app := fiber.New(fiber.Config{ErrorHandler: handler.ErrorHandler(stubLogger())})
-	app.Patch("/admin/servers/:id", handler.AdminUpdateServer(stubLogger(), db))
+	app.Patch("/admin/servers/:id", handler.AdminUpdateServer(stubLogger(), db, stubRedis()))
 
 	body, _ := json.Marshal(map[string]string{"ip_address": "9.9.9.9"})
 	req := httptest.NewRequest(http.MethodPatch, "/admin/servers/00000000-0000-0000-0000-000000000000", bytes.NewBuffer(body))
