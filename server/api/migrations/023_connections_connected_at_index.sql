@@ -1,0 +1,32 @@
+-- PERF-08: b-tree index on connections(connected_at) so the admin analytics
+-- date-bucket queries stay fast as the connections table grows to millions of rows.
+-- These queries group/range over connected_at (see repository/admin_repo.go date-bucket
+-- analytics around :230/:284/:438); without this index they sequential-scan the full
+-- history (audit §2.3).
+--
+-- IMPORTANT: CREATE INDEX CONCURRENTLY cannot run inside a transaction block, so
+-- this file contains NO BEGIN/COMMIT. It is applied by Postgres's native
+-- docker-entrypoint-initdb.d runner (docker-compose.prod.yml mounts
+-- ./migrations:/docker-entrypoint-initdb.d), which runs `psql -f` per file WITHOUT
+-- wrapping in BEGIN/COMMIT — the same mechanism migration 017 relies on (see
+-- 017_sessions_refresh_token_hash_unique.sql header, lines 16-28). The test harness
+-- (migrations/migrations_test.go:38-61) special-cases any file containing CONCURRENTLY
+-- and runs each statement on its own connection so no implicit tx wraps it.
+--
+-- CONCURRENTLY avoids the ACCESS EXCLUSIVE lock a plain CREATE INDEX would take on the
+-- high-churn connections table, so the connection write path stays available during the
+-- build (threat T-06-IDX-01). IF NOT EXISTS makes the file idempotent.
+--
+-- This index is kept in a SEPARATE file from 022 (PERF-05) so the runbook can backfill
+-- each independently and the test harness runs each cleanly.
+--
+-- CAVEAT (empty-volume manual backfill — carry to the plan 06 runbook):
+-- docker-entrypoint-initdb.d scripts run ONLY on first container init, when the
+-- pgdata volume is empty. On the existing live database (volume already populated)
+-- a normal `docker compose up` does NOT re-run this file. The production backfill
+-- MUST be a manual runbook step, run online (no write lock) thanks to CONCURRENTLY:
+--   docker exec vpn-postgres psql -U vpnapp -d vpnapp -f /docker-entrypoint-initdb.d/023_connections_connected_at_index.sql
+-- IF NOT EXISTS keeps the manual run idempotent whether or not initdb already created it.
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_connections_connected_at
+    ON connections (connected_at);
