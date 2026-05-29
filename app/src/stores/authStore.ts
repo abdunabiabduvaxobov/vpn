@@ -20,7 +20,7 @@ interface AuthState {
   isActivatingPro: boolean;
 
   // Actions
-  initialize: () => void;
+  initialize: () => Promise<void>;
   fetchAccount: () => Promise<void>;
   updateProfile: (name: string) => Promise<void>;
   updateTokens: (tokens: AuthTokens) => void;
@@ -59,36 +59,39 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   // Guarded against concurrent invocation by the module-level `initializing`
   // flag — StrictMode double-mounts and resume-from-background can otherwise
   // call /auth/guest twice and orphan a server session.
-  initialize: () => {
+  // Returns a Promise that resolves once guest auth has settled (tokens set
+  // or failed) so callers that need to await completion (e.g. LoginScreen's
+  // guest CTA, WR-04) can navigate only after the session is established. The
+  // App-boot call site invokes this fire-and-forget; ignoring the returned
+  // promise is harmless.
+  initialize: async (): Promise<void> => {
     if (initializing) return;
     initializing = true;
     set({isLoading: true});
-    (async () => {
-      try {
-        const stored = await AsyncStorage.getItem(TOKENS_KEY);
-        if (stored) {
-          try {
-            const tokens = JSON.parse(stored) as AuthTokens;
-            set({tokens, isAuthenticated: true, isLoading: false});
-            return;
-          } catch {
-            await AsyncStorage.removeItem(TOKENS_KEY);
-          }
+    try {
+      const stored = await AsyncStorage.getItem(TOKENS_KEY);
+      if (stored) {
+        try {
+          const tokens = JSON.parse(stored) as AuthTokens;
+          set({tokens, isAuthenticated: true, isLoading: false});
+          return;
+        } catch {
+          await AsyncStorage.removeItem(TOKENS_KEY);
         }
-
-        const fingerprint = await getDeviceFingerprint();
-        const {data} = await api.post<{data: AuthTokens}>('/auth/guest', fingerprint);
-        const tokens = data.data;
-        await AsyncStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
-        set({tokens, isAuthenticated: true, isLoading: false});
-      } catch {
-        // Guest login failed (e.g. no network). The app stays unauthenticated
-        // and will retry the next time initialize() is called.
-        set({isLoading: false});
-      } finally {
-        initializing = false;
       }
-    })();
+
+      const fingerprint = await getDeviceFingerprint();
+      const {data} = await api.post<{data: AuthTokens}>('/auth/guest', fingerprint);
+      const tokens = data.data;
+      await AsyncStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
+      set({tokens, isAuthenticated: true, isLoading: false});
+    } catch {
+      // Guest login failed (e.g. no network). The app stays unauthenticated
+      // and will retry the next time initialize() is called.
+      set({isLoading: false});
+    } finally {
+      initializing = false;
+    }
   },
 
   // Redeem a 6-digit share code given by a friend (the plan owner). On

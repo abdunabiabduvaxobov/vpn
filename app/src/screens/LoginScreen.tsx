@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Platform,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import {useTranslation} from 'react-i18next';
 import {useNavigation} from '@react-navigation/native';
@@ -26,7 +27,6 @@ export function LoginScreen() {
   const ssoAppleAction = useAuthStore(s => s.signInWithApple);
   const ssoGoogleAction = useAuthStore(s => s.signInWithGoogle);
   const initialize = useAuthStore(s => s.initialize);
-  const isAuthenticated = useAuthStore(s => s.isAuthenticated);
 
   // D-05: silent transition — pop the login flow and land on Home.
   const goHome = () => navigation.reset({index: 0, routes: [{name: 'Home'}]});
@@ -61,10 +61,21 @@ export function LoginScreen() {
   const onGuest = async () => {
     setIsBusy('guest');
     try {
-      if (!isAuthenticated) {
+      // WR-04: initialize() now returns a Promise that settles once guest auth
+      // has completed (tokens set or failed), so awaiting it is meaningful —
+      // goHome() only runs after the guest session actually exists. Read the
+      // LIVE store state (not the reactive `isAuthenticated` closure value,
+      // which is stale within this async handler) to gate navigation.
+      if (!useAuthStore.getState().isAuthenticated) {
         await initialize();
       }
-      goHome();
+      if (useAuthStore.getState().isAuthenticated) {
+        goHome();
+      } else {
+        // Guest login failed (e.g. offline). Surface a non-fatal error and
+        // stay on LoginScreen instead of landing on Home unauthenticated.
+        Alert.alert(t('login.signInFailed'));
+      }
     } finally {
       setIsBusy(null);
     }
