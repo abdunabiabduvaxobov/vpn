@@ -1,0 +1,90 @@
+# Data tier — Postgres + Redis (PERF-03 / D-01, D-02).
+#
+# This file holds the stateful services. The app tier (api + tunnel) lives in
+# docker-compose.prod.yml. Splitting the data tier into its own compose file is
+# the structural half of PERF-03: the *physical* move of PG/Redis to a second
+# host stays an operator runbook step (OUT of Phase 6 scope per D-01) — Phase 6
+# ships only the parameterized split.
+#
+# --- Runbook ---
+# Co-located dev / single-host (DEFAULT — zero .env change):
+#   docker compose -f docker-compose.data.yml -f docker-compose.prod.yml up -d
+#   (postgres/redis resolve by service name on the shared vpn-net network;
+#    the app tier's DB_HOST/REDIS_HOST default to "postgres"/"redis".)
+#
+# Second-host move (operator's call, D-01 — no image/code change):
+#   1. Run THIS file on the data host:
+#        docker compose -f docker-compose.data.yml up -d
+#   2. Bind PG/Redis to the private VPC/WireGuard interface + firewall it
+#      (no public host-port publish here — D-02).
+#   3. On the app host set DB_HOST / REDIS_HOST in /opt/vpn/.env to the data
+#      host's private address, then run docker-compose.prod.yml there.
+#   4. Data migration (dump/restore or replication) is a separate runbook
+#      step — a fresh empty pgdata volume re-runs 001..023 via initdb, but the
+#      existing rows do NOT migrate themselves (OUT of Phase 6 scope).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: vpn-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vpnapp}
+      POSTGRES_USER: ${POSTGRES_USER:-vpnapp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Migrations are relocated to /opt/vpn/migrations by the deploy workflow
+      # (deploy.yml copies server/api/migrations → /opt/vpn/migrations), so the
+      # mount source stays ./migrations (relative to /opt/vpn) — matching the
+      # pre-split prod.yml. initdb seeds a fresh pgdata volume from these files.
+      - ./migrations:/docker-entrypoint-initdb.d
+      # Tuned pgtune config (PERF-09 / D-09c). Mounted read-only and selected
+      # via the config_file flag below.
+      - ./server/api/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    # No public host-port publish (D-02 / T-06-DATALINK): postgres is reachable
+    # only on the compose network for co-located dev. When PG moves to a second
+    # host, bind to the private VPC/WireGuard interface + firewall it, and flip
+    # the app's DATABASE_URL sslmode=disable → sslmode=require (TLS-ready, no
+    # code change).
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vpnapp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - default
+      - vpn-net
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: vpn-redis
+    # D-10a — bound Redis memory under adversarial unique-key spam
+    # (T-06-REDISOOM / audit §5.5): cap at 256mb and evict least-recently-used
+    # keys when full. --requirepass enforces auth over the (private) link.
+    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme} --maxmemory 256mb --maxmemory-policy allkeys-lru
+    # No public host-port publish (D-02 / T-06-DATALINK). For cross-host, enable
+    # Redis TLS (--tls-port) + firewall the private interface; the app's
+    # REDIS_URL then gains rediss:// (TLS-ready, no code change).
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - default
+      - vpn-net
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+
+networks:
+  # Shared bridge (Phase 4 Plan 04-08, B3). Declared as external so both the
+  # data tier (this file) and the app tier (docker-compose.prod.yml) attach to
+  # the SAME network. When the two files are brought up together they share it;
+  # when the data tier runs alone on a second host, this file creates it.
+  vpn-net:
+    name: vpn-net
+    driver: bridge

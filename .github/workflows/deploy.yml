@@ -106,7 +106,12 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "docker-compose.prod.yml,server/api/migrations"
+          # PERF-03 / D-01: the data tier is now its own compose file
+          # (docker-compose.data.yml) and Postgres mounts a tuned
+          # postgresql.conf — both must reach the host. postgresql.conf lives
+          # under server/api/ and survives the `rm -rf server/` step below
+          # because it is copied to its final path before that step runs.
+          source: "docker-compose.prod.yml,docker-compose.data.yml,server/api/migrations,server/api/postgresql.conf"
           target: "/opt/vpn"
           strip_components: 0
 
@@ -120,19 +125,23 @@ jobs:
             set -e
             cd /opt/vpn
 
-            # Move migrations to expected location
+            # Move migrations to expected location (./migrations, mounted by the
+            # data tier into docker-entrypoint-initdb.d). Keep server/api/
+            # because docker-compose.data.yml mounts server/api/postgresql.conf
+            # directly — so DO NOT rm -rf server/ anymore (PERF-03 / D-01).
             if [ -d "server/api/migrations" ]; then
               mkdir -p migrations
               cp -r server/api/migrations/* migrations/ 2>/dev/null || true
-              rm -rf server/
             fi
 
             # Login to GHCR
             echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u abdunabia --password-stdin
 
-            # Pull and restart
-            docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            # Pull and restart — bring up BOTH tiers together for the co-located
+            # single-host deploy (PERF-03 / D-01). The data tier (postgres +
+            # redis) and the app tier (api + tunnel) share the vpn-net network.
+            docker compose -f docker-compose.data.yml -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.data.yml -f docker-compose.prod.yml up -d --remove-orphans
 
             # Cleanup
             docker image prune -f
