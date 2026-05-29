@@ -306,7 +306,7 @@ func main() {
 	protected.Post("/connections", handler.RegisterConnection(logger, db))
 	protected.Delete("/connections/:id", handler.UnregisterConnection(logger, db))
 	protected.Get("/connections", handler.ListActiveConnections(logger, db))
-	protected.Patch("/connections/:id/heartbeat", handler.HeartbeatConnection(logger, db))
+	protected.Patch("/connections/:id/heartbeat", handler.HeartbeatConnection(logger, db, redisClient))
 	// Phase 3 lava endpoints (D-02). /checkout supersedes the legacy
 	// Stripe-era subscription/checkout path.
 	// All three are PROTECTED (JWT required) — guest users get 403 from the handler

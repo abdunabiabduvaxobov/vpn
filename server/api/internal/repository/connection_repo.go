@@ -158,6 +158,12 @@ func CleanupStaleReservations(db *gorm.DB, maxAge time.Duration) (int64, error) 
 
 // UpdateHeartbeat refreshes the last_heartbeat_at timestamp for an active connection.
 // Returns ErrNotFound if the connection does not exist or is already disconnected.
+//
+// Deprecated (PERF-02 / D-03): the heartbeat handler no longer calls this — beats
+// are pipelined into Redis (cache.TouchHeartbeat) and flushed in one bulk UPDATE
+// by the 10s scheduler ticker (cache.FlushHeartbeats). Retained as a single-row
+// helper / for tests; the per-call PG write it embodies is intentionally gone
+// from the hot path.
 func UpdateHeartbeat(db *gorm.DB, id string) error {
 	result := db.Model(&model.Connection{}).
 		Where("id = ? AND disconnected_at IS NULL", id).
