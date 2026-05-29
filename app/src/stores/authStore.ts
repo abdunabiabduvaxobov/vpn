@@ -183,7 +183,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   // Phase 5 — Activating-Pro modal bridge. Called by deepLink.ts on
   // vpnapp://payment/success?invoiceId=X receive.
+  //
+  // L-3: the OS can deliver the same deep link twice (cold-start
+  // getInitialURL + a warm 'url' event for the same launch). De-dup so a
+  // duplicate delivery for the SAME invoice does not restart the modal and
+  // spin up a second overlapping polling loop.
   startActivatingPro: (invoiceId: string) => {
+    const {isActivatingPro, pendingInvoiceId} = get();
+    if (isActivatingPro && pendingInvoiceId === invoiceId) return;
     set({pendingInvoiceId: invoiceId, isActivatingPro: true});
   },
 
