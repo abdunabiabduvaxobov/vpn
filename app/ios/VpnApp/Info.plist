@@ -64,5 +64,29 @@
 			<string>zq492l623r.skadnetwork</string>
 		</dict>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<!-- Custom scheme for payment-return deep link (vpnapp://payment/success?invoiceId=X) -->
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.vpnapp.payment</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>vpnapp</string>
+			</array>
+		</dict>
+		<!-- Google Sign-In reversed iOS OAuth client ID.
+		     PLACEHOLDER_IOS sentinel MUST be replaced with the real Google iOS
+		     Client ID (without the .apps.googleusercontent.com suffix) before
+		     store upload — see DEF-05-CREDS in deferred-items.md. -->
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.googleusercontent.apps.PLACEHOLDER_IOS</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.PLACEHOLDER_IOS</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
