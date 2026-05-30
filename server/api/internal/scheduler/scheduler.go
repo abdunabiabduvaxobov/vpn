@@ -165,10 +165,17 @@ func Stop() {
 // The expiry-PLAN downgrade (DowngradeExpiredPlans) is driven by the caller at
 // expiryDowngradeEveryTicks (10 min) — see Start().
 func runCleanup(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redisClient *redis.Client, tickCount int) {
+	// PERF-07 / Pitfall 4: bound the whole cleanup pass with a per-pass timeout
+	// so a single wedged cleanup query can't hang the 1-min ticker forever. The
+	// scheduler has no Fiber request ctx, so we derive from context.Background().
+	// A cancelled ctx propagates a Postgres CancelRequest via pgx v5.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	// --- every tick (1 min) ---
 
 	// Clean stale reservations (connecting for >2 min)
-	reservationCount, err := repository.CleanupStaleReservations(db, 2*time.Minute)
+	reservationCount, err := repository.CleanupStaleReservations(ctx, db, 2*time.Minute)
 	if err != nil {
 		logger.Error("stale reservation cleanup failed", zap.Error(err))
 	} else if reservationCount > 0 {
@@ -178,7 +185,7 @@ func runCleanup(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redisClient
 	// Clean stale connections (no heartbeat for cfg.StaleConnectionAfter).
 	// Stays at the 1-min cadence: this is the grace window that absorbs a
 	// missed Redis flush, so it must run frequently.
-	staleCount, err := repository.CleanupStaleConnections(db, cfg.StaleConnectionAfter)
+	staleCount, err := repository.CleanupStaleConnections(ctx, db, cfg.StaleConnectionAfter)
 	if err != nil {
 		logger.Error("stale connection cleanup failed", zap.Error(err))
 	} else if staleCount > 0 {
@@ -188,7 +195,7 @@ func runCleanup(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redisClient
 	// Delete expired share/link codes so the table does not grow unbounded.
 	// Each code is short-lived (cfg.LinkCodeTTL) and one-time-use anyway, so
 	// this only catches codes that were generated but never redeemed.
-	codeCount, err := repository.DeleteExpiredLinkCodes(db)
+	codeCount, err := repository.DeleteExpiredLinkCodes(ctx, db)
 	if err != nil {
 		logger.Error("expired link code cleanup failed", zap.Error(err))
 	} else if codeCount > 0 {
@@ -201,7 +208,7 @@ func runCleanup(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redisClient
 	// so the worst-case window where an expired user still has premium
 	// limits is 60 seconds — an acceptable trade-off vs per-request
 	// expiry checks on every API call. Stays at 1-min: entitlement freshness.
-	expiredIDs, err := repository.DowngradeExpiredSubscriptions(db)
+	expiredIDs, err := repository.DowngradeExpiredSubscriptions(ctx, db)
 	if err != nil {
 		logger.Error("subscription expiry check failed", zap.Error(err))
 	} else if len(expiredIDs) > 0 {
@@ -217,7 +224,7 @@ func runCleanup(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redisClient
 	// Sessions carry their own DB-side expiry; sweeping them every 5 min rather
 	// than every minute trims redundant DELETEs with no correctness impact.
 	if tickCount%sessionCleanupEveryTicks == 0 {
-		count, err := repository.DeleteExpiredSessions(db)
+		count, err := repository.DeleteExpiredSessions(ctx, db)
 		if err != nil {
 			logger.Error("session cleanup failed", zap.Error(err))
 		} else if count > 0 {
@@ -231,7 +238,7 @@ func runCleanup(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redisClient
 	// sweep is more than frequent enough; owners can also remove devices
 	// manually via DELETE /devices/:id.
 	if tickCount%staleDeviceEveryTicks == 0 {
-		deviceCount, err := repository.DeleteStaleDevices(db, time.Now().Add(-cfg.StaleDeviceAfter))
+		deviceCount, err := repository.DeleteStaleDevices(ctx, db, time.Now().Add(-cfg.StaleDeviceAfter))
 		if err != nil {
 			logger.Error("stale device cleanup failed", zap.Error(err))
 		} else if deviceCount > 0 {
@@ -244,7 +251,7 @@ func runCleanup(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redisClient
 	// bound table growth (audit §2.5). Active rows (disconnected_at IS NULL) are
 	// never touched (T-06-PRUNE); the predicate rides idx_connections_connected_at.
 	if tickCount%pruneConnectionEveryTicks == 0 {
-		pruned, err := repository.PruneOldConnections(db, time.Now().Add(-connectionPruneAge))
+		pruned, err := repository.PruneOldConnections(ctx, db, time.Now().Add(-connectionPruneAge))
 		if err != nil {
 			logger.Error("90-day connection prune failed", zap.Error(err))
 		} else if pruned > 0 {
@@ -261,7 +268,11 @@ func runCleanup(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redisClient
 // (including this job) behind config.ShouldRunScheduler — set RUN_SCHEDULER=false
 // on non-primary replicas so only one replica runs periodic jobs (D-09b).
 func runExpiryDowngrade(db *gorm.DB, logger *zap.Logger, redisClient *redis.Client) {
-	downgradedIDs, err := repository.DowngradeExpiredPlans(db)
+	// PERF-07 / Pitfall 4: per-pass timeout so a wedged downgrade query can't
+	// hang the ticker. No Fiber ctx here — derive from context.Background().
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	downgradedIDs, err := repository.DowngradeExpiredPlans(ctx, db)
 	if err != nil {
 		logger.Error("expiry downgrade failed", zap.Error(err))
 		return

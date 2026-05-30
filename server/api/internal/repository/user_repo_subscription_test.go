@@ -1,6 +1,7 @@
 package repository_test
 
 import (
+	"context"
 	"database/sql"
 	"sync"
 	"testing"
@@ -160,7 +161,7 @@ func TestDowngradeExpiredSubscriptions_DowngradesPastDueProUser(t *testing.T) {
 	pastDue := time.Now().Add(-1 * time.Hour)
 	userID := seedProUser(t, db, timePtr(pastDue))
 
-	count, err := repository.DowngradeExpiredSubscriptions(db)
+	count, err := repository.DowngradeExpiredSubscriptions(context.Background(), db)
 	if err != nil {
 		t.Fatalf("DowngradeExpiredSubscriptions returned error: %v", err)
 	}
@@ -173,7 +174,7 @@ func TestDowngradeExpiredSubscriptions_DowngradesPastDueProUser(t *testing.T) {
 		t.Errorf("expected returned id to be %s, got %s", userID, count[0])
 	}
 
-	got, err := repository.FindUserByID(db, userID)
+	got, err := repository.FindUserByID(context.Background(), db, userID)
 	if err != nil {
 		t.Fatalf("failed to refetch user: %v", err)
 	}
@@ -205,7 +206,7 @@ func TestDowngradeExpiredSubscriptions_LeavesFutureProUserAlone(t *testing.T) {
 	future := time.Now().Add(24 * time.Hour)
 	userID := seedProUser(t, db, timePtr(future))
 
-	count, err := repository.DowngradeExpiredSubscriptions(db)
+	count, err := repository.DowngradeExpiredSubscriptions(context.Background(), db)
 	if err != nil {
 		t.Fatalf("DowngradeExpiredSubscriptions returned error: %v", err)
 	}
@@ -213,7 +214,7 @@ func TestDowngradeExpiredSubscriptions_LeavesFutureProUserAlone(t *testing.T) {
 		t.Errorf("expected 0 users downgraded for future-dated expiry, got %d (%v)", len(count), count)
 	}
 
-	got, err := repository.FindUserByID(db, userID)
+	got, err := repository.FindUserByID(context.Background(), db, userID)
 	if err != nil {
 		t.Fatalf("failed to refetch user: %v", err)
 	}
@@ -232,7 +233,7 @@ func TestDowngradeExpiredSubscriptions_IgnoresNullExpiresAt(t *testing.T) {
 
 	userID := seedProUser(t, db, nil)
 
-	count, err := repository.DowngradeExpiredSubscriptions(db)
+	count, err := repository.DowngradeExpiredSubscriptions(context.Background(), db)
 	if err != nil {
 		t.Fatalf("DowngradeExpiredSubscriptions returned error: %v", err)
 	}
@@ -240,7 +241,7 @@ func TestDowngradeExpiredSubscriptions_IgnoresNullExpiresAt(t *testing.T) {
 		t.Errorf("expected 0 users downgraded for NULL expiry, got %d (%v)", len(count), count)
 	}
 
-	got, err := repository.FindUserByID(db, userID)
+	got, err := repository.FindUserByID(context.Background(), db, userID)
 	if err != nil {
 		t.Fatalf("failed to refetch user: %v", err)
 	}

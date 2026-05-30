@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -13,9 +14,9 @@ import (
 // --- Read helpers ---
 
 // FindPlanByID returns a plan by primary key. ErrNotFound when missing.
-func FindPlanByID(db *gorm.DB, planID string) (*model.Plan, error) {
+func FindPlanByID(ctx context.Context, db *gorm.DB, planID string) (*model.Plan, error) {
 	var plan model.Plan
-	result := db.Where("id = ?", planID).First(&plan)
+	result := db.WithContext(ctx).Where("id = ?", planID).First(&plan)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -27,9 +28,9 @@ func FindPlanByID(db *gorm.DB, planID string) (*model.Plan, error) {
 
 // FindPlanByCode is the slug-based lookup used by /checkout (validates plan_code body field).
 // Resolves both active and inactive plans — grandfathering requires inactive resolution.
-func FindPlanByCode(db *gorm.DB, code string) (*model.Plan, error) {
+func FindPlanByCode(ctx context.Context, db *gorm.DB, code string) (*model.Plan, error) {
 	var plan model.Plan
-	result := db.Where("code = ?", code).First(&plan)
+	result := db.WithContext(ctx).Where("code = ?", code).First(&plan)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -47,9 +48,9 @@ func FindPlanByCode(db *gorm.DB, code string) (*model.Plan, error) {
 //
 // The partial unique index idx_plans_one_system enforces exactly-one-row at the
 // DB layer, so this is safe to use with First().
-func FindSystemPlanID(db *gorm.DB) (string, error) {
+func FindSystemPlanID(ctx context.Context, db *gorm.DB) (string, error) {
 	var plan model.Plan
-	result := db.Where("is_system = ?", true).First(&plan)
+	result := db.WithContext(ctx).Where("is_system = ?", true).First(&plan)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return "", ErrNotFound
@@ -61,16 +62,16 @@ func FindSystemPlanID(db *gorm.DB) (string, error) {
 
 // ListActivePlans returns all plans where is_active=true, ordered by sort_order ASC, id ASC.
 // Used by /admin/plans and (via ListActiveOffersForPublic) /api/v1/plans (D-27).
-func ListActivePlans(db *gorm.DB) ([]model.Plan, error) {
+func ListActivePlans(ctx context.Context, db *gorm.DB) ([]model.Plan, error) {
 	var plans []model.Plan
-	err := db.Where("is_active = ?", true).Order("sort_order ASC, id ASC").Find(&plans).Error
+	err := db.WithContext(ctx).Where("is_active = ?", true).Order("sort_order ASC, id ASC").Find(&plans).Error
 	return plans, err
 }
 
 // ListAllPlans returns plans regardless of is_active. Admin-only via plan 03-08.
-func ListAllPlans(db *gorm.DB) ([]model.Plan, error) {
+func ListAllPlans(ctx context.Context, db *gorm.DB) ([]model.Plan, error) {
 	var plans []model.Plan
-	err := db.Order("sort_order ASC, id ASC").Find(&plans).Error
+	err := db.WithContext(ctx).Order("sort_order ASC, id ASC").Find(&plans).Error
 	return plans, err
 }
 
@@ -80,9 +81,9 @@ func ListAllPlans(db *gorm.DB) ([]model.Plan, error) {
 // Non-admins call this; admins bypass at the handler layer (D-21).
 // ORDER BY current_load ASC preserves the existing public listing order
 // from handler/servers.go.
-func ListServersForPlan(db *gorm.DB, planID string) ([]model.VPNServer, error) {
+func ListServersForPlan(ctx context.Context, db *gorm.DB, planID string) ([]model.VPNServer, error) {
 	var servers []model.VPNServer
-	err := db.
+	err := db.WithContext(ctx).
 		Joins("JOIN plan_servers ps ON ps.server_id = vpn_servers.id").
 		Where("ps.plan_id = ? AND vpn_servers.is_active = ?", planID, true).
 		Order("vpn_servers.current_load ASC").
@@ -92,9 +93,9 @@ func ListServersForPlan(db *gorm.DB, planID string) ([]model.VPNServer, error) {
 
 // IsServerAllowedForPlan returns true iff a (plan, server) pairing exists.
 // Used by GET /servers/:id/config — returns 404 (not 403) on false (D-22).
-func IsServerAllowedForPlan(db *gorm.DB, planID, serverID string) (bool, error) {
+func IsServerAllowedForPlan(ctx context.Context, db *gorm.DB, planID, serverID string) (bool, error) {
 	var n int64
-	err := db.Table("plan_servers").
+	err := db.WithContext(ctx).Table("plan_servers").
 		Where("plan_id = ? AND server_id = ?", planID, serverID).
 		Count(&n).Error
 	return n > 0, err
@@ -104,9 +105,9 @@ func IsServerAllowedForPlan(db *gorm.DB, planID, serverID string) (bool, error) 
 
 // FindActiveOffer is the /checkout path's offer lookup — strict on is_active=true.
 // Returns ErrNotFound when no active offer matches (caller returns 404 to client).
-func FindActiveOffer(db *gorm.DB, planID, periodicity, currency string) (*model.PlanOffer, error) {
+func FindActiveOffer(ctx context.Context, db *gorm.DB, planID, periodicity, currency string) (*model.PlanOffer, error) {
 	var offer model.PlanOffer
-	result := db.
+	result := db.WithContext(ctx).
 		Where("plan_id = ? AND periodicity = ? AND currency = ? AND is_active = ?", planID, periodicity, currency, true).
 		First(&offer)
 	if result.Error != nil {
@@ -122,9 +123,9 @@ func FindActiveOffer(db *gorm.DB, planID, periodicity, currency string) (*model.
 // NOT filtered on is_active — grandfathered renewals must still resolve (ADR §19.10).
 // Plan ID extracted from the returned PlanOffer is the canonical "what tier did
 // they pay for".
-func FindOfferByLavaOfferID(db *gorm.DB, lavaOfferID string) (*model.PlanOffer, error) {
+func FindOfferByLavaOfferID(ctx context.Context, db *gorm.DB, lavaOfferID string) (*model.PlanOffer, error) {
 	var offer model.PlanOffer
-	result := db.Where("lava_offer_id = ?", lavaOfferID).First(&offer)
+	result := db.WithContext(ctx).Where("lava_offer_id = ?", lavaOfferID).First(&offer)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -135,17 +136,17 @@ func FindOfferByLavaOfferID(db *gorm.DB, lavaOfferID string) (*model.PlanOffer, 
 }
 
 // ListOffersForPlan returns all offers for a plan (active + inactive). Admin only.
-func ListOffersForPlan(db *gorm.DB, planID string) ([]model.PlanOffer, error) {
+func ListOffersForPlan(ctx context.Context, db *gorm.DB, planID string) ([]model.PlanOffer, error) {
 	var offers []model.PlanOffer
-	err := db.Where("plan_id = ?", planID).Order("currency ASC, periodicity ASC, is_active DESC").Find(&offers).Error
+	err := db.WithContext(ctx).Where("plan_id = ?", planID).Order("currency ASC, periodicity ASC, is_active DESC").Find(&offers).Error
 	return offers, err
 }
 
 // ListActiveOffersForPublic returns ALL active offers across all active plans,
 // used by /api/v1/plans (D-27). Caller groups by plan_id and filters by currency.
-func ListActiveOffersForPublic(db *gorm.DB) ([]model.PlanOffer, error) {
+func ListActiveOffersForPublic(ctx context.Context, db *gorm.DB) ([]model.PlanOffer, error) {
 	var offers []model.PlanOffer
-	err := db.
+	err := db.WithContext(ctx).
 		Joins("JOIN plans p ON p.id = plan_offers.plan_id").
 		Where("plan_offers.is_active = ? AND p.is_active = ?", true, true).
 		Order("plan_offers.currency ASC, plan_offers.periodicity ASC").
@@ -157,9 +158,9 @@ func ListActiveOffersForPublic(db *gorm.DB) ([]model.PlanOffer, error) {
 // VPN servers attached to a plan. Used by public /plans `server_countries`.
 //
 // Returns sorted in alphabetical order (response stability).
-func ListPlanServerCountries(db *gorm.DB, planID string) ([]string, error) {
+func ListPlanServerCountries(ctx context.Context, db *gorm.DB, planID string) ([]string, error) {
 	var countries []string
-	err := db.Table("vpn_servers").
+	err := db.WithContext(ctx).Table("vpn_servers").
 		Distinct("country_code").
 		Joins("JOIN plan_servers ps ON ps.server_id = vpn_servers.id").
 		Where("ps.plan_id = ? AND vpn_servers.is_active = ?", planID, true).
@@ -170,9 +171,9 @@ func ListPlanServerCountries(db *gorm.DB, planID string) ([]string, error) {
 
 // ListPlanServersJoined returns the full VPNServer rows attached to a plan
 // (including inactive — admin needs to see them). For GET /admin/plans/:id.
-func ListPlanServersJoined(db *gorm.DB, planID string) ([]model.VPNServer, error) {
+func ListPlanServersJoined(ctx context.Context, db *gorm.DB, planID string) ([]model.VPNServer, error) {
 	var servers []model.VPNServer
-	err := db.
+	err := db.WithContext(ctx).
 		Joins("JOIN plan_servers ps ON ps.server_id = vpn_servers.id").
 		Where("ps.plan_id = ?", planID).
 		Order("vpn_servers.country_code ASC, vpn_servers.hostname ASC").
@@ -194,8 +195,8 @@ func ListPlanServersJoined(db *gorm.DB, planID string) ([]model.VPNServer, error
 // The subscription upsert uses the existing "find active, update OR insert"
 // pattern (RESEARCH §3.3 option (a) — no partial-unique-index migration
 // needed; matches subscription_repo.go::CreateOrUpdateSubscription style).
-func SetUserPlan(db *gorm.DB, userID, planID string, lavaContractID *string, expiresAt *time.Time) error {
-	return db.Transaction(func(tx *gorm.DB) error {
+func SetUserPlan(ctx context.Context, db *gorm.DB, userID, planID string, lavaContractID *string, expiresAt *time.Time) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 1. Resolve the plan's code so we can write the denormalized subscription_tier.
 		var plan model.Plan
 		if err := tx.Where("id = ?", planID).First(&plan).Error; err != nil {
@@ -245,21 +246,24 @@ func SetUserPlan(db *gorm.DB, userID, planID string, lavaContractID *string, exp
 // CreatePlan inserts a plan. Caller validates input (handler layer in 03-08).
 // is_system is NOT settable through this function — it's a migration-only invariant.
 // Handlers MUST zero plan.IsSystem before calling.
-func CreatePlan(db *gorm.DB, plan *model.Plan) error {
+func CreatePlan(ctx context.Context, db *gorm.DB, plan *model.Plan) error {
 	plan.IsSystem = false // defence in depth — never trust caller for is_system
-	return db.Create(plan).Error
+	return db.WithContext(ctx).Create(plan).Error
 }
 
 // UpdatePlan applies a partial update. `updates` MUST NOT contain "code" or
 // "is_system" keys — handlers strip these per D-32 §4 + ADR §19.7.4 (code immutable).
 // Returns the updated plan.
-func UpdatePlan(db *gorm.DB, planID string, updates map[string]interface{}) (*model.Plan, error) {
+func UpdatePlan(ctx context.Context, db *gorm.DB, planID string, updates map[string]interface{}) (*model.Plan, error) {
+	// Thread the request ctx onto the connection once; the UPDATE and the
+	// FindPlanByID re-read below reuse the same context-bound session.
+	db = db.WithContext(ctx)
 	// Defence in depth — strip immutable keys at the repo layer too.
 	delete(updates, "code")
 	delete(updates, "is_system")
 	delete(updates, "id")
 	if len(updates) == 0 {
-		return FindPlanByID(db, planID)
+		return FindPlanByID(ctx, db, planID)
 	}
 	result := db.Model(&model.Plan{}).Where("id = ?", planID).Updates(updates)
 	if result.Error != nil {
@@ -268,14 +272,14 @@ func UpdatePlan(db *gorm.DB, planID string, updates map[string]interface{}) (*mo
 	if result.RowsAffected == 0 {
 		return nil, ErrNotFound
 	}
-	return FindPlanByID(db, planID)
+	return FindPlanByID(ctx, db, planID)
 }
 
 // SoftDeletePlan sets plans.is_active=false AND deactivates all plan_offers.
 // Refuses (returns ErrSystemPlan) when the target is_system=true.
 // CountActiveUsersOnPlan is callable separately for the force-delete flow (03-08).
-func SoftDeletePlan(db *gorm.DB, planID string) error {
-	return db.Transaction(func(tx *gorm.DB) error {
+func SoftDeletePlan(ctx context.Context, db *gorm.DB, planID string) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var plan model.Plan
 		if err := tx.Where("id = ?", planID).First(&plan).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -296,9 +300,9 @@ func SoftDeletePlan(db *gorm.DB, planID string) error {
 
 // CountActiveUsersOnPlan returns the number of users with plan_id = planID.
 // Used by /admin/plans listing AND the soft-delete safety check (?force=true bypass).
-func CountActiveUsersOnPlan(db *gorm.DB, planID string) (int64, error) {
+func CountActiveUsersOnPlan(ctx context.Context, db *gorm.DB, planID string) (int64, error) {
 	var n int64
-	err := db.Model(&model.User{}).Where("plan_id = ?", planID).Count(&n).Error
+	err := db.WithContext(ctx).Model(&model.User{}).Where("plan_id = ?", planID).Count(&n).Error
 	return n, err
 }
 
@@ -306,8 +310,8 @@ func CountActiveUsersOnPlan(db *gorm.DB, planID string) (int64, error) {
 
 // ReplacePlanServers atomically replaces the entire plan-server set.
 // Empty serverIDs is valid (a plan with no servers).
-func ReplacePlanServers(db *gorm.DB, planID string, serverIDs []string) error {
-	return db.Transaction(func(tx *gorm.DB) error {
+func ReplacePlanServers(ctx context.Context, db *gorm.DB, planID string, serverIDs []string) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("plan_id = ?", planID).Delete(&model.PlanServer{}).Error; err != nil {
 			return err
 		}
@@ -325,7 +329,10 @@ func ReplacePlanServers(db *gorm.DB, planID string, serverIDs []string) error {
 // AddPlanServer inserts a (plan, server) pairing. Idempotent — if the pairing
 // already exists, returns nil (matches ADR §19.7.6 "POST returns 200 on already-present").
 // Caller validates that the server exists + is_active=true.
-func AddPlanServer(db *gorm.DB, planID, serverID string) error {
+func AddPlanServer(ctx context.Context, db *gorm.DB, planID, serverID string) error {
+	// Thread the request ctx onto the connection once; the existence check
+	// and the insert below reuse the same context-bound session.
+	db = db.WithContext(ctx)
 	// Idempotent insert: check first, then insert. Using ON CONFLICT DO NOTHING
 	// would also work, but sqlite-test compatibility prefers the find-first pattern
 	// (sqlite supports it, but composite-PK ON CONFLICT semantics across drivers
@@ -342,8 +349,8 @@ func AddPlanServer(db *gorm.DB, planID, serverID string) error {
 }
 
 // RemovePlanServer deletes one pairing. ErrNotFound when not found.
-func RemovePlanServer(db *gorm.DB, planID, serverID string) error {
-	result := db.Where("plan_id = ? AND server_id = ?", planID, serverID).Delete(&model.PlanServer{})
+func RemovePlanServer(ctx context.Context, db *gorm.DB, planID, serverID string) error {
+	result := db.WithContext(ctx).Where("plan_id = ? AND server_id = ?", planID, serverID).Delete(&model.PlanServer{})
 	if result.Error != nil {
 		return result.Error
 	}
@@ -358,19 +365,22 @@ func RemovePlanServer(db *gorm.DB, planID, serverID string) error {
 // CreatePlanOffer inserts a new offer. periodicity/currency are immutable
 // (ADR §19.7.7) so they're set once here. Caller validates the partial unique
 // constraint outcome (409 on dup active).
-func CreatePlanOffer(db *gorm.DB, offer *model.PlanOffer) error {
-	return db.Create(offer).Error
+func CreatePlanOffer(ctx context.Context, db *gorm.DB, offer *model.PlanOffer) error {
+	return db.WithContext(ctx).Create(offer).Error
 }
 
 // UpdatePlanOffer applies a partial update. periodicity + currency are stripped
 // per ADR §19.7.7 (immutable).
-func UpdatePlanOffer(db *gorm.DB, offerID string, updates map[string]interface{}) (*model.PlanOffer, error) {
+func UpdatePlanOffer(ctx context.Context, db *gorm.DB, offerID string, updates map[string]interface{}) (*model.PlanOffer, error) {
+	// Thread the request ctx onto the connection once; the UPDATE and the
+	// findOfferByID re-read below reuse the same context-bound session.
+	db = db.WithContext(ctx)
 	delete(updates, "periodicity")
 	delete(updates, "currency")
 	delete(updates, "id")
 	delete(updates, "plan_id")
 	if len(updates) == 0 {
-		return findOfferByID(db, offerID)
+		return findOfferByID(ctx, db, offerID)
 	}
 	result := db.Model(&model.PlanOffer{}).Where("id = ?", offerID).Updates(updates)
 	if result.Error != nil {
@@ -379,12 +389,12 @@ func UpdatePlanOffer(db *gorm.DB, offerID string, updates map[string]interface{}
 	if result.RowsAffected == 0 {
 		return nil, ErrNotFound
 	}
-	return findOfferByID(db, offerID)
+	return findOfferByID(ctx, db, offerID)
 }
 
 // DeletePlanOffer is soft — sets is_active=false. Returns ErrNotFound on miss.
-func DeletePlanOffer(db *gorm.DB, offerID string) error {
-	result := db.Model(&model.PlanOffer{}).Where("id = ?", offerID).Update("is_active", false)
+func DeletePlanOffer(ctx context.Context, db *gorm.DB, offerID string) error {
+	result := db.WithContext(ctx).Model(&model.PlanOffer{}).Where("id = ?", offerID).Update("is_active", false)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -400,9 +410,9 @@ func DeletePlanOffer(db *gorm.DB, offerID string) error {
 // active offer. The new offer inherits periodicity + currency from the old —
 // the caller's `newOffer` MUST have plan_id + periodicity + currency already
 // populated to match; this function does NOT copy them.
-func ReplaceOffer(db *gorm.DB, oldOfferID string, newOffer *model.PlanOffer) (*model.PlanOffer, error) {
+func ReplaceOffer(ctx context.Context, db *gorm.DB, oldOfferID string, newOffer *model.PlanOffer) (*model.PlanOffer, error) {
 	var saved *model.PlanOffer
-	err := db.Transaction(func(tx *gorm.DB) error {
+	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Deactivate the old.
 		result := tx.Model(&model.PlanOffer{}).Where("id = ?", oldOfferID).Update("is_active", false)
 		if result.Error != nil {
@@ -427,9 +437,9 @@ func ReplaceOffer(db *gorm.DB, oldOfferID string, newOffer *model.PlanOffer) (*m
 
 // --- internal helpers ---
 
-func findOfferByID(db *gorm.DB, offerID string) (*model.PlanOffer, error) {
+func findOfferByID(ctx context.Context, db *gorm.DB, offerID string) (*model.PlanOffer, error) {
 	var offer model.PlanOffer
-	result := db.Where("id = ?", offerID).First(&offer)
+	result := db.WithContext(ctx).Where("id = ?", offerID).First(&offer)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound

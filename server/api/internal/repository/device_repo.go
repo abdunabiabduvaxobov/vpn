@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -11,9 +12,9 @@ import (
 
 // FindDeviceByDeviceID looks up a device row by its OS-issued device_id.
 // Returns ErrNotFound when the device has never authenticated before.
-func FindDeviceByDeviceID(db *gorm.DB, deviceID string) (*model.Device, error) {
+func FindDeviceByDeviceID(ctx context.Context, db *gorm.DB, deviceID string) (*model.Device, error) {
 	var device model.Device
-	result := db.Where("device_id = ?", deviceID).First(&device)
+	result := db.WithContext(ctx).Where("device_id = ?", deviceID).First(&device)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -26,8 +27,8 @@ func FindDeviceByDeviceID(db *gorm.DB, deviceID string) (*model.Device, error) {
 // CreateDevice inserts a new device row.
 // Returns ErrDuplicate if the device_id already exists (caller should
 // FindDeviceByDeviceID first or handle the error).
-func CreateDevice(db *gorm.DB, device *model.Device) error {
-	result := db.Create(device)
+func CreateDevice(ctx context.Context, db *gorm.DB, device *model.Device) error {
+	result := db.WithContext(ctx).Create(device)
 	if result.Error != nil {
 		if isDuplicateError(result.Error) {
 			return ErrDuplicate
@@ -39,8 +40,8 @@ func CreateDevice(db *gorm.DB, device *model.Device) error {
 
 // TouchDevice updates last_seen_at to NOW() for the given device row.
 // Idempotent — safe to call on every guest login.
-func TouchDevice(db *gorm.DB, id string) error {
-	result := db.Model(&model.Device{}).
+func TouchDevice(ctx context.Context, db *gorm.DB, id string) error {
+	result := db.WithContext(ctx).Model(&model.Device{}).
 		Where("id = ?", id).
 		Update("last_seen_at", time.Now())
 	if result.Error != nil {
@@ -55,8 +56,8 @@ func TouchDevice(db *gorm.DB, id string) error {
 // SetDeviceSecretHash updates the device_secret_hash for an existing device
 // row. Used during the grace-period rollout: legacy devices that had no
 // secret on file get one populated on their first authenticated call.
-func SetDeviceSecretHash(db *gorm.DB, id, secretHash string) error {
-	result := db.Model(&model.Device{}).
+func SetDeviceSecretHash(ctx context.Context, db *gorm.DB, id, secretHash string) error {
+	result := db.WithContext(ctx).Model(&model.Device{}).
 		Where("id = ?", id).
 		Update("device_secret_hash", secretHash)
 	if result.Error != nil {
@@ -78,7 +79,7 @@ func SetDeviceSecretHash(db *gorm.DB, id, secretHash string) error {
 //
 // Pass empty strings for platform/model/secretHash to leave those columns
 // unchanged.
-func ReassignDeviceUser(db *gorm.DB, deviceID, newUserID, platform, model_, secretHash string) error {
+func ReassignDeviceUser(ctx context.Context, db *gorm.DB, deviceID, newUserID, platform, model_, secretHash string) error {
 	updates := map[string]interface{}{
 		"user_id":      newUserID,
 		"last_seen_at": time.Now(),
@@ -92,7 +93,7 @@ func ReassignDeviceUser(db *gorm.DB, deviceID, newUserID, platform, model_, secr
 	if secretHash != "" {
 		updates["device_secret_hash"] = secretHash
 	}
-	result := db.Model(&model.Device{}).
+	result := db.WithContext(ctx).Model(&model.Device{}).
 		Where("device_id = ?", deviceID).
 		Updates(updates)
 	if result.Error != nil {
@@ -107,17 +108,17 @@ func ReassignDeviceUser(db *gorm.DB, deviceID, newUserID, platform, model_, secr
 // CountDevicesByUser returns the number of devices currently bound to a user.
 // Used by the share-code endpoint to refuse generating a code when the owner
 // is already at their device cap (no point sharing if there is no slot left).
-func CountDevicesByUser(db *gorm.DB, userID string) (int64, error) {
+func CountDevicesByUser(ctx context.Context, db *gorm.DB, userID string) (int64, error) {
 	var count int64
-	result := db.Model(&model.Device{}).Where("user_id = ?", userID).Count(&count)
+	result := db.WithContext(ctx).Model(&model.Device{}).Where("user_id = ?", userID).Count(&count)
 	return count, result.Error
 }
 
 // ListDevicesByUser returns all devices bound to a user, newest first.
 // Exposed via /admin/users/:id/devices and the in-app "My devices" screen.
-func ListDevicesByUser(db *gorm.DB, userID string) ([]model.Device, error) {
+func ListDevicesByUser(ctx context.Context, db *gorm.DB, userID string) ([]model.Device, error) {
 	var devices []model.Device
-	result := db.Where("user_id = ?", userID).
+	result := db.WithContext(ctx).Where("user_id = ?", userID).
 		Order("last_seen_at DESC").
 		Find(&devices)
 	return devices, result.Error
@@ -130,8 +131,8 @@ func ListDevicesByUser(db *gorm.DB, userID string) ([]model.Device, error) {
 // Used by the in-app "Remove device" UI so a plan owner can free a slot
 // after a friend's iOS reinstall (which generates a fresh IDFV) leaves a
 // ghost device row consuming a quota slot.
-func DeleteDeviceByOwner(db *gorm.DB, deviceRowID, ownerUserID string) error {
-	result := db.Where("id = ? AND user_id = ?", deviceRowID, ownerUserID).
+func DeleteDeviceByOwner(ctx context.Context, db *gorm.DB, deviceRowID, ownerUserID string) error {
+	result := db.WithContext(ctx).Where("id = ? AND user_id = ?", deviceRowID, ownerUserID).
 		Delete(&model.Device{})
 	if result.Error != nil {
 		return result.Error
@@ -145,9 +146,9 @@ func DeleteDeviceByOwner(db *gorm.DB, deviceRowID, ownerUserID string) error {
 // FindDeviceByID looks up a device row by its UUID primary key. Used by
 // the admin handler to verify the declared user matches the device's
 // actual owner before issuing a delete — see AdminDeleteUserDevice.
-func FindDeviceByID(db *gorm.DB, id string) (*model.Device, error) {
+func FindDeviceByID(ctx context.Context, db *gorm.DB, id string) (*model.Device, error) {
 	var device model.Device
-	result := db.Where("id = ?", id).First(&device)
+	result := db.WithContext(ctx).Where("id = ?", id).First(&device)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -177,11 +178,11 @@ func FindDeviceByID(db *gorm.DB, id string) (*model.Device, error) {
 //     typically seconds, limited by the user opening the app
 //
 // Returns the number of rows updated (0 on no-op).
-func ClearDeviceSecretHashesForUser(db *gorm.DB, userID string) (int64, error) {
+func ClearDeviceSecretHashesForUser(ctx context.Context, db *gorm.DB, userID string) (int64, error) {
 	if db == nil {
 		return 0, errNilDB
 	}
-	result := db.Model(&model.Device{}).
+	result := db.WithContext(ctx).Model(&model.Device{}).
 		Where("user_id = ? AND device_secret_hash <> ''", userID).
 		Update("device_secret_hash", "")
 	if result.Error != nil {
@@ -194,8 +195,8 @@ func ClearDeviceSecretHashesForUser(db *gorm.DB, userID string) (int64, error) {
 // The admin handler uses this when evicting a device from any user's
 // account (e.g. after a support request for a stolen phone). Returns
 // ErrNotFound when no row matches the id.
-func AdminDeleteDevice(db *gorm.DB, deviceRowID string) error {
-	result := db.Where("id = ?", deviceRowID).Delete(&model.Device{})
+func AdminDeleteDevice(ctx context.Context, db *gorm.DB, deviceRowID string) error {
+	result := db.WithContext(ctx).Where("id = ?", deviceRowID).Delete(&model.Device{})
 	if result.Error != nil {
 		return result.Error
 	}
@@ -209,8 +210,8 @@ func AdminDeleteDevice(db *gorm.DB, deviceRowID string) error {
 // given cutoff. Called by the background scheduler to free quota slots
 // occupied by devices the user has stopped using (factory reset, lost
 // phone, friend who never came back).
-func DeleteStaleDevices(db *gorm.DB, olderThan time.Time) (int64, error) {
-	result := db.Where("last_seen_at < ?", olderThan).Delete(&model.Device{})
+func DeleteStaleDevices(ctx context.Context, db *gorm.DB, olderThan time.Time) (int64, error) {
+	result := db.WithContext(ctx).Where("last_seen_at < ?", olderThan).Delete(&model.Device{})
 	return result.RowsAffected, result.Error
 }
 
@@ -225,8 +226,8 @@ func DeleteStaleDevices(db *gorm.DB, olderThan time.Time) (int64, error) {
 // so the two operations succeed or fail atomically.
 //
 // Parameterized — no string concatenation (T-2-SQLi defense in depth).
-func ReassignDevicesByUserID(db *gorm.DB, oldUserID, newUserID string) (int64, error) {
-	result := db.Model(&model.Device{}).
+func ReassignDevicesByUserID(ctx context.Context, db *gorm.DB, oldUserID, newUserID string) (int64, error) {
+	result := db.WithContext(ctx).Model(&model.Device{}).
 		Where("user_id = ?", oldUserID).
 		Updates(map[string]interface{}{
 			"user_id":      newUserID,

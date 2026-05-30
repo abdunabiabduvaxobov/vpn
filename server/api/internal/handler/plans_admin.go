@@ -157,14 +157,14 @@ func bustPlansCacheBest(c *fiber.Ctx, redisClient *redis.Client, logger *zap.Log
 // active_user_count) per ADR §19.7.1.
 func AdminListPlans(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		plans, err := repository.ListAllPlans(db)
+		plans, err := repository.ListAllPlans(c.Context(), db)
 		if err != nil {
 			logger.Error("AdminListPlans", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
 		out := make([]fiber.Map, 0, len(plans))
 		for _, p := range plans {
-			activeUsers, _ := repository.CountActiveUsersOnPlan(db, p.ID)
+			activeUsers, _ := repository.CountActiveUsersOnPlan(c.Context(), db, p.ID)
 			var serverCount, offerCount int64
 			_ = db.Table("plan_servers").Where("plan_id = ?", p.ID).Count(&serverCount).Error
 			_ = db.Table("plan_offers").Where("plan_id = ?", p.ID).Count(&offerCount).Error
@@ -239,11 +239,11 @@ func AdminCreatePlan(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 
 		// One transaction so plan + plan_servers + plan_offers all-or-nothing.
 		err := db.Transaction(func(tx *gorm.DB) error {
-			if err := repository.CreatePlan(tx, plan); err != nil {
+			if err := repository.CreatePlan(c.Context(), tx, plan); err != nil {
 				return err
 			}
 			for _, sid := range req.ServerIDs {
-				if err := repository.AddPlanServer(tx, plan.ID, sid); err != nil {
+				if err := repository.AddPlanServer(c.Context(), tx, plan.ID, sid); err != nil {
 					return err
 				}
 			}
@@ -256,7 +256,7 @@ func AdminCreatePlan(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 					LavaOfferID: of.LavaOfferID,
 					IsActive:    true,
 				}
-				if err := repository.CreatePlanOffer(tx, offer); err != nil {
+				if err := repository.CreatePlanOffer(c.Context(), tx, offer); err != nil {
 					return err
 				}
 			}
@@ -276,7 +276,7 @@ func AdminCreatePlan(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 func AdminGetPlan(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		id := c.Params("id")
-		plan, err := repository.FindPlanByID(db, id)
+		plan, err := repository.FindPlanByID(c.Context(), db, id)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "plan not found"})
@@ -284,9 +284,9 @@ func AdminGetPlan(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			logger.Error("AdminGetPlan", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
-		servers, _ := repository.ListPlanServersJoined(db, id)
-		offers, _ := repository.ListOffersForPlan(db, id)
-		activeUsers, _ := repository.CountActiveUsersOnPlan(db, id)
+		servers, _ := repository.ListPlanServersJoined(c.Context(), db, id)
+		offers, _ := repository.ListOffersForPlan(c.Context(), db, id)
+		activeUsers, _ := repository.CountActiveUsersOnPlan(c.Context(), db, id)
 		return c.JSON(fiber.Map{
 			"data": fiber.Map{
 				"id":                plan.ID,
@@ -352,7 +352,7 @@ func AdminUpdatePlan(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 		}
 		if req.IsActive != nil {
 			// D-32 §4 / ADR §19.7.4: cannot deactivate the system plan.
-			plan, ferr := repository.FindPlanByID(db, id)
+			plan, ferr := repository.FindPlanByID(c.Context(), db, id)
 			if ferr != nil {
 				if errors.Is(ferr, repository.ErrNotFound) {
 					return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "plan not found"})
@@ -366,7 +366,7 @@ func AdminUpdatePlan(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 			updates["is_active"] = *req.IsActive
 		}
 
-		updated, err := repository.UpdatePlan(db, id, updates)
+		updated, err := repository.UpdatePlan(c.Context(), db, id, updates)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "plan not found"})
@@ -387,7 +387,7 @@ func AdminDeletePlan(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 		id := c.Params("id")
 		force := c.Query("force") == "true"
 
-		plan, err := repository.FindPlanByID(db, id)
+		plan, err := repository.FindPlanByID(c.Context(), db, id)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "plan not found"})
@@ -402,7 +402,7 @@ func AdminDeletePlan(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "cannot delete system plan"})
 		}
 
-		activeUsers, _ := repository.CountActiveUsersOnPlan(db, id)
+		activeUsers, _ := repository.CountActiveUsersOnPlan(c.Context(), db, id)
 		if activeUsers > 0 && !force {
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
 				"error":          "plan has active users — use ?force=true to confirm",
@@ -410,7 +410,7 @@ func AdminDeletePlan(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 			})
 		}
 
-		if err := repository.SoftDeletePlan(db, id); err != nil {
+		if err := repository.SoftDeletePlan(c.Context(), db, id); err != nil {
 			if errors.Is(err, repository.ErrSystemPlan) {
 				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "cannot delete system plan"})
 			}
@@ -440,7 +440,7 @@ func AdminReplacePlanServers(logger *zap.Logger, db *gorm.DB, redisClient *redis
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 		}
-		if _, err := repository.FindPlanByID(db, planID); err != nil {
+		if _, err := repository.FindPlanByID(c.Context(), db, planID); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "plan not found"})
 			}
@@ -460,7 +460,7 @@ func AdminReplacePlanServers(logger *zap.Logger, db *gorm.DB, redisClient *redis
 			logger.Error("AdminReplacePlanServers validateServerIDs", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
-		if err := repository.ReplacePlanServers(db, planID, req.ServerIDs); err != nil {
+		if err := repository.ReplacePlanServers(c.Context(), db, planID, req.ServerIDs); err != nil {
 			logger.Error("AdminReplacePlanServers", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
@@ -475,7 +475,7 @@ func AdminAddPlanServer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Clie
 	return func(c *fiber.Ctx) error {
 		planID := c.Params("id")
 		serverID := c.Params("server_id")
-		if _, err := repository.FindPlanByID(db, planID); err != nil {
+		if _, err := repository.FindPlanByID(c.Context(), db, planID); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "plan not found"})
 			}
@@ -487,7 +487,7 @@ func AdminAddPlanServer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Clie
 		if n == 0 {
 			return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": "server not found or inactive"})
 		}
-		if err := repository.AddPlanServer(db, planID, serverID); err != nil {
+		if err := repository.AddPlanServer(c.Context(), db, planID, serverID); err != nil {
 			logger.Error("AdminAddPlanServer", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
@@ -504,7 +504,7 @@ func AdminRemovePlanServer(logger *zap.Logger, db *gorm.DB, redisClient *redis.C
 	return func(c *fiber.Ctx) error {
 		planID := c.Params("id")
 		serverID := c.Params("server_id")
-		if err := repository.RemovePlanServer(db, planID, serverID); err != nil {
+		if err := repository.RemovePlanServer(c.Context(), db, planID, serverID); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "pairing not found"})
 			}
@@ -520,14 +520,14 @@ func AdminRemovePlanServer(logger *zap.Logger, db *gorm.DB, redisClient *redis.C
 func AdminListPlanOffers(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		planID := c.Params("id")
-		if _, err := repository.FindPlanByID(db, planID); err != nil {
+		if _, err := repository.FindPlanByID(c.Context(), db, planID); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "plan not found"})
 			}
 			logger.Error("AdminListPlanOffers find plan", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
-		offers, err := repository.ListOffersForPlan(db, planID)
+		offers, err := repository.ListOffersForPlan(c.Context(), db, planID)
 		if err != nil {
 			logger.Error("AdminListPlanOffers", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
@@ -550,7 +550,7 @@ func AdminCreatePlanOffer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Cl
 		if err := validateOfferTuple(req.Periodicity, req.Currency, req.Amount); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
-		if _, err := repository.FindPlanByID(db, planID); err != nil {
+		if _, err := repository.FindPlanByID(c.Context(), db, planID); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "plan not found"})
 			}
@@ -565,7 +565,7 @@ func AdminCreatePlanOffer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Cl
 			LavaOfferID: req.LavaOfferID,
 			IsActive:    true,
 		}
-		if err := repository.CreatePlanOffer(db, offer); err != nil {
+		if err := repository.CreatePlanOffer(c.Context(), db, offer); err != nil {
 			// Likely partial-unique violation on (plan, periodicity, currency)
 			// WHERE is_active=true. Surface as 409 so the admin UI can prompt
 			// the operator to use /replace for price versioning.
@@ -611,7 +611,7 @@ func AdminUpdatePlanOffer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Cl
 		if req.IsActive != nil {
 			updates["is_active"] = *req.IsActive
 		}
-		updated, err := repository.UpdatePlanOffer(db, offerID, updates)
+		updated, err := repository.UpdatePlanOffer(c.Context(), db, offerID, updates)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "offer not found"})
@@ -628,7 +628,7 @@ func AdminUpdatePlanOffer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Cl
 func AdminDeletePlanOffer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		offerID := c.Params("offer_id")
-		if err := repository.DeletePlanOffer(db, offerID); err != nil {
+		if err := repository.DeletePlanOffer(c.Context(), db, offerID); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "offer not found"})
 			}
@@ -658,7 +658,7 @@ func AdminReplacePlanOffer(logger *zap.Logger, db *gorm.DB, redisClient *redis.C
 		// Load the old offer to inherit periodicity + currency. UpdatePlanOffer
 		// with an empty updates map short-circuits to a pure SELECT via the
 		// findOfferByID internal helper (see plan_repo.go::UpdatePlanOffer:373).
-		oldOffer, err := repository.UpdatePlanOffer(db, oldOfferID, map[string]interface{}{})
+		oldOffer, err := repository.UpdatePlanOffer(c.Context(), db, oldOfferID, map[string]interface{}{})
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "offer not found"})
@@ -678,7 +678,7 @@ func AdminReplacePlanOffer(logger *zap.Logger, db *gorm.DB, redisClient *redis.C
 			LavaOfferID: req.LavaOfferID,
 			IsActive:    true,
 		}
-		saved, err := repository.ReplaceOffer(db, oldOfferID, newOffer)
+		saved, err := repository.ReplaceOffer(c.Context(), db, oldOfferID, newOffer)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "offer not found"})

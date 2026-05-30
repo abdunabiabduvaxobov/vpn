@@ -36,18 +36,18 @@ func GetSubscription(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID := c.Locals("user_id").(string)
 
-		sub, err := repository.FindSubscriptionByUserID(db, userID)
+		sub, err := repository.FindSubscriptionByUserID(c.Context(), db, userID)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				// No subscription — return system-plan defaults.
-				systemPlanID, sperr := repository.FindSystemPlanID(db)
+				systemPlanID, sperr := repository.FindSystemPlanID(c.Context(), db)
 				if sperr != nil {
 					logger.Error("GetSubscription: FindSystemPlanID failed", zap.Error(sperr))
 					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 						"error": "internal server error",
 					})
 				}
-				systemPlan, sperr := repository.FindPlanByID(db, systemPlanID)
+				systemPlan, sperr := repository.FindPlanByID(c.Context(), db, systemPlanID)
 				if sperr != nil {
 					logger.Error("GetSubscription: FindPlanByID(system) failed", zap.Error(sperr))
 					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -69,21 +69,21 @@ func GetSubscription(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		}
 
 		// Active subscription — read limits from the matching plan row.
-		plan, perr := repository.FindPlanByCode(db, sub.Plan)
+		plan, perr := repository.FindPlanByCode(c.Context(), db, sub.Plan)
 		if perr != nil {
 			// Plan was soft-deleted — fall back to system plan for the limits
 			// (the user keeps Pro until expiry per ADR §19.10; display the
 			// numeric limits from the system plan to avoid 500).
 			logger.Warn("GetSubscription: FindPlanByCode failed; falling back to system plan",
 				zap.String("plan", sub.Plan), zap.Error(perr))
-			systemPlanID, sperr := repository.FindSystemPlanID(db)
+			systemPlanID, sperr := repository.FindSystemPlanID(c.Context(), db)
 			if sperr != nil {
 				logger.Error("GetSubscription: FindSystemPlanID failed (fallback)", zap.Error(sperr))
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": "internal server error",
 				})
 			}
-			plan, sperr = repository.FindPlanByID(db, systemPlanID)
+			plan, sperr = repository.FindPlanByID(c.Context(), db, systemPlanID)
 			if sperr != nil {
 				logger.Error("GetSubscription: FindPlanByID(system) failed (fallback)", zap.Error(sperr))
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -111,7 +111,7 @@ func GetAccount(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID := c.Locals("user_id").(string)
 
-		user, err := repository.FindUserByID(db, userID)
+		user, err := repository.FindUserByID(c.Context(), db, userID)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
@@ -166,7 +166,7 @@ func PatchAccount(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		if err := repository.UpdateUserName(db, userID, name); err != nil {
+		if err := repository.UpdateUserName(c.Context(), db, userID, name); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 					"error": "user not found",

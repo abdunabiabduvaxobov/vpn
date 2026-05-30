@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 
 	"vpnapp/server/api/internal/model"
@@ -9,9 +10,9 @@ import (
 )
 
 // FindSubscriptionByUserID returns the most recent active subscription for a user.
-func FindSubscriptionByUserID(db *gorm.DB, userID string) (*model.Subscription, error) {
+func FindSubscriptionByUserID(ctx context.Context, db *gorm.DB, userID string) (*model.Subscription, error) {
 	var sub model.Subscription
-	result := db.Where("user_id = ? AND is_active = ?", userID, true).
+	result := db.WithContext(ctx).Where("user_id = ? AND is_active = ?", userID, true).
 		Order("started_at DESC").
 		First(&sub)
 	if result.Error != nil {
@@ -24,8 +25,8 @@ func FindSubscriptionByUserID(db *gorm.DB, userID string) (*model.Subscription, 
 }
 
 // CreateSubscription inserts a new subscription record.
-func CreateSubscription(db *gorm.DB, sub *model.Subscription) error {
-	return db.Create(sub).Error
+func CreateSubscription(ctx context.Context, db *gorm.DB, sub *model.Subscription) error {
+	return db.WithContext(ctx).Create(sub).Error
 }
 
 // CreateOrUpdateSubscription upserts a subscription matched on user_id.
@@ -33,7 +34,10 @@ func CreateSubscription(db *gorm.DB, sub *model.Subscription) error {
 // otherwise a new row is inserted.
 //
 // Phase 3 (D-11): writes lava_contract_id; the legacy Stripe column is gone.
-func CreateOrUpdateSubscription(db *gorm.DB, sub *model.Subscription) error {
+func CreateOrUpdateSubscription(ctx context.Context, db *gorm.DB, sub *model.Subscription) error {
+	// Thread the request ctx onto the connection once; the lookup, the insert
+	// branch, and the update branch below all reuse the same context-bound session.
+	db = db.WithContext(ctx)
 	var existing model.Subscription
 	result := db.Where("user_id = ? AND is_active = ?", sub.UserID, true).
 		Order("started_at DESC").
@@ -57,8 +61,8 @@ func CreateOrUpdateSubscription(db *gorm.DB, sub *model.Subscription) error {
 }
 
 // DeactivateSubscription marks a subscription as inactive by its primary key.
-func DeactivateSubscription(db *gorm.DB, subID string) error {
-	result := db.Model(&model.Subscription{}).
+func DeactivateSubscription(ctx context.Context, db *gorm.DB, subID string) error {
+	result := db.WithContext(ctx).Model(&model.Subscription{}).
 		Where("id = ?", subID).
 		Update("is_active", false)
 	if result.Error != nil {

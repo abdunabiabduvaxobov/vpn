@@ -74,12 +74,12 @@ func ListPlansPublic(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 		}
 
 		// Miss — query DB.
-		plans, err := repository.ListActivePlans(db)
+		plans, err := repository.ListActivePlans(c.Context(), db)
 		if err != nil {
 			logger.Error("/plans: ListActivePlans", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
-		offers, err := repository.ListActiveOffersForPublic(db)
+		offers, err := repository.ListActiveOffersForPublic(c.Context(), db)
 		if err != nil {
 			logger.Error("/plans: ListActiveOffersForPublic", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
@@ -100,7 +100,7 @@ func ListPlansPublic(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 
 		out := make([]publicPlan, 0, len(plans))
 		for _, p := range plans {
-			countries, err := repository.ListPlanServerCountries(db, p.ID)
+			countries, err := repository.ListPlanServerCountries(c.Context(), db, p.ID)
 			if err != nil {
 				logger.Warn("/plans: ListPlanServerCountries failed (using empty)",
 					zap.String("plan_id", p.ID), zap.Error(err))

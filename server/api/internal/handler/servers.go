@@ -155,7 +155,7 @@ func ListServersCached(logger *zap.Logger, db *gorm.DB, redisClient *redis.Clien
 			// Build the allowed-ID set from the live, sub-ms indexed JOIN
 			// (Fork 3: do NOT cache plan_servers membership), then intersect it
 			// with the cached full blob so the cache win benefits non-admins too.
-			allowed, perr := repository.ListServersForPlan(db, planID)
+			allowed, perr := repository.ListServersForPlan(c.Context(), db, planID)
 			if perr != nil {
 				logger.Error("failed to list servers for plan", zap.Error(perr))
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -206,7 +206,7 @@ func loadActiveServersCached(c *fiber.Ctx, db *gorm.DB, redisClient *redis.Clien
 	}
 
 	// Miss / outage / corrupt — load the heavy blob from the DB.
-	servers, err := repository.ListActiveServers(db)
+	servers, err := repository.ListActiveServers(c.Context(), db)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +241,7 @@ func GetServerConfig(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.
 					"error": "internal server error",
 				})
 			}
-			allowed, aerr := repository.IsServerAllowedForPlan(db, planID, serverID)
+			allowed, aerr := repository.IsServerAllowedForPlan(c.Context(), db, planID, serverID)
 			if aerr != nil {
 				logger.Error("failed to check plan-server pairing",
 					zap.String("plan_id", planID), zap.String("server_id", serverID), zap.Error(aerr))
@@ -258,7 +258,7 @@ func GetServerConfig(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.
 			}
 		}
 
-		server, err := repository.FindServerByID(db, serverID)
+		server, err := repository.FindServerByID(c.Context(), db, serverID)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
@@ -461,7 +461,7 @@ func resolveUserPlanID(c *fiber.Ctx, db *gorm.DB) (string, error) {
 	if u, ok := c.Locals("user").(*model.User); ok && u != nil {
 		return u.PlanID, nil
 	}
-	user, err := repository.FindUserByID(db, userID)
+	user, err := repository.FindUserByID(c.Context(), db, userID)
 	if err != nil {
 		return "", err
 	}

@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -24,8 +25,8 @@ import (
 // transaction, a Step-4 failure rolls back the Step-3 dedup record, allowing
 // the retry to bypass idempotency. Caller wraps THIS function's call OUTSIDE
 // any larger TX.
-func InsertWebhookEventIfNew(db *gorm.DB, event *model.LavaWebhookEvent) (bool, error) {
-	result := db.Clauses(clause.OnConflict{DoNothing: true}).Create(event)
+func InsertWebhookEventIfNew(ctx context.Context, db *gorm.DB, event *model.LavaWebhookEvent) (bool, error) {
+	result := db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(event)
 	if result.Error != nil {
 		return false, result.Error
 	}
@@ -37,21 +38,21 @@ func InsertWebhookEventIfNew(db *gorm.DB, event *model.LavaWebhookEvent) (bool, 
 // Best-effort — caller does NOT propagate error from this call (the side
 // effect of failing here is a stale forensic record; the 500 returned to
 // lava ensures retry handles the real work).
-func MarkWebhookProcessed(db *gorm.DB, eventID string, errStr *string) error {
+func MarkWebhookProcessed(ctx context.Context, db *gorm.DB, eventID string, errStr *string) error {
 	now := time.Now()
 	updates := map[string]interface{}{
 		"processed_at": &now,
 		"error":        errStr,
 	}
-	return db.Model(&model.LavaWebhookEvent{}).Where("id = ?", eventID).Updates(updates).Error
+	return db.WithContext(ctx).Model(&model.LavaWebhookEvent{}).Where("id = ?", eventID).Updates(updates).Error
 }
 
 // FindLavaContractByContractID returns the lava-side recurring contract row.
 // Used by webhook handlers to resolve renewals (contractId on
 // subscription.recurring.* events) or cancellations.
-func FindLavaContractByContractID(db *gorm.DB, contractID string) (*model.LavaContract, error) {
+func FindLavaContractByContractID(ctx context.Context, db *gorm.DB, contractID string) (*model.LavaContract, error) {
 	var c model.LavaContract
-	result := db.Where("contract_id = ?", contractID).First(&c)
+	result := db.WithContext(ctx).Where("contract_id = ?", contractID).First(&c)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -68,8 +69,8 @@ func FindLavaContractByContractID(db *gorm.DB, contractID string) (*model.LavaCo
 // IMPORTANT: write-once fields (user_id, offer_id, plan, periodicity, currency,
 // started_at) are NOT in the DoUpdates list — a hostile or buggy webhook
 // payload cannot rewrite them after the contract is first observed.
-func UpsertLavaContract(db *gorm.DB, c *model.LavaContract) error {
-	return db.Clauses(clause.OnConflict{
+func UpsertLavaContract(ctx context.Context, db *gorm.DB, c *model.LavaContract) error {
+	return db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "contract_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"is_active",

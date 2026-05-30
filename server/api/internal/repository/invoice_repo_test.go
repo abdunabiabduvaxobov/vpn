@@ -1,6 +1,7 @@
 package repository_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -61,7 +62,7 @@ func TestCreateInvoice_DefaultsStatusToPending(t *testing.T) {
 		Amount:        5.0,
 		// Status left empty intentionally.
 	}
-	if err := repository.CreateInvoice(db, inv); err != nil {
+	if err := repository.CreateInvoice(context.Background(), db, inv); err != nil {
 		t.Fatalf("CreateInvoice: %v", err)
 	}
 	if inv.Status != "pending" {
@@ -72,12 +73,12 @@ func TestCreateInvoice_DefaultsStatusToPending(t *testing.T) {
 func TestFindInvoiceByID_FoundAndNotFound(t *testing.T) {
 	db := setupInvoiceRepoDB(t)
 	inv := &model.Invoice{ID: uuid.NewString(), UserID: uuid.NewString(), LavaInvoiceID: "lava-x", OfferID: "off", Plan: "pro", Periodicity: "MONTHLY", Currency: "USD", Amount: 5, Status: "pending"}
-	_ = repository.CreateInvoice(db, inv)
-	got, err := repository.FindInvoiceByID(db, inv.ID)
+	_ = repository.CreateInvoice(context.Background(), db, inv)
+	got, err := repository.FindInvoiceByID(context.Background(), db, inv.ID)
 	if err != nil || got.LavaInvoiceID != "lava-x" {
 		t.Errorf("unexpected: %+v err=%v", got, err)
 	}
-	if _, err := repository.FindInvoiceByID(db, "missing"); err != repository.ErrNotFound {
+	if _, err := repository.FindInvoiceByID(context.Background(), db, "missing"); err != repository.ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -85,8 +86,8 @@ func TestFindInvoiceByID_FoundAndNotFound(t *testing.T) {
 func TestFindInvoiceByLavaID_HappyPath(t *testing.T) {
 	db := setupInvoiceRepoDB(t)
 	inv := &model.Invoice{ID: uuid.NewString(), UserID: uuid.NewString(), LavaInvoiceID: "lava-reverse", OfferID: "off", Plan: "pro", Periodicity: "MONTHLY", Currency: "USD", Amount: 5, Status: "pending"}
-	_ = repository.CreateInvoice(db, inv)
-	got, err := repository.FindInvoiceByLavaID(db, "lava-reverse")
+	_ = repository.CreateInvoice(context.Background(), db, inv)
+	got, err := repository.FindInvoiceByLavaID(context.Background(), db, "lava-reverse")
 	if err != nil || got.ID != inv.ID {
 		t.Errorf("unexpected: %+v err=%v", got, err)
 	}
@@ -97,25 +98,25 @@ func TestFindActivePendingInvoice_WithinAndOutsideWindow(t *testing.T) {
 	uid := uuid.NewString()
 	// Recent pending — inside the 60s window.
 	recent := &model.Invoice{ID: uuid.NewString(), UserID: uid, LavaInvoiceID: "rec-1", OfferID: "off-a", Plan: "pro", Periodicity: "MONTHLY", Currency: "USD", Amount: 5, Status: "pending"}
-	if err := repository.CreateInvoice(db, recent); err != nil {
+	if err := repository.CreateInvoice(context.Background(), db, recent); err != nil {
 		t.Fatalf("seed recent: %v", err)
 	}
 	// Outside-window pending: manually backdate by raw UPDATE.
 	old := &model.Invoice{ID: uuid.NewString(), UserID: uid, LavaInvoiceID: "old-1", OfferID: "off-b", Plan: "pro", Periodicity: "MONTHLY", Currency: "USD", Amount: 5, Status: "pending"}
-	if err := repository.CreateInvoice(db, old); err != nil {
+	if err := repository.CreateInvoice(context.Background(), db, old); err != nil {
 		t.Fatalf("seed old: %v", err)
 	}
 	if err := db.Exec("UPDATE invoices SET created_at = ? WHERE id = ?", time.Now().Add(-5*time.Minute), old.ID).Error; err != nil {
 		t.Fatalf("backdate: %v", err)
 	}
 
-	got, err := repository.FindActivePendingInvoice(db, uid, "off-a", 60*time.Second)
+	got, err := repository.FindActivePendingInvoice(context.Background(), db, uid, "off-a", 60*time.Second)
 	if err != nil || got.ID != recent.ID {
 		t.Errorf("expected to find recent, got %+v err=%v", got, err)
 	}
 
 	// Outside the window — must return ErrNotFound.
-	if _, err := repository.FindActivePendingInvoice(db, uid, "off-b", 60*time.Second); err != repository.ErrNotFound {
+	if _, err := repository.FindActivePendingInvoice(context.Background(), db, uid, "off-b", 60*time.Second); err != repository.ErrNotFound {
 		t.Errorf("expected ErrNotFound for backdated row, got %v", err)
 	}
 }
@@ -123,15 +124,15 @@ func TestFindActivePendingInvoice_WithinAndOutsideWindow(t *testing.T) {
 func TestUpdateInvoiceStatus_HappyAndMissing(t *testing.T) {
 	db := setupInvoiceRepoDB(t)
 	inv := &model.Invoice{ID: uuid.NewString(), UserID: uuid.NewString(), LavaInvoiceID: "lava-u", OfferID: "off", Plan: "pro", Periodicity: "MONTHLY", Currency: "USD", Amount: 5, Status: "pending"}
-	_ = repository.CreateInvoice(db, inv)
-	if err := repository.UpdateInvoiceStatus(db, inv.ID, "paid"); err != nil {
+	_ = repository.CreateInvoice(context.Background(), db, inv)
+	if err := repository.UpdateInvoiceStatus(context.Background(), db, inv.ID, "paid"); err != nil {
 		t.Fatalf("UpdateInvoiceStatus: %v", err)
 	}
-	got, _ := repository.FindInvoiceByID(db, inv.ID)
+	got, _ := repository.FindInvoiceByID(context.Background(), db, inv.ID)
 	if got.Status != "paid" {
 		t.Errorf("expected status=paid, got %q", got.Status)
 	}
-	if err := repository.UpdateInvoiceStatus(db, "missing", "paid"); err != repository.ErrNotFound {
+	if err := repository.UpdateInvoiceStatus(context.Background(), db, "missing", "paid"); err != repository.ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }

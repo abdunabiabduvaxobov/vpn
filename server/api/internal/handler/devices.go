@@ -77,7 +77,7 @@ func CreateShareCode(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.
 		userID := c.Locals("user_id").(string)
 
 		// Refuse if a code is already outstanding for this user.
-		active, err := repository.CountActiveLinkCodesForUser(db, userID)
+		active, err := repository.CountActiveLinkCodesForUser(c.Context(), db, userID)
 		if err != nil {
 			logger.Error("share-code: count active failed", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -91,7 +91,7 @@ func CreateShareCode(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.
 		}
 
 		// Refuse if the user's device cap leaves no room for an additional device.
-		user, err := repository.FindUserByID(db, userID)
+		user, err := repository.FindUserByID(c.Context(), db, userID)
 		if err != nil {
 			logger.Error("share-code: load user failed", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -99,18 +99,18 @@ func CreateShareCode(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.
 			})
 		}
 		// PAY-11 / D-24: read device cap from the plan row via the user's plan_id.
-		plan, perr := repository.FindPlanByID(db, user.PlanID)
+		plan, perr := repository.FindPlanByID(c.Context(), db, user.PlanID)
 		if perr != nil {
 			logger.Warn("CreateShareCode: FindPlanByID failed; falling back to system plan",
 				zap.String("plan_id", user.PlanID), zap.Error(perr))
-			systemPlanID, sperr := repository.FindSystemPlanID(db)
+			systemPlanID, sperr := repository.FindSystemPlanID(c.Context(), db)
 			if sperr != nil {
 				logger.Error("CreateShareCode: FindSystemPlanID failed", zap.Error(sperr))
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": "internal server error",
 				})
 			}
-			plan, sperr = repository.FindPlanByID(db, systemPlanID)
+			plan, sperr = repository.FindPlanByID(c.Context(), db, systemPlanID)
 			if sperr != nil {
 				logger.Error("CreateShareCode: FindPlanByID(system) failed", zap.Error(sperr))
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -123,7 +123,7 @@ func CreateShareCode(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.
 			MaxServers int
 		}{MaxDevices: plan.MaxDevices, MaxServers: plan.MaxServers}
 		if limits.MaxDevices != model.UnlimitedDevices {
-			deviceCount, err := repository.CountDevicesByUser(db, userID)
+			deviceCount, err := repository.CountDevicesByUser(c.Context(), db, userID)
 			if err != nil {
 				logger.Error("share-code: count devices failed", zap.Error(err))
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -162,7 +162,7 @@ func CreateShareCode(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.
 				UserID:    userID,
 				ExpiresAt: time.Now().Add(cfg.LinkCodeTTL),
 			}
-			if err := repository.CreateLinkCode(db, lc); err != nil {
+			if err := repository.CreateLinkCode(c.Context(), db, lc); err != nil {
 				if errors.Is(err, repository.ErrDuplicate) {
 					continue // try again with a different number
 				}
@@ -251,13 +251,13 @@ func LinkDevice(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 			// 1. Consume the code atomically. The repository helper itself
 			//    runs a sub-transaction; nesting is fine because GORM will
 			//    re-use the outer transaction's connection.
-			lc, err := repository.ConsumeLinkCode(tx, req.Code)
+			lc, err := repository.ConsumeLinkCode(c.Context(), tx, req.Code)
 			if err != nil {
 				return err
 			}
 
 			// 2. Load the owner row.
-			loaded, err := repository.FindUserByID(tx, lc.UserID)
+			loaded, err := repository.FindUserByID(c.Context(), tx, lc.UserID)
 			if err != nil {
 				if errors.Is(err, repository.ErrNotFound) {
 					return errOwnerMissing
@@ -267,15 +267,15 @@ func LinkDevice(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 			owner = loaded
 
 			// PAY-11 / D-24: read device cap from the owner's plan row via the tx.
-			plan, perr := repository.FindPlanByID(tx, owner.PlanID)
+			plan, perr := repository.FindPlanByID(c.Context(), tx, owner.PlanID)
 			if perr != nil {
 				logger.Warn("LinkDevice: FindPlanByID failed; falling back to system plan",
 					zap.String("plan_id", owner.PlanID), zap.Error(perr))
-				systemPlanID, sperr := repository.FindSystemPlanID(tx)
+				systemPlanID, sperr := repository.FindSystemPlanID(c.Context(), tx)
 				if sperr != nil {
 					return fmt.Errorf("link: find system plan: %w", sperr)
 				}
-				plan, sperr = repository.FindPlanByID(tx, systemPlanID)
+				plan, sperr = repository.FindPlanByID(c.Context(), tx, systemPlanID)
 				if sperr != nil {
 					return fmt.Errorf("link: find system plan row: %w", sperr)
 				}
@@ -290,7 +290,7 @@ func LinkDevice(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 			//    bound to the owner (link replay): otherwise we'd double
 			//    count it after the reassign/insert below.
 			var existingDevice *model.Device
-			if d, err := repository.FindDeviceByDeviceID(tx, req.DeviceID); err == nil {
+			if d, err := repository.FindDeviceByDeviceID(c.Context(), tx, req.DeviceID); err == nil {
 				existingDevice = d
 			} else if !errors.Is(err, repository.ErrNotFound) {
 				return fmt.Errorf("link: lookup existing device: %w", err)
@@ -313,7 +313,7 @@ func LinkDevice(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 			}
 
 			if limits.MaxDevices != model.UnlimitedDevices {
-				count, err := repository.CountDevicesByUser(tx, owner.ID)
+				count, err := repository.CountDevicesByUser(c.Context(), tx, owner.ID)
 				if err != nil {
 					return fmt.Errorf("link: count devices: %w", err)
 				}
@@ -330,7 +330,7 @@ func LinkDevice(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 				if existingDevice.UserID != owner.ID {
 					orphanedUserID = existingDevice.UserID
 				}
-				if err := repository.ReassignDeviceUser(tx, req.DeviceID, owner.ID, req.Platform, req.Model, secretHash); err != nil {
+				if err := repository.ReassignDeviceUser(c.Context(), tx, req.DeviceID, owner.ID, req.Platform, req.Model, secretHash); err != nil {
 					return fmt.Errorf("link: reassign device: %w", err)
 				}
 			} else {
@@ -341,7 +341,7 @@ func LinkDevice(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 					Platform:         req.Platform,
 					Model:            req.Model,
 				}
-				if err := repository.CreateDevice(tx, &device); err != nil {
+				if err := repository.CreateDevice(c.Context(), tx, &device); err != nil {
 					return fmt.Errorf("link: create device: %w", err)
 				}
 			}
@@ -405,7 +405,7 @@ func LinkDevice(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 		// shells. Failure here is non-fatal; the cleanup scheduler can
 		// pick up the orphan later.
 		if orphanedUserID != "" && orphanedUserID != owner.ID {
-			if err := repository.DeleteOrphanGuestUser(db, orphanedUserID); err != nil && !errors.Is(err, repository.ErrNotFound) {
+			if err := repository.DeleteOrphanGuestUser(c.Context(), db, orphanedUserID); err != nil && !errors.Is(err, repository.ErrNotFound) {
 				logger.Warn("link: orphan cleanup failed",
 					zap.String("orphan_user_id", orphanedUserID),
 					zap.Error(err),
@@ -439,7 +439,7 @@ func LinkDevice(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 func ListMyDevices(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID := c.Locals("user_id").(string)
-		devices, err := repository.ListDevicesByUser(db, userID)
+		devices, err := repository.ListDevicesByUser(c.Context(), db, userID)
 		if err != nil {
 			logger.Error("list-devices failed", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -470,7 +470,7 @@ func DeleteMyDevice(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		if err := repository.DeleteDeviceByOwner(db, deviceRowID, userID); err != nil {
+		if err := repository.DeleteDeviceByOwner(c.Context(), db, deviceRowID, userID); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 					"error": "device not found",

@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"time"
 
 	"vpnapp/server/api/internal/model"
@@ -51,8 +52,12 @@ import (
 // limited support for correlated sub-SELECT in UPDATE FROM). The same
 // select-ids-then-UPDATE shape doubles as the RETURNING-id source — the ids
 // we Pluck are exactly the rows the UPDATE touches.
-func DowngradeExpiredPlans(db *gorm.DB) ([]string, error) {
-	systemPlanID, err := FindSystemPlanID(db)
+func DowngradeExpiredPlans(ctx context.Context, db *gorm.DB) ([]string, error) {
+	// Thread the caller ctx (scheduler pass timeout) onto the connection once;
+	// the system-plan lookup, the Pluck, and the UPDATE all reuse the same
+	// context-bound session.
+	db = db.WithContext(ctx)
+	systemPlanID, err := FindSystemPlanID(ctx, db)
 	if err != nil {
 		return nil, err
 	}

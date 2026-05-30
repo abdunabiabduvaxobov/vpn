@@ -168,7 +168,7 @@ func (r *Recovery) handleUpdate(ctx context.Context, upd tgbotapi.Update) {
 	case "help":
 		r.sendHelp(msg.Chat.ID)
 	case "status":
-		r.sendStatus(msg)
+		r.sendStatus(ctx, msg)
 	default:
 		// Silent on unknown commands too.
 	}
@@ -212,6 +212,7 @@ func (r *Recovery) handleLink(ctx context.Context, msg *tgbotapi.Message, token 
 		return
 	}
 	if err := repository.LinkTelegramAccount(
+		ctx,
 		r.db,
 		payload.Subject,
 		msg.From.ID,
@@ -236,7 +237,7 @@ func (r *Recovery) handleLink(ctx context.Context, msg *tgbotapi.Message, token 
 	logger.Info("telegram recovery bot: linked",
 		zap.String("user_id", payload.Subject),
 	)
-	r.writeAudit("tg_link", payload.Subject, msg.From.ID, msg.Chat.ID)
+	r.writeAudit(ctx, "tg_link", payload.Subject, msg.From.ID, msg.Chat.ID)
 	r.reply(msg.Chat.ID,
 		"✅ Аккаунт VPN привязан к этому Telegram.\n\n"+
 			"Теперь вы можете восстановить подписку на любом новом устройстве "+
@@ -263,7 +264,7 @@ func (r *Recovery) handleRestore(ctx context.Context, msg *tgbotapi.Message, tok
 	}
 	newUserID := payload.Subject
 
-	oldUser, err := repository.FindUserByTelegramID(r.db, msg.From.ID)
+	oldUser, err := repository.FindUserByTelegramID(ctx, r.db, msg.From.ID)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			r.reply(msg.Chat.ID,
@@ -327,7 +328,6 @@ func (r *Recovery) handleRestore(ctx context.Context, msg *tgbotapi.Message, tok
 // Runs PerformRestore on Yes, otherwise drops the pending entry and
 // posts a cancellation notice.
 func (r *Recovery) handleCallback(ctx context.Context, cq *tgbotapi.CallbackQuery) {
-	_ = ctx
 	if cq == nil || cq.Message == nil || cq.From == nil {
 		return
 	}
@@ -367,7 +367,7 @@ func (r *Recovery) handleCallback(ctx context.Context, cq *tgbotapi.CallbackQuer
 		zap.String("old_user_id", pending.oldUserID),
 		zap.String("new_user_id", pending.newUserID),
 	)
-	result, err := repository.PerformRestore(r.db, pending.oldUserID, pending.newUserID, pending.tgUserID)
+	result, err := repository.PerformRestore(ctx, r.db, pending.oldUserID, pending.newUserID, pending.tgUserID)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			logger.Warn("telegram recovery bot: restore refused (not found or mismatch)")
@@ -395,7 +395,7 @@ func (r *Recovery) handleCallback(ctx context.Context, cq *tgbotapi.CallbackQuer
 		logger.Warn("telegram recovery bot: BustUserCache(new) failed (5s TTL backstop)",
 			zap.String("user_id", result.NewUserID), zap.Error(berr))
 	}
-	r.writeAudit("tg_restore", pending.oldUserID, pending.tgUserID, cq.Message.Chat.ID)
+	r.writeAudit(ctx, "tg_restore", pending.oldUserID, pending.tgUserID, cq.Message.Chat.ID)
 	r.editMessage(cq.Message,
 		"✅ Подписка восстановлена.\n\n"+
 			"Откройте приложение. Может потребоваться перезайти — нажмите "+
@@ -436,7 +436,7 @@ func (r *Recovery) notifyAdmin(pending pendingRestore, result *repository.Restor
 // synthetic admin_id (the subject of the action) because the
 // audit_log schema requires a non-null admin_id with an FK to
 // users — the bot is acting on behalf of the user here.
-func (r *Recovery) writeAudit(action, targetUserID string, tgUserID int64, chatID int64) {
+func (r *Recovery) writeAudit(ctx context.Context, action, targetUserID string, tgUserID int64, chatID int64) {
 	details := model.AuditDetails{
 		"source":      "telegram_recovery_bot",
 		"tg_user_id":  tgUserID,
@@ -451,7 +451,7 @@ func (r *Recovery) writeAudit(action, targetUserID string, tgUserID int64, chatI
 		Details:  details,
 		IP:       "telegram",
 	}
-	if err := repository.CreateAuditEntry(r.db, entry); err != nil {
+	if err := repository.CreateAuditEntry(ctx, r.db, entry); err != nil {
 		r.logger.Warn("telegram recovery bot: audit write failed",
 			zap.String("action", action),
 			zap.Error(err),
@@ -501,11 +501,11 @@ func (r *Recovery) sendHelp(chatID int64) {
 	r.reply(chatID, text)
 }
 
-func (r *Recovery) sendStatus(msg *tgbotapi.Message) {
+func (r *Recovery) sendStatus(ctx context.Context, msg *tgbotapi.Message) {
 	if msg.From == nil {
 		return
 	}
-	user, err := repository.FindUserByTelegramID(r.db, msg.From.ID)
+	user, err := repository.FindUserByTelegramID(ctx, r.db, msg.From.ID)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			r.reply(msg.Chat.ID, "ℹ️ К этому Telegram не привязан ни один аккаунт VPN.")

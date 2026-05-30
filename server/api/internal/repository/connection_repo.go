@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 
 // CreateConnection inserts a new active connection record.
 // The ID is generated in Go so the function works with any database backend.
-func CreateConnection(db *gorm.DB, conn *model.Connection) error {
+func CreateConnection(ctx context.Context, db *gorm.DB, conn *model.Connection) error {
 	if conn.ID == "" {
 		conn.ID = uuid.NewString()
 	}
@@ -22,7 +23,7 @@ func CreateConnection(db *gorm.DB, conn *model.Connection) error {
 	now := time.Now()
 	conn.LastHeartbeatAt = &now
 	conn.Status = "connecting"
-	result := db.Create(conn)
+	result := db.WithContext(ctx).Create(conn)
 	return result.Error
 }
 
@@ -35,7 +36,7 @@ func CreateConnection(db *gorm.DB, conn *model.Connection) error {
 // Returns (false, nil) when the device limit has already been reached (the
 // caller should return HTTP 429).
 // Returns (false, err) on any other database error.
-func CreateConnectionAtomic(db *gorm.DB, conn *model.Connection, maxDevices int) (bool, error) {
+func CreateConnectionAtomic(ctx context.Context, db *gorm.DB, conn *model.Connection, maxDevices int) (bool, error) {
 	if conn.ID == "" {
 		conn.ID = uuid.NewString()
 	}
@@ -48,7 +49,7 @@ func CreateConnectionAtomic(db *gorm.DB, conn *model.Connection, maxDevices int)
 
 	// The INSERT … SELECT pattern makes the limit check and the insert atomic.
 	// No row is written when the sub-query count equals or exceeds maxDevices.
-	result := db.Exec(
+	result := db.WithContext(ctx).Exec(
 		`INSERT INTO connections (id, user_id, server_id, connected_at, bytes_up, bytes_down, status, last_heartbeat_at)
 		 SELECT ?, ?, ?, ?, 0, 0, 'connecting', ?
 		 WHERE (
@@ -70,9 +71,9 @@ func CreateConnectionAtomic(db *gorm.DB, conn *model.Connection, maxDevices int)
 
 // DisconnectConnection marks a connection as disconnected and records final byte counts.
 // Returns ErrNotFound if the connection does not exist.
-func DisconnectConnection(db *gorm.DB, id string, bytesUp, bytesDown int64) error {
+func DisconnectConnection(ctx context.Context, db *gorm.DB, id string, bytesUp, bytesDown int64) error {
 	now := time.Now()
-	result := db.Model(&model.Connection{}).
+	result := db.WithContext(ctx).Model(&model.Connection{}).
 		Where("id = ? AND disconnected_at IS NULL", id).
 		Updates(map[string]interface{}{
 			"disconnected_at": now,
@@ -90,18 +91,18 @@ func DisconnectConnection(db *gorm.DB, id string, bytesUp, bytesDown int64) erro
 
 // CountActiveConnections returns the number of connections for a user that have no
 // disconnected_at timestamp — i.e. connections that are still live.
-func CountActiveConnections(db *gorm.DB, userID string) (int64, error) {
+func CountActiveConnections(ctx context.Context, db *gorm.DB, userID string) (int64, error) {
 	var count int64
-	result := db.Model(&model.Connection{}).
+	result := db.WithContext(ctx).Model(&model.Connection{}).
 		Where("user_id = ? AND disconnected_at IS NULL", userID).
 		Count(&count)
 	return count, result.Error
 }
 
 // ListActiveConnectionsByUser returns all live connections for a given user.
-func ListActiveConnectionsByUser(db *gorm.DB, userID string) ([]model.Connection, error) {
+func ListActiveConnectionsByUser(ctx context.Context, db *gorm.DB, userID string) ([]model.Connection, error) {
 	var connections []model.Connection
-	result := db.Where("user_id = ? AND disconnected_at IS NULL", userID).
+	result := db.WithContext(ctx).Where("user_id = ? AND disconnected_at IS NULL", userID).
 		Order("connected_at DESC").
 		Find(&connections)
 	return connections, result.Error
@@ -118,11 +119,11 @@ func ListActiveConnectionsByUser(db *gorm.DB, userID string) ([]model.Connection
 // set LastHeartbeatAt = &now on every insert — so the COALESCE was a no-op for live rows.
 // Dropping it lets the planner range-scan the partial index idx_connections_heartbeat_active
 // (migration 022) instead of sequential-scanning the full connections history.
-func CleanupStaleConnections(db *gorm.DB, staleDuration time.Duration) (int64, error) {
+func CleanupStaleConnections(ctx context.Context, db *gorm.DB, staleDuration time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-staleDuration)
 	now := time.Now()
 
-	result := db.Model(&model.Connection{}).
+	result := db.WithContext(ctx).Model(&model.Connection{}).
 		Where("disconnected_at IS NULL AND last_heartbeat_at < ?", cutoff).
 		Updates(map[string]interface{}{
 			"disconnected_at": now,
@@ -142,10 +143,10 @@ func CleanupStaleConnections(db *gorm.DB, staleDuration time.Duration) (int64, e
 // filters the status='connecting' subset — a tiny, low-volume set of reservations — so the
 // COALESCE is harmless here and is out of PERF-05's strict scope (which targets the
 // high-volume CleanupStaleConnections sweep above).
-func CleanupStaleReservations(db *gorm.DB, maxAge time.Duration) (int64, error) {
+func CleanupStaleReservations(ctx context.Context, db *gorm.DB, maxAge time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-maxAge)
 	now := time.Now()
-	result := db.Model(&model.Connection{}).
+	result := db.WithContext(ctx).Model(&model.Connection{}).
 		Where("disconnected_at IS NULL AND status = 'connecting' AND COALESCE(last_heartbeat_at, connected_at) < ?", cutoff).
 		Updates(map[string]interface{}{
 			"disconnected_at": now,
@@ -164,8 +165,8 @@ func CleanupStaleReservations(db *gorm.DB, maxAge time.Duration) (int64, error) 
 // by the 10s scheduler ticker (cache.FlushHeartbeats). Retained as a single-row
 // helper / for tests; the per-call PG write it embodies is intentionally gone
 // from the hot path.
-func UpdateHeartbeat(db *gorm.DB, id string) error {
-	result := db.Model(&model.Connection{}).
+func UpdateHeartbeat(ctx context.Context, db *gorm.DB, id string) error {
+	result := db.WithContext(ctx).Model(&model.Connection{}).
 		Where("id = ? AND disconnected_at IS NULL", id).
 		Update("last_heartbeat_at", time.Now())
 	if result.Error != nil {
@@ -185,8 +186,8 @@ func UpdateHeartbeat(db *gorm.DB, id string) error {
 // are removed — ACTIVE connections (disconnected_at IS NULL) are NEVER touched
 // (T-06-PRUNE). The scheduler calls this on a WEEKLY cadence with a 90-day
 // cutoff; the predicate is served by idx_connections_connected_at (plan 02).
-func PruneOldConnections(db *gorm.DB, cutoff time.Time) (int64, error) {
-	result := db.Where("disconnected_at IS NOT NULL AND disconnected_at < ?", cutoff).
+func PruneOldConnections(ctx context.Context, db *gorm.DB, cutoff time.Time) (int64, error) {
+	result := db.WithContext(ctx).Where("disconnected_at IS NOT NULL AND disconnected_at < ?", cutoff).
 		Delete(&model.Connection{})
 	if result.Error != nil {
 		return 0, result.Error
@@ -196,9 +197,9 @@ func PruneOldConnections(db *gorm.DB, cutoff time.Time) (int64, error) {
 
 // FindConnectionByID looks up a connection by UUID.
 // Returns ErrNotFound if no row exists.
-func FindConnectionByID(db *gorm.DB, id string) (*model.Connection, error) {
+func FindConnectionByID(ctx context.Context, db *gorm.DB, id string) (*model.Connection, error) {
 	var conn model.Connection
-	result := db.First(&conn, "id = ?", id)
+	result := db.WithContext(ctx).First(&conn, "id = ?", id)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound

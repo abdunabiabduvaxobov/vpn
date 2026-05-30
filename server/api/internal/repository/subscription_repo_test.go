@@ -1,6 +1,7 @@
 package repository_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -87,7 +88,7 @@ func seedTestUser(t *testing.T, db *gorm.DB) *model.User {
 
 func TestFindSubscriptionByUserID_NotFound(t *testing.T) {
 	db := openTestDB(t)
-	_, err := repository.FindSubscriptionByUserID(db, "nonexistent-user")
+	_, err := repository.FindSubscriptionByUserID(context.Background(), db, "nonexistent-user")
 	if err == nil {
 		t.Fatal("expected ErrNotFound, got nil")
 	}
@@ -110,7 +111,7 @@ func TestFindSubscriptionByUserID_ReturnsActiveSub(t *testing.T) {
 		t.Fatalf("failed to seed subscription: %v", err)
 	}
 
-	found, err := repository.FindSubscriptionByUserID(db, user.ID)
+	found, err := repository.FindSubscriptionByUserID(context.Background(), db, user.ID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -138,7 +139,7 @@ func TestFindSubscriptionByUserID_SkipsInactiveSub(t *testing.T) {
 		t.Fatalf("failed to deactivate subscription: %v", err)
 	}
 
-	_, err := repository.FindSubscriptionByUserID(db, user.ID)
+	_, err := repository.FindSubscriptionByUserID(context.Background(), db, user.ID)
 	if err != repository.ErrNotFound {
 		t.Errorf("expected ErrNotFound for inactive sub, got: %v", err)
 	}
@@ -156,7 +157,7 @@ func TestCreateSubscription_InsertsRow(t *testing.T) {
 		IsActive:  true,
 		StartedAt: time.Now(),
 	}
-	if err := repository.CreateSubscription(db, sub); err != nil {
+	if err := repository.CreateSubscription(context.Background(), db, sub); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if sub.ID == "" {
@@ -177,7 +178,7 @@ func TestCreateOrUpdateSubscription_CreatesWhenNoneExist(t *testing.T) {
 		IsActive:       true,
 		StartedAt:      time.Now(),
 	}
-	if err := repository.CreateOrUpdateSubscription(db, sub); err != nil {
+	if err := repository.CreateOrUpdateSubscription(context.Background(), db, sub); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -212,7 +213,7 @@ func TestCreateOrUpdateSubscription_UpdatesExistingActiveSub(t *testing.T) {
 		IsActive:       true,
 		StartedAt:      time.Now(),
 	}
-	if err := repository.CreateOrUpdateSubscription(db, updated); err != nil {
+	if err := repository.CreateOrUpdateSubscription(context.Background(), db, updated); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -249,7 +250,7 @@ func TestDeactivateSubscription_SetsIsActiveFalse(t *testing.T) {
 		t.Fatalf("failed to seed subscription: %v", err)
 	}
 
-	if err := repository.DeactivateSubscription(db, sub.ID); err != nil {
+	if err := repository.DeactivateSubscription(context.Background(), db, sub.ID); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -262,7 +263,7 @@ func TestDeactivateSubscription_SetsIsActiveFalse(t *testing.T) {
 
 func TestDeactivateSubscription_NotFound(t *testing.T) {
 	db := openTestDB(t)
-	err := repository.DeactivateSubscription(db, "nonexistent-id")
+	err := repository.DeactivateSubscription(context.Background(), db, "nonexistent-id")
 	if err != repository.ErrNotFound {
 		t.Errorf("expected ErrNotFound for unknown ID, got: %v", err)
 	}

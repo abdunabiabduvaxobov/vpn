@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -46,7 +47,7 @@ type RestoreResult struct {
 //
 // Returns ErrNotFound when either user doesn't exist or the telegram
 // binding doesn't match. Other errors are wrapped with context.
-func PerformRestore(db *gorm.DB, oldUserID, newUserID string, telegramUserID int64) (*RestoreResult, error) {
+func PerformRestore(ctx context.Context, db *gorm.DB, oldUserID, newUserID string, telegramUserID int64) (*RestoreResult, error) {
 	if db == nil {
 		return nil, errNilDB
 	}
@@ -58,7 +59,7 @@ func PerformRestore(db *gorm.DB, oldUserID, newUserID string, telegramUserID int
 	}
 
 	var out RestoreResult
-	txErr := db.Transaction(func(tx *gorm.DB) error {
+	txErr := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 1. Re-verify the old user's telegram binding inside the
 		//    transaction. Defence in depth: a forged JWT that
 		//    somehow references an unrelated user_id as oldUserID
