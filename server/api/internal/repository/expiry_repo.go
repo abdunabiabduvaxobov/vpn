@@ -17,16 +17,16 @@ import (
 // recurring-failed users would keep Pro forever past expires_at — the cron
 // would never find them.
 //
-//   UPDATE users u
-//      SET plan_id            = system_plan_id,
-//          subscription_tier  = 'free'
-//    WHERE u.plan_id != system_plan_id
-//      AND EXISTS (
-//          SELECT 1 FROM subscriptions s
-//           WHERE s.user_id = u.id
-//             AND s.expires_at IS NOT NULL
-//             AND s.expires_at < now()
-//      );
+//	UPDATE users u
+//	   SET plan_id            = system_plan_id,
+//	       subscription_tier  = 'free'
+//	 WHERE u.plan_id != system_plan_id
+//	   AND EXISTS (
+//	       SELECT 1 FROM subscriptions s
+//	        WHERE s.user_id = u.id
+//	          AND s.expires_at IS NOT NULL
+//	          AND s.expires_at < now()
+//	   );
 //
 // The qualifier is now: "user is on a non-system plan AND their subscription's
 // expires_at has lapsed", regardless of is_active state. This catches BOTH
@@ -49,9 +49,11 @@ import (
 // substitute it into the GORM query so the WHERE clause is a simple equality
 // (vs a sub-SELECT). This makes the query plan stable across drivers — and
 // crucially, makes the same call work on SQLite for unit tests (SQLite has
-// limited support for correlated sub-SELECT in UPDATE FROM). The same
-// select-ids-then-UPDATE shape doubles as the RETURNING-id source — the ids
-// we Pluck are exactly the rows the UPDATE touches.
+// limited support for correlated sub-SELECT in UPDATE FROM). The select-ids
+// step is the RETURNING-id source for cache busting; the UPDATE re-asserts
+// eligibility (WR-03 self-guard) so the Pluck'd ids are a candidate set — a
+// row renewed in the race window is skipped by the UPDATE but harmlessly
+// over-busted (the next read refills the cache with the correct Pro tier).
 func DowngradeExpiredPlans(ctx context.Context, db *gorm.DB) ([]string, error) {
 	// Thread the caller ctx (scheduler pass timeout) onto the connection once;
 	// the system-plan lookup, the Pluck, and the UPDATE all reuse the same
@@ -78,8 +80,16 @@ func DowngradeExpiredPlans(ctx context.Context, db *gorm.DB) ([]string, error) {
 	if len(userIDs) == 0 {
 		return nil, nil
 	}
+	// Self-guard (WR-03): re-assert eligibility on the UPDATE so a renewal that
+	// commits in the gap between the Pluck above and this UPDATE is NOT clobbered
+	// back to the system plan. Still-on-a-paid-plan AND still-expired (correlated
+	// EXISTS, portable on Postgres + SQLite) — a renewal that extended
+	// s.expires_at to the future fails the EXISTS and is skipped. The Pluck'd id
+	// set is a candidate list; over-busting a renewed user is safe (fail-open).
 	result := db.Model(&model.User{}).
 		Where("id IN ?", userIDs).
+		Where("plan_id != ?", systemPlanID).
+		Where("EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = users.id AND s.expires_at IS NOT NULL AND s.expires_at < ?)", time.Now()).
 		Updates(map[string]interface{}{
 			"plan_id":           systemPlanID,
 			"subscription_tier": "free",

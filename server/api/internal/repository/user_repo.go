@@ -304,8 +304,15 @@ func DowngradeExpiredSubscriptions(ctx context.Context, db *gorm.DB) ([]string, 
 	if len(userIDs) == 0 {
 		return nil, nil
 	}
+	// Self-guard (WR-03): re-assert the eligibility predicate on the UPDATE so a
+	// renewal webhook that commits in the gap between the Pluck above and this
+	// UPDATE (extending subscription_expires_at to the future) is NOT clobbered
+	// back to free. The id set is a candidate list; rows still eligible at UPDATE
+	// time are the ones actually flipped. Returning the candidate ids for busting
+	// is safe — over-busting a renewed user just forces a correct DB re-read.
 	result := db.Model(&model.User{}).
 		Where("id IN ?", userIDs).
+		Where("subscription_tier <> ? AND subscription_expires_at IS NOT NULL AND subscription_expires_at < NOW()", "free").
 		Update("subscription_tier", "free")
 	if result.Error != nil {
 		return nil, fmt.Errorf("downgrading expired subscriptions: %w", result.Error)
