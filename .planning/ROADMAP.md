@@ -179,7 +179,17 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
   4. The admin marks a server as "drain" — existing connections to it survive, but `GET /servers` stops returning it to non-admins; force-disconnect-all on that server kicks every active client within one request.
   5. `GET /readyz` returns 200 only when DB + Redis + lava.top + tunnel-server heartbeat are all healthy; flipping any one to red flips the response to 503. `GET /livez` returns 200 whenever the process is alive.
   6. The operator toggles "Maintenance mode" from system controls; all non-admin requests immediately return 503 with a friendly message; admin routes continue to work.
-**Plans**: TBD
+**Plans**: 10 plans across 10 waves (W0 test infra + migration 024; W1 KPIs; W2 readyz/livez + tunnel heartbeat; W3 per-user controls; W4 advisory lock + force-cancel; W5 server drain; W6 system controls; W7 webhook replay; W8 deps-health; W9 admin-web UI)
+  - [ ] 07-01-PLAN.md (wave 0) — test infra (real-PG helper) + migration 024 (columns+tables+status backfill) + RED stubs [ADMIN-01..08]
+  - [ ] 07-02-PLAN.md (wave 1, depends 01) — dashboard KPIs + MRR 5-min cache [ADMIN-01]
+  - [ ] 07-03-PLAN.md (wave 2, depends 01,02) — /livez + /readyz + /internal heartbeat endpoint + tunnel-side emitter [ADMIN-07]
+  - [ ] 07-04-PLAN.md (wave 3, depends 01,03) — per-user suspend/unsuspend/disconnect + suspended middleware + history + throttle [ADMIN-02]
+  - [ ] 07-05-PLAN.md (wave 4, depends 01,04) — WithUserLock advisory lock wired into force-cancel + webhook tier-grant; race test [ADMIN-03,02]
+  - [ ] 07-06-PLAN.md (wave 5, depends 01,05) — server drain/undrain + force-disconnect + is_draining filter + cache-bust [ADMIN-04]
+  - [ ] 07-07-PLAN.md (wave 6, depends 01,06) — feature flags + maintenance middleware + broadcasts [ADMIN-05]
+  - [ ] 07-08-PLAN.md (wave 7, depends 01,05,07) — applyLavaEvent extraction + webhook log + idempotent replay + email redaction [ADMIN-06]
+  - [ ] 07-09-PLAN.md (wave 8, depends 01,03,08) — admin deps-health endpoint reusing the readyz probe [ADMIN-08]
+  - [ ] 07-10-PLAN.md (wave 9, depends 02..09) — admin-web UI: Dashboard KPI bar, UserDetail controls, Servers drain, System page, Payments page + human UAT [ADMIN-01,02,04,05,06,08]
 **UI hint**: yes
 
 ### Phase 8: Cleanup & hardening
