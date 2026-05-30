@@ -158,14 +158,14 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
   5. The stale-connection sweep query uses `idx_connections_heartbeat_active` (EXPLAIN shows index-only scan) and completes in O(connected), not O(history).
   6. Every GORM query inherits the request `ctx`; killing a long-running client request via `ctx` cancellation aborts the underlying DB query (verifiable via `pg_stat_activity`).
 **Plans**: 8 plans (Wave 0 test infra; Waves 1–6 implementation + runbook)
-  - [ ] 06-00-PLAN.md (wave 0) — Nyquist test infra: 7 test files (perf_indexes, servers/user/heartbeat cache, scheduler gate, ctx-cancel, servers-no-SELECT) RED-first against the 5 D-09 assertions [PERF-01,02,04,05,06,07,08]
-  - [ ] 06-01-PLAN.md (wave 1, depends 00) — Data-tier split: docker-compose.data.yml (PG+Redis, maxmemory, postgresql.conf) + host-param DB_HOST/REDIS_HOST + Fiber timeouts/BodyLimit + PG pool + PrepareStmt [PERF-03, PERF-09]
-  - [ ] 06-02-PLAN.md (wave 1, depends 00) — Migrations 022 (idx_connections_heartbeat_active partial) + 023 (idx_connections_connected_at) CONCURRENTLY + COALESCE-drop on stale sweep [PERF-05, PERF-08]
-  - [ ] 06-03-PLAN.md (wave 2, depends 00+01) — /servers cache: cache:servers:active (60s, fail-open) + in-Go plan filter + synchronous bust on 3 admin server-writes [PERF-01]
-  - [ ] 06-04-PLAN.md (wave 3, depends 00+03) — user:<id> cache (5s, fail-open) + c.Locals("user") refactor + bust on all mutation paths (admin/webhook/delete/restore/bulk-downgrade via RETURNING id) [PERF-04]
-  - [ ] 06-05-PLAN.md (wave 4, depends 00+04) — Heartbeat→Redis (hb:<id>+hb:dirty) + dedicated 10s flush goroutine + RUN_SCHEDULER gate + per-job intervals + weekly 90-day prune [PERF-02, PERF-06, PERF-08]
-  - [ ] 06-06-PLAN.md (wave 5, depends 00+03+04+05) — ctx propagation: thread ctx through ALL repo signatures + db.WithContext(ctx) + all call sites; ctx-cancel pg_stat_activity assertion (sequenced last to avoid repo merge conflicts) [PERF-07]
-  - [ ] 06-07-PLAN.md (wave 6, depends 01+02+05+06) — Production runbook (live-DB index backfill + off-host move) + 06-HUMAN-UAT.md (deferred ~10k load test) + human checkpoint [PERF-03, PERF-05, PERF-08]
+  - [x] 06-00-PLAN.md (wave 0) — Nyquist test infra: 7 test files (perf_indexes, servers/user/heartbeat cache, scheduler gate, ctx-cancel, servers-no-SELECT) RED-first against the 5 D-09 assertions [PERF-01,02,04,05,06,07,08]
+  - [x] 06-01-PLAN.md (wave 1, depends 00) — Data-tier split: docker-compose.data.yml (PG+Redis, maxmemory, postgresql.conf) + host-param DB_HOST/REDIS_HOST + Fiber timeouts/BodyLimit + PG pool + PrepareStmt [PERF-03, PERF-09]
+  - [x] 06-02-PLAN.md (wave 1, depends 00) — Migrations 022 (idx_connections_heartbeat_active partial) + 023 (idx_connections_connected_at) CONCURRENTLY + COALESCE-drop on stale sweep [PERF-05, PERF-08]
+  - [x] 06-03-PLAN.md (wave 2, depends 00+01) — /servers cache: cache:servers:active (60s, fail-open) + in-Go plan filter + synchronous bust on 3 admin server-writes [PERF-01]
+  - [x] 06-04-PLAN.md (wave 3, depends 00+03) — user:<id> cache (5s, fail-open) + c.Locals("user") refactor + bust on all mutation paths (admin/webhook/delete/restore/bulk-downgrade via RETURNING id) [PERF-04]
+  - [x] 06-05-PLAN.md (wave 4, depends 00+04) — Heartbeat→Redis (hb:<id>+hb:dirty) + dedicated 10s flush goroutine + RUN_SCHEDULER gate + per-job intervals + weekly 90-day prune [PERF-02, PERF-06, PERF-08]
+  - [x] 06-06-PLAN.md (wave 5, depends 00+03+04+05) — ctx propagation: thread ctx through ALL repo signatures + db.WithContext(ctx) + all call sites; ctx-cancel pg_stat_activity assertion (sequenced last to avoid repo merge conflicts) [PERF-07]
+  - [x] 06-07-PLAN.md (wave 6, depends 01+02+05+06) — Production runbook (live-DB index backfill + off-host move) + 06-HUMAN-UAT.md (deferred ~10k load test) + human checkpoint [PERF-03, PERF-05, PERF-08]
 **UI hint**: no
 
 ### Phase 7: Admin panel overhaul
