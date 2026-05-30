@@ -8,7 +8,11 @@ updated: 2026-05-26T10:05:00Z
 
 ## Current Test
 
-[awaiting human testing]
+number: 1
+name: Apple Sign-In End-to-End (SC#1 / WEB-01)
+expected: |
+  Visit /ru/login, click "Sign in with Apple", complete Apple ID auth with live APPLE_SERVICE_ID + .p8 key. Land on /ru/dashboard showing email, plan="free", "Get Pro" link. DevTools localStorage empty; rv_at, rv_rt, rv_user cookies all HttpOnly=true.
+awaiting: user response
 
 ## Tests
 
