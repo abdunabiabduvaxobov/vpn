@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"fmt"
 
 	"vpnapp/server/api/internal/model"
@@ -11,11 +12,11 @@ import (
 // CreateAuditEntry inserts a single audit log row. Callers build the
 // entry struct in the middleware; the repository keeps its signature
 // flat so audit writes are a single DB round-trip on the happy path.
-func CreateAuditEntry(db *gorm.DB, entry *model.AuditLogEntry) error {
+func CreateAuditEntry(ctx context.Context, db *gorm.DB, entry *model.AuditLogEntry) error {
 	if db == nil {
 		return errNilDB
 	}
-	if err := db.Create(entry).Error; err != nil {
+	if err := db.WithContext(ctx).Create(entry).Error; err != nil {
 		return fmt.Errorf("creating audit entry: %w", err)
 	}
 	return nil
@@ -25,10 +26,13 @@ func CreateAuditEntry(db *gorm.DB, entry *model.AuditLogEntry) error {
 // The limit is capped at 200 so a runaway query can't dump the whole
 // table into a single response. The UI paginates with page+limit the
 // same way the users list does.
-func ListAuditEntries(db *gorm.DB, page, limit int) ([]model.AuditLogEntry, int64, error) {
+func ListAuditEntries(ctx context.Context, db *gorm.DB, page, limit int) ([]model.AuditLogEntry, int64, error) {
 	if db == nil {
 		return nil, 0, errNilDB
 	}
+	// Thread the request ctx onto the connection once; the Count and the
+	// Find below reuse the same context-bound session.
+	db = db.WithContext(ctx)
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -56,7 +60,7 @@ func ListAuditEntries(db *gorm.DB, page, limit int) ([]model.AuditLogEntry, int6
 // ListConnectionsByUser returns the N most recent connections for a
 // user, newest first. Used by the per-user connection history card on
 // the admin panel's user detail page.
-func ListConnectionsByUser(db *gorm.DB, userID string, limit int) ([]model.Connection, error) {
+func ListConnectionsByUser(ctx context.Context, db *gorm.DB, userID string, limit int) ([]model.Connection, error) {
 	if db == nil {
 		return nil, errNilDB
 	}
@@ -64,7 +68,7 @@ func ListConnectionsByUser(db *gorm.DB, userID string, limit int) ([]model.Conne
 		limit = 50
 	}
 	var conns []model.Connection
-	if err := db.
+	if err := db.WithContext(ctx).
 		Where("user_id = ?", userID).
 		Order("connected_at DESC").
 		Limit(limit).

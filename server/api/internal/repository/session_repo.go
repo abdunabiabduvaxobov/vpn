@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -10,14 +11,14 @@ import (
 )
 
 // CreateSession stores a new refresh token session.
-func CreateSession(db *gorm.DB, session *model.Session) error {
-	return db.Create(session).Error
+func CreateSession(ctx context.Context, db *gorm.DB, session *model.Session) error {
+	return db.WithContext(ctx).Create(session).Error
 }
 
 // FindSessionByTokenHash finds a valid (non-expired) session by refresh token hash.
-func FindSessionByTokenHash(db *gorm.DB, tokenHash string) (*model.Session, error) {
+func FindSessionByTokenHash(ctx context.Context, db *gorm.DB, tokenHash string) (*model.Session, error) {
 	var session model.Session
-	result := db.Where("refresh_token_hash = ? AND expires_at > ?", tokenHash, time.Now()).First(&session)
+	result := db.WithContext(ctx).Where("refresh_token_hash = ? AND expires_at > ?", tokenHash, time.Now()).First(&session)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
@@ -28,13 +29,13 @@ func FindSessionByTokenHash(db *gorm.DB, tokenHash string) (*model.Session, erro
 }
 
 // DeleteSession removes a session by ID (used during token refresh).
-func DeleteSession(db *gorm.DB, id string) error {
-	return db.Delete(&model.Session{}, "id = ?", id).Error
+func DeleteSession(ctx context.Context, db *gorm.DB, id string) error {
+	return db.WithContext(ctx).Delete(&model.Session{}, "id = ?", id).Error
 }
 
 // DeleteExpiredSessions removes all sessions past their expiry time.
-func DeleteExpiredSessions(db *gorm.DB) (int64, error) {
-	result := db.Where("expires_at < ?", time.Now()).Delete(&model.Session{})
+func DeleteExpiredSessions(ctx context.Context, db *gorm.DB) (int64, error) {
+	result := db.WithContext(ctx).Where("expires_at < ?", time.Now()).Delete(&model.Session{})
 	return result.RowsAffected, result.Error
 }
 
@@ -47,8 +48,8 @@ func DeleteExpiredSessions(db *gorm.DB) (int64, error) {
 //
 // Indexed by idx_sessions_user_id (created in earlier migrations). A user
 // with N active sessions sees one DELETE … WHERE user_id = $1 issued.
-func DeleteUserSessions(db *gorm.DB, userID string) (int64, error) {
-	result := db.Where("user_id = ?", userID).Delete(&model.Session{})
+func DeleteUserSessions(ctx context.Context, db *gorm.DB, userID string) (int64, error) {
+	result := db.WithContext(ctx).Where("user_id = ?", userID).Delete(&model.Session{})
 	if result.Error != nil {
 		return 0, result.Error
 	}

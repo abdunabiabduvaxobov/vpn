@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -17,11 +18,11 @@ var errNilDB = fmt.Errorf("database connection is nil")
 // Useful for the admin panel's user search — a user_id prefix pasted by a user
 // contacting support will resolve to the correct account.
 // page and limit must both be >= 1; the caller is responsible for validation.
-func ListUsers(db *gorm.DB, page, limit int, search string) ([]model.User, int64, error) {
+func ListUsers(ctx context.Context, db *gorm.DB, page, limit int, search string) ([]model.User, int64, error) {
 	if db == nil {
 		return nil, 0, errNilDB
 	}
-	query := db.Model(&model.User{})
+	query := db.WithContext(ctx).Model(&model.User{})
 
 	if search != "" {
 		like := fmt.Sprintf("%%%s%%", search)
@@ -48,11 +49,11 @@ func ListUsers(db *gorm.DB, page, limit int, search string) ([]model.User, int64
 // UpdateUser applies an arbitrary set of column updates to a single user row.
 // Only columns present in updates are modified; this prevents accidental zero-value overwrites.
 // Returns ErrNotFound when no row matches userID.
-func UpdateUser(db *gorm.DB, userID string, updates map[string]interface{}) error {
+func UpdateUser(ctx context.Context, db *gorm.DB, userID string, updates map[string]interface{}) error {
 	if db == nil {
 		return errNilDB
 	}
-	result := db.Model(&model.User{}).Where("id = ?", userID).Updates(updates)
+	result := db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).Updates(updates)
 	if result.Error != nil {
 		return fmt.Errorf("updating user %s: %w", userID, result.Error)
 	}
@@ -64,11 +65,11 @@ func UpdateUser(db *gorm.DB, userID string, updates map[string]interface{}) erro
 
 // CreateServer inserts a new VPN server record.
 // Returns ErrDuplicate when the hostname already exists.
-func CreateServer(db *gorm.DB, server *model.VPNServer) error {
+func CreateServer(ctx context.Context, db *gorm.DB, server *model.VPNServer) error {
 	if db == nil {
 		return errNilDB
 	}
-	result := db.Create(server)
+	result := db.WithContext(ctx).Create(server)
 	if result.Error != nil {
 		if isDuplicateError(result.Error) {
 			return ErrDuplicate
@@ -80,11 +81,11 @@ func CreateServer(db *gorm.DB, server *model.VPNServer) error {
 
 // UpdateServer applies an arbitrary set of column updates to a single VPN server row.
 // Returns ErrNotFound when no row matches serverID.
-func UpdateServer(db *gorm.DB, serverID string, updates map[string]interface{}) error {
+func UpdateServer(ctx context.Context, db *gorm.DB, serverID string, updates map[string]interface{}) error {
 	if db == nil {
 		return errNilDB
 	}
-	result := db.Model(&model.VPNServer{}).Where("id = ?", serverID).Updates(updates)
+	result := db.WithContext(ctx).Model(&model.VPNServer{}).Where("id = ?", serverID).Updates(updates)
 	if result.Error != nil {
 		return fmt.Errorf("updating server %s: %w", serverID, result.Error)
 	}
@@ -96,11 +97,11 @@ func UpdateServer(db *gorm.DB, serverID string, updates map[string]interface{}) 
 
 // DeleteServer performs a soft delete by setting is_active = false.
 // Returns ErrNotFound when no row matches serverID.
-func DeleteServer(db *gorm.DB, serverID string) error {
+func DeleteServer(ctx context.Context, db *gorm.DB, serverID string) error {
 	if db == nil {
 		return errNilDB
 	}
-	result := db.Model(&model.VPNServer{}).Where("id = ?", serverID).Update("is_active", false)
+	result := db.WithContext(ctx).Model(&model.VPNServer{}).Where("id = ?", serverID).Update("is_active", false)
 	if result.Error != nil {
 		return fmt.Errorf("soft-deleting server %s: %w", serverID, result.Error)
 	}
@@ -112,12 +113,12 @@ func DeleteServer(db *gorm.DB, serverID string) error {
 
 // ListAllServers returns every VPN server row, including inactive ones, ordered by hostname.
 // This is the admin view; the public ListActiveServers only returns active servers.
-func ListAllServers(db *gorm.DB) ([]model.VPNServer, error) {
+func ListAllServers(ctx context.Context, db *gorm.DB) ([]model.VPNServer, error) {
 	if db == nil {
 		return nil, errNilDB
 	}
 	var servers []model.VPNServer
-	if err := db.Order("hostname ASC").Find(&servers).Error; err != nil {
+	if err := db.WithContext(ctx).Order("hostname ASC").Find(&servers).Error; err != nil {
 		return nil, fmt.Errorf("listing all servers: %w", err)
 	}
 	return servers, nil
@@ -125,10 +126,13 @@ func ListAllServers(db *gorm.DB) ([]model.VPNServer, error) {
 
 // GetGlobalStats returns dashboard-level aggregate counts.
 // Keys in the returned map: total_users, active_subscriptions, server_count, active_server_count.
-func GetGlobalStats(db *gorm.DB) (map[string]interface{}, error) {
+func GetGlobalStats(ctx context.Context, db *gorm.DB) (map[string]interface{}, error) {
 	if db == nil {
 		return nil, errNilDB
 	}
+	// Thread the request ctx onto the connection once; all four Count
+	// queries below reuse the same context-bound session.
+	db = db.WithContext(ctx)
 
 	var totalUsers int64
 	if err := db.Model(&model.User{}).Count(&totalUsers).Error; err != nil {
@@ -175,10 +179,13 @@ type TimeseriesBucket struct {
 // last `days` calendar days (UTC), padded with zero-count entries so
 // the frontend always receives a contiguous series. The fixed window
 // keeps query time bounded and the resulting JSON small.
-func GetTimeseries(db *gorm.DB, days int) (signups, connections []TimeseriesBucket, err error) {
+func GetTimeseries(ctx context.Context, db *gorm.DB, days int) (signups, connections []TimeseriesBucket, err error) {
 	if db == nil {
 		return nil, nil, errNilDB
 	}
+	// Thread the request ctx onto the connection once; the signups and
+	// connections aggregate queries below reuse the same context-bound session.
+	db = db.WithContext(ctx)
 	if days <= 0 || days > 180 {
 		days = 30
 	}
@@ -263,7 +270,7 @@ type BytesBucket struct {
 // counts entirely on the day it *started*, not the day bytes were
 // actually moved. Good enough for capacity-planning trend lines; if
 // you ever need high-precision accounting, log incremental deltas.
-func GetBytesTimeseries(db *gorm.DB, days int) ([]BytesBucket, error) {
+func GetBytesTimeseries(ctx context.Context, db *gorm.DB, days int) ([]BytesBucket, error) {
 	if db == nil {
 		return nil, errNilDB
 	}
@@ -281,7 +288,7 @@ func GetBytesTimeseries(db *gorm.DB, days int) ([]BytesBucket, error) {
 		BytesDown int64
 	}
 	var rows []row
-	if err := db.Model(&model.Connection{}).
+	if err := db.WithContext(ctx).Model(&model.Connection{}).
 		Select(
 			"TO_CHAR(DATE_TRUNC('day', connected_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day, " +
 				"COALESCE(SUM(bytes_up), 0) AS bytes_up, " +
@@ -327,7 +334,7 @@ type PlatformCount struct {
 //
 // Empty-string platforms are reported as "unknown" in the output so
 // the UI does not need to special-case missing data.
-func GetPlatformBreakdown(db *gorm.DB) ([]PlatformCount, error) {
+func GetPlatformBreakdown(ctx context.Context, db *gorm.DB) ([]PlatformCount, error) {
 	if db == nil {
 		return nil, errNilDB
 	}
@@ -336,7 +343,7 @@ func GetPlatformBreakdown(db *gorm.DB) ([]PlatformCount, error) {
 		Count    int64
 	}
 	var rows []row
-	if err := db.Model(&model.Device{}).
+	if err := db.WithContext(ctx).Model(&model.Device{}).
 		Select("platform, COUNT(*) AS count").
 		Group("platform").
 		Order("count DESC").
@@ -365,7 +372,7 @@ type TierCount struct {
 // each of {free, premium, ultimate} regardless of whether the tier
 // currently has any users — lets the donut chart render a stable
 // legend.
-func GetTierBreakdown(db *gorm.DB) ([]TierCount, error) {
+func GetTierBreakdown(ctx context.Context, db *gorm.DB) ([]TierCount, error) {
 	if db == nil {
 		return nil, errNilDB
 	}
@@ -374,7 +381,7 @@ func GetTierBreakdown(db *gorm.DB) ([]TierCount, error) {
 		Count int64
 	}
 	var rows []row
-	if err := db.Model(&model.User{}).
+	if err := db.WithContext(ctx).Model(&model.User{}).
 		Select("subscription_tier AS tier, COUNT(*) AS count").
 		Group("subscription_tier").
 		Scan(&rows).Error; err != nil {
@@ -409,7 +416,7 @@ type ServerUsage struct {
 // connections in the last `days` days, newest-most-active first.
 // Uses a plain INNER JOIN so servers with zero recent connections
 // are excluded — the panel shows these as an empty-state instead.
-func GetTopServers(db *gorm.DB, days, limit int) ([]ServerUsage, error) {
+func GetTopServers(ctx context.Context, db *gorm.DB, days, limit int) ([]ServerUsage, error) {
 	if db == nil {
 		return nil, errNilDB
 	}
@@ -425,7 +432,7 @@ func GetTopServers(db *gorm.DB, days, limit int) ([]ServerUsage, error) {
 	startDay := today.AddDate(0, 0, -(days - 1))
 
 	var out []ServerUsage
-	if err := db.Table("connections").
+	if err := db.WithContext(ctx).Table("connections").
 		Select(
 			"vpn_servers.id AS server_id, " +
 				"vpn_servers.hostname AS hostname, " +
@@ -447,12 +454,12 @@ func GetTopServers(db *gorm.DB, days, limit int) ([]ServerUsage, error) {
 
 // FindUserByIDAdmin looks up any user by UUID for admin use.
 // Wraps the sentinel error so callers can use errors.Is(err, ErrNotFound).
-func FindUserByIDAdmin(db *gorm.DB, id string) (*model.User, error) {
+func FindUserByIDAdmin(ctx context.Context, db *gorm.DB, id string) (*model.User, error) {
 	if db == nil {
 		return nil, errNilDB
 	}
 	var user model.User
-	result := db.First(&user, "id = ?", id)
+	result := db.WithContext(ctx).First(&user, "id = ?", id)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
