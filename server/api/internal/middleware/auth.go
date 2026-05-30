@@ -141,7 +141,7 @@ func AuthRequired(jwtSecret string, redisClient *redis.Client, db *gorm.DB) fibe
 				// Cache miss (or no Redis): authoritative DB existence check.
 				// Preserve the existing 401-on-deleted / 500-on-error
 				// semantics EXACTLY.
-				u, err := repository.FindUserByID(db, claims.UserID)
+				u, err := repository.FindUserByID(c.Context(), db, claims.UserID)
 				if err != nil {
 					if errors.Is(err, repository.ErrNotFound) {
 						return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{

@@ -1,6 +1,7 @@
 package repository_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -80,7 +81,7 @@ func TestInsertWebhookEventIfNew_Idempotent(t *testing.T) {
 		ID: uuid.NewString(), EventType: "payment.success",
 		ContractID: &contractID, Payload: datatypes.JSON(payload),
 	}
-	isNew, err := repository.InsertWebhookEventIfNew(db, first)
+	isNew, err := repository.InsertWebhookEventIfNew(context.Background(), db, first)
 	if err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
@@ -93,7 +94,7 @@ func TestInsertWebhookEventIfNew_Idempotent(t *testing.T) {
 		ID: uuid.NewString(), EventType: "payment.success",
 		ContractID: &contractID, Payload: datatypes.JSON(payload),
 	}
-	isNew2, err := repository.InsertWebhookEventIfNew(db, dup)
+	isNew2, err := repository.InsertWebhookEventIfNew(context.Background(), db, dup)
 	if err != nil {
 		t.Fatalf("dup insert: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestMarkWebhookProcessed_SetsProcessedAtOrError(t *testing.T) {
 	if err := db.Create(ev).Error; err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := repository.MarkWebhookProcessed(db, ev.ID, nil); err != nil {
+	if err := repository.MarkWebhookProcessed(context.Background(), db, ev.ID, nil); err != nil {
 		t.Fatalf("MarkWebhookProcessed: %v", err)
 	}
 	var reloaded model.LavaWebhookEvent
@@ -130,7 +131,7 @@ func TestMarkWebhookProcessed_SetsProcessedAtOrError(t *testing.T) {
 	}
 	// Now mark with an error message.
 	errStr := "downstream DB outage"
-	if err := repository.MarkWebhookProcessed(db, ev.ID, &errStr); err != nil {
+	if err := repository.MarkWebhookProcessed(context.Background(), db, ev.ID, &errStr); err != nil {
 		t.Fatalf("MarkWebhookProcessed error: %v", err)
 	}
 	if err := db.First(&reloaded, "id = ?", ev.ID).Error; err != nil {
@@ -151,11 +152,11 @@ func TestFindLavaContractByContractID_FoundAndNotFound(t *testing.T) {
 	if err := db.Create(c).Error; err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	got, err := repository.FindLavaContractByContractID(db, "contract-A")
+	got, err := repository.FindLavaContractByContractID(context.Background(), db, "contract-A")
 	if err != nil || got.ID != c.ID {
 		t.Errorf("expected to find contract-A: %+v err=%v", got, err)
 	}
-	if _, err := repository.FindLavaContractByContractID(db, "missing"); err != repository.ErrNotFound {
+	if _, err := repository.FindLavaContractByContractID(context.Background(), db, "missing"); err != repository.ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -168,7 +169,7 @@ func TestUpsertLavaContract_InsertThenUpdate(t *testing.T) {
 		OfferID: "off-1", Plan: "pro", Periodicity: "MONTHLY", Currency: "USD",
 		IsActive: true,
 	}
-	if err := repository.UpsertLavaContract(db, c); err != nil {
+	if err := repository.UpsertLavaContract(context.Background(), db, c); err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
 	// Update with new expires_at + cancelled_at + parent_contract_id.
@@ -183,7 +184,7 @@ func TestUpsertLavaContract_InsertThenUpdate(t *testing.T) {
 		OfferID:          "off-1", Plan: "pro", Periodicity: "MONTHLY", Currency: "USD",
 		IsActive: true, ExpiresAt: &exp, CancelledAt: &cancelled,
 	}
-	if err := repository.UpsertLavaContract(db, c2); err != nil {
+	if err := repository.UpsertLavaContract(context.Background(), db, c2); err != nil {
 		t.Fatalf("update upsert: %v", err)
 	}
 	// Confirm there's still exactly one row with contract_id="contract-U" (upsert, not insert).

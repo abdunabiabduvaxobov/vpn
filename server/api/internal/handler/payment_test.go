@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -287,7 +288,7 @@ func TestCreateCheckoutSession_HappyPath(t *testing.T) {
 	}
 
 	// Verify the invoice row was actually written with status=pending.
-	inv, err := repository.FindInvoiceByID(db, body2.Data.InvoiceID)
+	inv, err := repository.FindInvoiceByID(context.Background(), db, body2.Data.InvoiceID)
 	if err != nil {
 		t.Fatalf("FindInvoiceByID: %v", err)
 	}
@@ -669,7 +670,7 @@ func TestGetInvoice_EscalateUpdatesPendingToPaid(t *testing.T) {
 	}
 
 	// Verify local invoice row was flipped to paid.
-	reloaded, err := repository.FindInvoiceByID(db, invID)
+	reloaded, err := repository.FindInvoiceByID(context.Background(), db, invID)
 	if err != nil {
 		t.Fatalf("FindInvoiceByID: %v", err)
 	}

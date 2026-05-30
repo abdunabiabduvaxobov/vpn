@@ -1,6 +1,7 @@
 package repository_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -150,14 +151,14 @@ func seedTwoPlans(t *testing.T, db *gorm.DB) (free, pro model.Plan) {
 func TestFindPlanByID_FoundAndNotFound(t *testing.T) {
 	db := setupPlanRepoDB(t)
 	_, pro := seedTwoPlans(t, db)
-	got, err := repository.FindPlanByID(db, pro.ID)
+	got, err := repository.FindPlanByID(context.Background(), db, pro.ID)
 	if err != nil {
 		t.Fatalf("FindPlanByID: %v", err)
 	}
 	if got.Code != "pro" {
 		t.Errorf("expected pro, got %s", got.Code)
 	}
-	if _, err := repository.FindPlanByID(db, "missing"); err != repository.ErrNotFound {
+	if _, err := repository.FindPlanByID(context.Background(), db, "missing"); err != repository.ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -165,11 +166,11 @@ func TestFindPlanByID_FoundAndNotFound(t *testing.T) {
 func TestFindPlanByCode_FoundAndNotFound(t *testing.T) {
 	db := setupPlanRepoDB(t)
 	seedTwoPlans(t, db)
-	got, err := repository.FindPlanByCode(db, "pro")
+	got, err := repository.FindPlanByCode(context.Background(), db, "pro")
 	if err != nil || got.Code != "pro" {
 		t.Errorf("expected pro, got %+v err=%v", got, err)
 	}
-	if _, err := repository.FindPlanByCode(db, "ultimate"); err != repository.ErrNotFound {
+	if _, err := repository.FindPlanByCode(context.Background(), db, "ultimate"); err != repository.ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -177,7 +178,7 @@ func TestFindPlanByCode_FoundAndNotFound(t *testing.T) {
 func TestFindSystemPlanID_HappyPath(t *testing.T) {
 	db := setupPlanRepoDB(t)
 	free, _ := seedTwoPlans(t, db)
-	id, err := repository.FindSystemPlanID(db)
+	id, err := repository.FindSystemPlanID(context.Background(), db)
 	if err != nil {
 		t.Fatalf("FindSystemPlanID: %v", err)
 	}
@@ -193,7 +194,7 @@ func TestListActivePlans_FiltersInactive(t *testing.T) {
 	if err := db.Model(&model.Plan{}).Where("id = ?", pro.ID).Update("is_active", false).Error; err != nil {
 		t.Fatalf("deactivate pro: %v", err)
 	}
-	plans, err := repository.ListActivePlans(db)
+	plans, err := repository.ListActivePlans(context.Background(), db)
 	if err != nil {
 		t.Fatalf("ListActivePlans: %v", err)
 	}
@@ -225,7 +226,7 @@ func TestListServersForPlan_FiltersByPlanAndActive(t *testing.T) {
 			t.Fatalf("seed plan_servers: %v", err)
 		}
 	}
-	servers, err := repository.ListServersForPlan(db, pro.ID)
+	servers, err := repository.ListServersForPlan(context.Background(), db, pro.ID)
 	if err != nil {
 		t.Fatalf("ListServersForPlan: %v", err)
 	}
@@ -248,11 +249,11 @@ func TestIsServerAllowedForPlan_TrueFalse(t *testing.T) {
 	if err := db.Create(&model.PlanServer{PlanID: pro.ID, ServerID: sid}).Error; err != nil {
 		t.Fatalf("link: %v", err)
 	}
-	ok, err := repository.IsServerAllowedForPlan(db, pro.ID, sid)
+	ok, err := repository.IsServerAllowedForPlan(context.Background(), db, pro.ID, sid)
 	if err != nil || !ok {
 		t.Errorf("expected true, got %v err=%v", ok, err)
 	}
-	ok, err = repository.IsServerAllowedForPlan(db, pro.ID, "non-existent")
+	ok, err = repository.IsServerAllowedForPlan(context.Background(), db, pro.ID, "non-existent")
 	if err != nil || ok {
 		t.Errorf("expected false, got %v err=%v", ok, err)
 	}
@@ -274,7 +275,7 @@ func TestFindActiveOffer_ReturnsActiveOnly(t *testing.T) {
 	if err := db.Model(&model.PlanOffer{}).Where("id = ?", inactive.ID).Update("is_active", false).Error; err != nil {
 		t.Fatalf("deactivate inactive: %v", err)
 	}
-	got, err := repository.FindActiveOffer(db, pro.ID, "MONTHLY", "USD")
+	got, err := repository.FindActiveOffer(context.Background(), db, pro.ID, "MONTHLY", "USD")
 	if err != nil {
 		t.Fatalf("FindActiveOffer: %v", err)
 	}
@@ -295,7 +296,7 @@ func TestFindOfferByLavaOfferID_GrandfatheredInactive(t *testing.T) {
 	if err := db.Model(&model.PlanOffer{}).Where("id = ?", off.ID).Update("is_active", false).Error; err != nil {
 		t.Fatalf("deactivate offer: %v", err)
 	}
-	got, err := repository.FindOfferByLavaOfferID(db, "lava-old")
+	got, err := repository.FindOfferByLavaOfferID(context.Background(), db, "lava-old")
 	if err != nil {
 		t.Fatalf("FindOfferByLavaOfferID: %v", err)
 	}
@@ -314,7 +315,7 @@ func TestSetUserPlan_UpdatesUserAndUpsertsSubscription(t *testing.T) {
 
 	exp := time.Now().Add(31 * 24 * time.Hour)
 	contractID := "contract-abc"
-	if err := repository.SetUserPlan(db, uid, pro.ID, &contractID, &exp); err != nil {
+	if err := repository.SetUserPlan(context.Background(), db, uid, pro.ID, &contractID, &exp); err != nil {
 		t.Fatalf("SetUserPlan: %v", err)
 	}
 
@@ -344,7 +345,7 @@ func TestSetUserPlan_UpdatesUserAndUpsertsSubscription(t *testing.T) {
 
 	// Call again with a NEW expires_at — must update the existing row, not insert.
 	newExp := exp.Add(30 * 24 * time.Hour)
-	if err := repository.SetUserPlan(db, uid, pro.ID, &contractID, &newExp); err != nil {
+	if err := repository.SetUserPlan(context.Background(), db, uid, pro.ID, &contractID, &newExp); err != nil {
 		t.Fatalf("SetUserPlan (renewal): %v", err)
 	}
 	var subs []model.Subscription
@@ -359,11 +360,11 @@ func TestSetUserPlan_UpdatesUserAndUpsertsSubscription(t *testing.T) {
 func TestSoftDeletePlan_RefusesSystemPlan(t *testing.T) {
 	db := setupPlanRepoDB(t)
 	free, pro := seedTwoPlans(t, db)
-	if err := repository.SoftDeletePlan(db, free.ID); err != repository.ErrSystemPlan {
+	if err := repository.SoftDeletePlan(context.Background(), db, free.ID); err != repository.ErrSystemPlan {
 		t.Errorf("expected ErrSystemPlan, got %v", err)
 	}
 	// Non-system plan deletes fine.
-	if err := repository.SoftDeletePlan(db, pro.ID); err != nil {
+	if err := repository.SoftDeletePlan(context.Background(), db, pro.ID); err != nil {
 		t.Errorf("expected success, got %v", err)
 	}
 	var p model.Plan
@@ -385,7 +386,7 @@ func TestUpdatePlan_StripsImmutableFields(t *testing.T) {
 		"name":        "New Pro",
 		"max_devices": 10,
 	}
-	got, err := repository.UpdatePlan(db, pro.ID, updates)
+	got, err := repository.UpdatePlan(context.Background(), db, pro.ID, updates)
 	if err != nil {
 		t.Fatalf("UpdatePlan: %v", err)
 	}
@@ -408,7 +409,7 @@ func TestReplaceOffer_DeactivatesOldInsertsNewInOneTx(t *testing.T) {
 		t.Fatalf("seed old: %v", err)
 	}
 	newOffer := &model.PlanOffer{ID: uuid.NewString(), PlanID: pro.ID, Periodicity: "MONTHLY", Currency: "USD", Amount: 5.0, LavaOfferID: ptrStr("off-2")}
-	saved, err := repository.ReplaceOffer(db, old.ID, newOffer)
+	saved, err := repository.ReplaceOffer(context.Background(), db, old.ID, newOffer)
 	if err != nil {
 		t.Fatalf("ReplaceOffer: %v", err)
 	}
@@ -432,10 +433,10 @@ func TestReplacePlanServers_AtomicReplacement(t *testing.T) {
 	for _, id := range []string{s1, s2, s3} {
 		_ = db.Create(&model.VPNServer{ID: id, Hostname: id[:6], IsActive: true}).Error
 	}
-	if err := repository.ReplacePlanServers(db, pro.ID, []string{s1, s2}); err != nil {
+	if err := repository.ReplacePlanServers(context.Background(), db, pro.ID, []string{s1, s2}); err != nil {
 		t.Fatalf("replace initial: %v", err)
 	}
-	if err := repository.ReplacePlanServers(db, pro.ID, []string{s2, s3}); err != nil {
+	if err := repository.ReplacePlanServers(context.Background(), db, pro.ID, []string{s2, s3}); err != nil {
 		t.Fatalf("replace new: %v", err)
 	}
 	var rows []model.PlanServer
@@ -459,10 +460,10 @@ func TestAddPlanServer_IdempotentOnReinsert(t *testing.T) {
 	_, pro := seedTwoPlans(t, db)
 	sid := uuid.NewString()
 	_ = db.Create(&model.VPNServer{ID: sid, Hostname: "s", IsActive: true}).Error
-	if err := repository.AddPlanServer(db, pro.ID, sid); err != nil {
+	if err := repository.AddPlanServer(context.Background(), db, pro.ID, sid); err != nil {
 		t.Fatalf("first add: %v", err)
 	}
-	if err := repository.AddPlanServer(db, pro.ID, sid); err != nil {
+	if err := repository.AddPlanServer(context.Background(), db, pro.ID, sid); err != nil {
 		t.Errorf("second add must be idempotent, got %v", err)
 	}
 	var n int64
@@ -475,7 +476,7 @@ func TestAddPlanServer_IdempotentOnReinsert(t *testing.T) {
 func TestRemovePlanServer_ReturnsErrNotFoundWhenMissing(t *testing.T) {
 	db := setupPlanRepoDB(t)
 	_, pro := seedTwoPlans(t, db)
-	if err := repository.RemovePlanServer(db, pro.ID, "nope"); err != repository.ErrNotFound {
+	if err := repository.RemovePlanServer(context.Background(), db, pro.ID, "nope"); err != repository.ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }

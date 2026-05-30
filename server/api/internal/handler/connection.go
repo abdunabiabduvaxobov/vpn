@@ -45,7 +45,7 @@ func RegisterConnection(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		if u, ok := c.Locals("user").(*model.User); ok && u != nil {
 			userRecord = u
 		} else {
-			loaded, err := repository.FindUserByID(db, userID)
+			loaded, err := repository.FindUserByID(c.Context(), db, userID)
 			if err != nil {
 				logger.Error("RegisterConnection: failed to load user",
 					zap.String("user_id", userID),
@@ -86,7 +86,7 @@ func RegisterConnection(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		}
 
 		// Verify the target server exists and is active.
-		server, err := repository.FindServerByID(db, req.ServerID)
+		server, err := repository.FindServerByID(c.Context(), db, req.ServerID)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
@@ -120,19 +120,19 @@ func RegisterConnection(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 				"error": "internal server error",
 			})
 		}
-		plan, perr := repository.FindPlanByID(db, planID)
+		plan, perr := repository.FindPlanByID(c.Context(), db, planID)
 		if perr != nil {
 			// Fallback to system plan limits on a stale-plan_id row — fail safe.
 			logger.Warn("FindPlanByID failed; falling back to system plan",
 				zap.String("plan_id", planID), zap.Error(perr))
-			systemPlanID, sperr := repository.FindSystemPlanID(db)
+			systemPlanID, sperr := repository.FindSystemPlanID(c.Context(), db)
 			if sperr != nil {
 				logger.Error("FindSystemPlanID failed", zap.Error(sperr))
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": "internal server error",
 				})
 			}
-			plan, sperr = repository.FindPlanByID(db, systemPlanID)
+			plan, sperr = repository.FindPlanByID(c.Context(), db, systemPlanID)
 			if sperr != nil {
 				logger.Error("FindPlanByID(system) failed", zap.Error(sperr))
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -154,7 +154,7 @@ func RegisterConnection(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 
 		// When MaxDevices is UnlimitedDevices (-1) skip the limit check entirely.
 		if limits.MaxDevices == model.UnlimitedDevices {
-			if err := repository.CreateConnection(db, &conn); err != nil {
+			if err := repository.CreateConnection(c.Context(), db, &conn); err != nil {
 				logger.Error("failed to create connection",
 					zap.String("user_id", userID),
 					zap.Error(err),
@@ -177,7 +177,7 @@ func RegisterConnection(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		inserted, err := repository.CreateConnectionAtomic(db, &conn, limits.MaxDevices)
+		inserted, err := repository.CreateConnectionAtomic(c.Context(), db, &conn, limits.MaxDevices)
 		if err != nil {
 			logger.Error("failed to create connection",
 				zap.String("user_id", userID),
@@ -230,7 +230,7 @@ func UnregisterConnection(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		}
 
 		// Ensure the connection belongs to the calling user before modifying it.
-		existing, err := repository.FindConnectionByID(db, connID)
+		existing, err := repository.FindConnectionByID(c.Context(), db, connID)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
@@ -256,7 +256,7 @@ func UnregisterConnection(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		// Body is optional — byte counts default to 0 if not provided.
 		_ = c.BodyParser(&req)
 
-		if err := repository.DisconnectConnection(db, connID, req.BytesUp, req.BytesDown); err != nil {
+		if err := repository.DisconnectConnection(c.Context(), db, connID, req.BytesUp, req.BytesDown); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				// Already disconnected — treat as idempotent success.
 				return c.Status(fiber.StatusNoContent).Send(nil)
@@ -302,7 +302,7 @@ func HeartbeatConnection(logger *zap.Logger, db *gorm.DB, redisClient *redis.Cli
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "connection id required"})
 		}
 
-		existing, err := repository.FindConnectionByID(db, connID)
+		existing, err := repository.FindConnectionByID(c.Context(), db, connID)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "connection not found"})
@@ -337,7 +337,7 @@ func ListActiveConnections(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID := c.Locals("user_id").(string)
 
-		connections, err := repository.ListActiveConnectionsByUser(db, userID)
+		connections, err := repository.ListActiveConnectionsByUser(c.Context(), db, userID)
 		if err != nil {
 			logger.Error("failed to list active connections",
 				zap.String("user_id", userID),

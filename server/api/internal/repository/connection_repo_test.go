@@ -1,6 +1,7 @@
 package repository_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -105,7 +106,7 @@ func TestCreateConnection_InsertsRow(t *testing.T) {
 		ServerID: serverID,
 	}
 
-	if err := repository.CreateConnection(db, conn); err != nil {
+	if err := repository.CreateConnection(context.Background(), db, conn); err != nil {
 		t.Fatalf("CreateConnection returned error: %v", err)
 	}
 
@@ -121,7 +122,7 @@ func TestCreateConnection_SetsConnectedAt(t *testing.T) {
 	before := time.Now().Add(-time.Second)
 	conn := &model.Connection{UserID: "user-abc", ServerID: serverID}
 
-	if err := repository.CreateConnection(db, conn); err != nil {
+	if err := repository.CreateConnection(context.Background(), db, conn); err != nil {
 		t.Fatalf("CreateConnection returned error: %v", err)
 	}
 
@@ -141,21 +142,21 @@ func TestCountActiveConnections_OnlyCountsActiveRows(t *testing.T) {
 	// Insert two active and one disconnected connection.
 	for i := 0; i < 2; i++ {
 		conn := &model.Connection{UserID: userID, ServerID: serverID}
-		if err := repository.CreateConnection(db, conn); err != nil {
+		if err := repository.CreateConnection(context.Background(), db, conn); err != nil {
 			t.Fatalf("CreateConnection: %v", err)
 		}
 	}
 
 	// Insert and immediately disconnect a third.
 	disconnected := &model.Connection{UserID: userID, ServerID: serverID}
-	if err := repository.CreateConnection(db, disconnected); err != nil {
+	if err := repository.CreateConnection(context.Background(), db, disconnected); err != nil {
 		t.Fatalf("CreateConnection: %v", err)
 	}
-	if err := repository.DisconnectConnection(db, disconnected.ID, 0, 0); err != nil {
+	if err := repository.DisconnectConnection(context.Background(), db, disconnected.ID, 0, 0); err != nil {
 		t.Fatalf("DisconnectConnection: %v", err)
 	}
 
-	count, err := repository.CountActiveConnections(db, userID)
+	count, err := repository.CountActiveConnections(context.Background(), db, userID)
 	if err != nil {
 		t.Fatalf("CountActiveConnections returned error: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestCountActiveConnections_OnlyCountsActiveRows(t *testing.T) {
 func TestCountActiveConnections_ReturnsZeroForNewUser(t *testing.T) {
 	db := newTestDB(t)
 
-	count, err := repository.CountActiveConnections(db, "no-connections-user")
+	count, err := repository.CountActiveConnections(context.Background(), db, "no-connections-user")
 	if err != nil {
 		t.Fatalf("CountActiveConnections returned error: %v", err)
 	}
@@ -183,12 +184,12 @@ func TestCountActiveConnections_DoesNotCountOtherUsers(t *testing.T) {
 	// User A has 3 active connections.
 	for i := 0; i < 3; i++ {
 		conn := &model.Connection{UserID: "user-A", ServerID: serverID}
-		if err := repository.CreateConnection(db, conn); err != nil {
+		if err := repository.CreateConnection(context.Background(), db, conn); err != nil {
 			t.Fatalf("CreateConnection: %v", err)
 		}
 	}
 
-	count, err := repository.CountActiveConnections(db, "user-B")
+	count, err := repository.CountActiveConnections(context.Background(), db, "user-B")
 	if err != nil {
 		t.Fatalf("CountActiveConnections returned error: %v", err)
 	}
@@ -204,16 +205,16 @@ func TestDisconnectConnection_SetsDisconnectedAt(t *testing.T) {
 	serverID := seedServer(t, db)
 
 	conn := &model.Connection{UserID: "user-dc", ServerID: serverID}
-	if err := repository.CreateConnection(db, conn); err != nil {
+	if err := repository.CreateConnection(context.Background(), db, conn); err != nil {
 		t.Fatalf("CreateConnection: %v", err)
 	}
 
-	if err := repository.DisconnectConnection(db, conn.ID, 1024, 2048); err != nil {
+	if err := repository.DisconnectConnection(context.Background(), db, conn.ID, 1024, 2048); err != nil {
 		t.Fatalf("DisconnectConnection returned error: %v", err)
 	}
 
 	// Read back to verify.
-	fetched, err := repository.FindConnectionByID(db, conn.ID)
+	fetched, err := repository.FindConnectionByID(context.Background(), db, conn.ID)
 	if err != nil {
 		t.Fatalf("FindConnectionByID: %v", err)
 	}
@@ -233,15 +234,15 @@ func TestDisconnectConnection_AlreadyDisconnectedReturnsNotFound(t *testing.T) {
 	serverID := seedServer(t, db)
 
 	conn := &model.Connection{UserID: "user-dd", ServerID: serverID}
-	if err := repository.CreateConnection(db, conn); err != nil {
+	if err := repository.CreateConnection(context.Background(), db, conn); err != nil {
 		t.Fatalf("CreateConnection: %v", err)
 	}
-	if err := repository.DisconnectConnection(db, conn.ID, 0, 0); err != nil {
+	if err := repository.DisconnectConnection(context.Background(), db, conn.ID, 0, 0); err != nil {
 		t.Fatalf("first DisconnectConnection: %v", err)
 	}
 
 	// Second call must return ErrNotFound (the WHERE filters on disconnected_at IS NULL).
-	err := repository.DisconnectConnection(db, conn.ID, 0, 0)
+	err := repository.DisconnectConnection(context.Background(), db, conn.ID, 0, 0)
 	if err == nil {
 		t.Fatal("expected ErrNotFound on second disconnect, got nil")
 	}
@@ -253,7 +254,7 @@ func TestDisconnectConnection_AlreadyDisconnectedReturnsNotFound(t *testing.T) {
 func TestDisconnectConnection_UnknownIDReturnsNotFound(t *testing.T) {
 	db := newTestDB(t)
 
-	err := repository.DisconnectConnection(db, "nonexistent-id", 0, 0)
+	err := repository.DisconnectConnection(context.Background(), db, "nonexistent-id", 0, 0)
 	if err != repository.ErrNotFound {
 		t.Errorf("expected ErrNotFound for unknown ID, got %v", err)
 	}
@@ -272,15 +273,15 @@ func TestListActiveConnectionsByUser_ReturnsOnlyActive(t *testing.T) {
 	gone := &model.Connection{UserID: userID, ServerID: serverID}
 
 	for _, c := range []*model.Connection{active1, active2, gone} {
-		if err := repository.CreateConnection(db, c); err != nil {
+		if err := repository.CreateConnection(context.Background(), db, c); err != nil {
 			t.Fatalf("CreateConnection: %v", err)
 		}
 	}
-	if err := repository.DisconnectConnection(db, gone.ID, 0, 0); err != nil {
+	if err := repository.DisconnectConnection(context.Background(), db, gone.ID, 0, 0); err != nil {
 		t.Fatalf("DisconnectConnection: %v", err)
 	}
 
-	list, err := repository.ListActiveConnectionsByUser(db, userID)
+	list, err := repository.ListActiveConnectionsByUser(context.Background(), db, userID)
 	if err != nil {
 		t.Fatalf("ListActiveConnectionsByUser returned error: %v", err)
 	}
@@ -292,7 +293,7 @@ func TestListActiveConnectionsByUser_ReturnsOnlyActive(t *testing.T) {
 func TestListActiveConnectionsByUser_EmptyForNewUser(t *testing.T) {
 	db := newTestDB(t)
 
-	list, err := repository.ListActiveConnectionsByUser(db, "ghost-user")
+	list, err := repository.ListActiveConnectionsByUser(context.Background(), db, "ghost-user")
 	if err != nil {
 		t.Fatalf("ListActiveConnectionsByUser returned error: %v", err)
 	}
@@ -310,7 +311,7 @@ func TestCleanupStaleConnections_MarksOldConnections(t *testing.T) {
 	// Create a connection and then manually backdate its connected_at so it
 	// appears stale.
 	conn := &model.Connection{UserID: "user-stale", ServerID: serverID}
-	if err := repository.CreateConnection(db, conn); err != nil {
+	if err := repository.CreateConnection(context.Background(), db, conn); err != nil {
 		t.Fatalf("CreateConnection: %v", err)
 	}
 
@@ -324,7 +325,7 @@ func TestCleanupStaleConnections_MarksOldConnections(t *testing.T) {
 	}
 
 	// Connections older than 2 hours should be cleaned up.
-	affected, err := repository.CleanupStaleConnections(db, 2*time.Hour)
+	affected, err := repository.CleanupStaleConnections(context.Background(), db, 2*time.Hour)
 	if err != nil {
 		t.Fatalf("CleanupStaleConnections returned error: %v", err)
 	}
@@ -333,7 +334,7 @@ func TestCleanupStaleConnections_MarksOldConnections(t *testing.T) {
 	}
 
 	// Verify the row is now disconnected.
-	fetched, err := repository.FindConnectionByID(db, conn.ID)
+	fetched, err := repository.FindConnectionByID(context.Background(), db, conn.ID)
 	if err != nil {
 		t.Fatalf("FindConnectionByID: %v", err)
 	}
@@ -347,11 +348,11 @@ func TestCleanupStaleConnections_DoesNotTouchRecentConnections(t *testing.T) {
 	serverID := seedServer(t, db)
 
 	conn := &model.Connection{UserID: "user-fresh", ServerID: serverID}
-	if err := repository.CreateConnection(db, conn); err != nil {
+	if err := repository.CreateConnection(context.Background(), db, conn); err != nil {
 		t.Fatalf("CreateConnection: %v", err)
 	}
 
-	affected, err := repository.CleanupStaleConnections(db, 2*time.Hour)
+	affected, err := repository.CleanupStaleConnections(context.Background(), db, 2*time.Hour)
 	if err != nil {
 		t.Fatalf("CleanupStaleConnections returned error: %v", err)
 	}
@@ -359,7 +360,7 @@ func TestCleanupStaleConnections_DoesNotTouchRecentConnections(t *testing.T) {
 		t.Errorf("expected 0 affected for a fresh connection, got %d", affected)
 	}
 
-	fetched, err := repository.FindConnectionByID(db, conn.ID)
+	fetched, err := repository.FindConnectionByID(context.Background(), db, conn.ID)
 	if err != nil {
 		t.Fatalf("FindConnectionByID: %v", err)
 	}
@@ -373,7 +374,7 @@ func TestCleanupStaleConnections_DoesNotTouchRecentConnections(t *testing.T) {
 func TestFindConnectionByID_ReturnsNotFoundForMissingID(t *testing.T) {
 	db := newTestDB(t)
 
-	_, err := repository.FindConnectionByID(db, "does-not-exist")
+	_, err := repository.FindConnectionByID(context.Background(), db, "does-not-exist")
 	if err != repository.ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -384,11 +385,11 @@ func TestFindConnectionByID_ReturnsExistingRecord(t *testing.T) {
 	serverID := seedServer(t, db)
 
 	conn := &model.Connection{UserID: "user-find", ServerID: serverID}
-	if err := repository.CreateConnection(db, conn); err != nil {
+	if err := repository.CreateConnection(context.Background(), db, conn); err != nil {
 		t.Fatalf("CreateConnection: %v", err)
 	}
 
-	fetched, err := repository.FindConnectionByID(db, conn.ID)
+	fetched, err := repository.FindConnectionByID(context.Background(), db, conn.ID)
 	if err != nil {
 		t.Fatalf("FindConnectionByID returned error: %v", err)
 	}

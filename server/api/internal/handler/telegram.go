@@ -114,7 +114,7 @@ func TelegramStatus(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 				"error": "unauthorized",
 			})
 		}
-		user, err := repository.FindUserByID(db, userID)
+		user, err := repository.FindUserByID(c.Context(), db, userID)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
@@ -155,7 +155,7 @@ func TelegramUnlink(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 				"error": "unauthorized",
 			})
 		}
-		if err := repository.UnlinkTelegramAccount(db, userID); err != nil {
+		if err := repository.UnlinkTelegramAccount(c.Context(), db, userID); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.SendStatus(fiber.StatusNoContent)
 			}

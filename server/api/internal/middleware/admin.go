@@ -43,7 +43,7 @@ func AdminRequired(db *gorm.DB) fiber.Handler {
 		// through the same code path. FindUserByIDAdmin also wraps
 		// non-ErrNotFound DB errors with context, which gives operators
 		// a self-describing log line at the ErrorHandler boundary.
-		user, err := repository.FindUserByIDAdmin(db, userID)
+		user, err := repository.FindUserByIDAdmin(c.Context(), db, userID)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				// User was deleted between AuthRequired's lookup and now.

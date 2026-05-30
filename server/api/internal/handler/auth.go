@@ -63,7 +63,7 @@ func AdminLogin(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 
 		// Find user by email hash
 		emailHash := fmt.Sprintf("%x", sha256.Sum256([]byte(req.Email)))
-		user, err := repository.FindUserByEmailHash(db, emailHash)
+		user, err := repository.FindUserByEmailHash(c.Context(), db, emailHash)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -104,7 +104,7 @@ func AdminLogin(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 			})
 		}
 
-		if err := storeRefreshSession(db, user.ID, tokens.RefreshToken); err != nil {
+		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken); err != nil {
 			// Don't hand back a token that has no backing session row — the
 			// next /auth/refresh will 401 and the user will be silently
 			// signed out. Failing the login lets the client retry cleanly.
@@ -167,7 +167,7 @@ func AdminChangePassword(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		user, err := repository.FindUserByIDAdmin(db, adminID)
+		user, err := repository.FindUserByIDAdmin(c.Context(), db, adminID)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				// Admin's JWT references a user that no longer exists —
@@ -206,7 +206,7 @@ func AdminChangePassword(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 		hashStr := string(newHash)
-		if err := repository.UpdateUser(db, adminID, map[string]interface{}{
+		if err := repository.UpdateUser(c.Context(), db, adminID, map[string]interface{}{
 			"password_hash": &hashStr,
 		}); err != nil {
 			logger.Error("change-password: UpdateUser failed",
@@ -238,7 +238,7 @@ func RefreshToken(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Han
 
 		// Find session by refresh token hash
 		tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(req.RefreshToken)))
-		session, err := repository.FindSessionByTokenHash(db, tokenHash)
+		session, err := repository.FindSessionByTokenHash(c.Context(), db, tokenHash)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -265,13 +265,13 @@ func RefreshToken(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Han
 		// new session row has committed.
 		var tokens *authResponse
 		err = db.Transaction(func(tx *gorm.DB) error {
-			if err := repository.DeleteSession(tx, session.ID); err != nil {
+			if err := repository.DeleteSession(c.Context(), tx, session.ID); err != nil {
 				return fmt.Errorf("deleting old session: %w", err)
 			}
 
 			// Re-read the user inside the transaction so tier/role/name are
 			// consistent with the token we're about to mint.
-			user, err := repository.FindUserByID(tx, session.UserID)
+			user, err := repository.FindUserByID(c.Context(), tx, session.UserID)
 			if err != nil {
 				return fmt.Errorf("loading user: %w", err)
 			}
@@ -285,7 +285,7 @@ func RefreshToken(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Han
 			// existing helper keeps the SHA-256 hashing and expiry logic in one
 			// place. The new session row is inserted in the same tx as the
 			// delete, providing the atomicity guarantee.
-			if err := storeRefreshSession(tx, user.ID, newTokens.RefreshToken); err != nil {
+			if err := storeRefreshSession(c.Context(), tx, user.ID, newTokens.RefreshToken); err != nil {
 				return fmt.Errorf("storing new session: %w", err)
 			}
 
@@ -368,7 +368,7 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 		// Fast path: known device — reuse the bound user, no DB churn beyond
 		// a touch (and secret-hash population for legacy rows).
 		if req.DeviceID != "" {
-			if device, err := repository.FindDeviceByDeviceID(db, req.DeviceID); err == nil {
+			if device, err := repository.FindDeviceByDeviceID(c.Context(), db, req.DeviceID); err == nil {
 				// Verify the secret. Two acceptable cases:
 				//   1. row has hash AND request hash matches → ok
 				//   2. row has empty hash AND request provided one → ok, store it
@@ -383,7 +383,7 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 					// side channels from leaking the prefix of a hash.
 				case device.DeviceSecretHash == "" && secretHash != "":
 					// legacy row, populate the hash on first secret-bearing call
-					_ = repository.SetDeviceSecretHash(db, device.ID, secretHash)
+					_ = repository.SetDeviceSecretHash(c.Context(), db, device.ID, secretHash)
 				case device.DeviceSecretHash == "" && secretHash == "":
 					// legacy row, legacy client — accept (grace period)
 				default:
@@ -394,8 +394,8 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 					goto freshUser
 				}
 
-				_ = repository.TouchDevice(db, device.ID)
-				user, err := repository.FindUserByID(db, device.UserID)
+				_ = repository.TouchDevice(c.Context(), db, device.ID)
+				user, err := repository.FindUserByID(c.Context(), db, device.UserID)
 				if err != nil {
 					logger.Error("guest login: device user missing",
 						zap.String("device_id", req.DeviceID),
@@ -411,7 +411,7 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 							"error": "internal server error",
 						})
 					}
-					if err := storeRefreshSession(db, user.ID, tokens.RefreshToken); err != nil {
+					if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken); err != nil {
 						// Without a session row the token we'd return is dead on
 						// arrival — the next /auth/refresh would 401. Fail the
 						// request so the client retries cleanly; the device row
@@ -448,7 +448,7 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 			FullName: guestName,
 			// EmailHash and PasswordHash left nil — guest account
 		}
-		if err := repository.CreateUser(db, &user); err != nil {
+		if err := repository.CreateUser(c.Context(), db, &user); err != nil {
 			logger.Error("failed to create guest user", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "internal server error",
@@ -460,12 +460,12 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 			Plan:     "free",
 			IsActive: true,
 		}
-		if err := repository.CreateSubscription(db, &sub); err != nil {
+		if err := repository.CreateSubscription(c.Context(), db, &sub); err != nil {
 			logger.Error("failed to create guest subscription — rolling back user",
 				zap.String("user_id", user.ID),
 				zap.Error(err),
 			)
-			if deleteErr := repository.DeleteUser(db, user.ID); deleteErr != nil {
+			if deleteErr := repository.DeleteUser(c.Context(), db, user.ID); deleteErr != nil {
 				logger.Error("failed to roll back guest user after subscription failure",
 					zap.String("user_id", user.ID),
 					zap.Error(deleteErr),
@@ -489,7 +489,7 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 		// row alone and the attacker is bound to a brand-new user with no
 		// device record at all.
 		if req.DeviceID != "" {
-			if existing, err := repository.FindDeviceByDeviceID(db, req.DeviceID); err != nil && errors.Is(err, repository.ErrNotFound) {
+			if existing, err := repository.FindDeviceByDeviceID(c.Context(), db, req.DeviceID); err != nil && errors.Is(err, repository.ErrNotFound) {
 				device := model.Device{
 					UserID:           user.ID,
 					DeviceID:         req.DeviceID,
@@ -497,7 +497,7 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 					Platform:         req.Platform,
 					Model:            req.Model,
 				}
-				if err := repository.CreateDevice(db, &device); err != nil {
+				if err := repository.CreateDevice(c.Context(), db, &device); err != nil {
 					// Non-fatal: if a race created the device row in parallel, the
 					// next call to /auth/guest will hit the fast path. Just log.
 					logger.Warn("guest login: device bind failed",
@@ -522,7 +522,7 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 		// FindSystemPlanID returns the UUID of the single is_system=true plan
 		// (idx_plans_one_system partial unique enforces exactly one row).
 		// Failure is non-fatal — the middleware's DB fallback path covers it.
-		if systemPlanID, sysErr := repository.FindSystemPlanID(db); sysErr == nil && systemPlanID != "" {
+		if systemPlanID, sysErr := repository.FindSystemPlanID(c.Context(), db); sysErr == nil && systemPlanID != "" {
 			if uErr := db.Model(&model.User{}).Where("id = ?", user.ID).Update("plan_id", systemPlanID).Error; uErr != nil {
 				logger.Warn("guest login: failed to set system plan_id on fresh user (continuing)",
 					zap.String("user_id", user.ID),
@@ -541,7 +541,7 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 			})
 		}
 
-		if err := storeRefreshSession(db, user.ID, tokens.RefreshToken); err != nil {
+		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken); err != nil {
 			// User + subscription rows were just created, but without a
 			// session row the access token we'd return is dead on arrival
 			// (the next /auth/refresh would 401). Fail the request — the
@@ -570,14 +570,14 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 }
 
 // storeRefreshSession hashes the refresh token and stores it in the sessions table.
-func storeRefreshSession(db *gorm.DB, userID, refreshToken string) error {
+func storeRefreshSession(ctx context.Context, db *gorm.DB, userID, refreshToken string) error {
 	tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(refreshToken)))
 	session := model.Session{
 		UserID:           userID,
 		RefreshTokenHash: tokenHash,
 		ExpiresAt:        time.Now().Add(30 * 24 * time.Hour),
 	}
-	return repository.CreateSession(db, &session)
+	return repository.CreateSession(ctx, db, &session)
 }
 
 // generateTokens creates a JWT access token (5 min) and refresh token (30 days).
@@ -713,12 +713,12 @@ type ssoResolveParams struct {
 }
 
 // findUserByProviderID dispatches between FindUserByAppleID and FindUserByGoogleID.
-func findUserByProviderID(db *gorm.DB, provider, sub string) (*model.User, error) {
+func findUserByProviderID(ctx context.Context, db *gorm.DB, provider, sub string) (*model.User, error) {
 	switch provider {
 	case "apple":
-		return repository.FindUserByAppleID(db, sub)
+		return repository.FindUserByAppleID(ctx, db, sub)
 	case "google":
-		return repository.FindUserByGoogleID(db, sub)
+		return repository.FindUserByGoogleID(ctx, db, sub)
 	default:
 		return nil, fmt.Errorf("unknown provider %q", provider)
 	}
@@ -739,7 +739,7 @@ func findUserByProviderID(db *gorm.DB, provider, sub string) (*model.User, error
 //	Step D: otherwise CreateUser with the provider sub set; on ErrDuplicate
 //	        re-read via findByProvider (race lost — W-4 fallback keeps every
 //	        concurrent caller on the 200 path).
-func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model.User, error) {
+func resolveSSOUser(ctx context.Context, db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model.User, error) {
 	// CR-01 defense in depth: empty sub MUST never reach Step A's FindUserByProviderID.
 	// A "successful" verifier.Verify() can still produce an empty Sub if the JWT
 	// has no `sub` claim (claims["sub"].(string) silently yields ""). The handlers
@@ -749,7 +749,7 @@ func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model
 	}
 
 	// Step A: does a row already own this provider sub?
-	existing, err := findUserByProviderID(db, p.provider, p.sub)
+	existing, err := findUserByProviderID(ctx, db, p.provider, p.sub)
 	if err != nil && !errors.Is(err, repository.ErrNotFound) {
 		return nil, err
 	}
@@ -760,10 +760,10 @@ func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model
 		// happen inside a single db.Transaction so neither can leak partial state.
 		if p.guestUserID != "" && p.guestUserID != existing.ID {
 			txErr := db.Transaction(func(tx *gorm.DB) error {
-				if _, rErr := repository.ReassignDevicesByUserID(tx, p.guestUserID, existing.ID); rErr != nil {
+				if _, rErr := repository.ReassignDevicesByUserID(ctx, tx, p.guestUserID, existing.ID); rErr != nil {
 					return fmt.Errorf("reassign devices: %w", rErr)
 				}
-				if dErr := repository.DeleteOrphanGuestUser(tx, p.guestUserID); dErr != nil &&
+				if dErr := repository.DeleteOrphanGuestUser(ctx, tx, p.guestUserID); dErr != nil &&
 					!errors.Is(dErr, repository.ErrNotFound) {
 					return fmt.Errorf("delete orphan guest: %w", dErr)
 				}
@@ -794,7 +794,7 @@ func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model
 	if p.email != "" && p.emailVerified && !p.isPrivateRelay {
 		var linkedUser *model.User
 		txErr := db.Transaction(func(tx *gorm.DB) error {
-			linkCandidate, lerr := repository.FindUserByVerifiedEmailForLink(tx, p.email)
+			linkCandidate, lerr := repository.FindUserByVerifiedEmailForLink(ctx, tx, p.email)
 			if lerr != nil {
 				if errors.Is(lerr, repository.ErrNotFound) {
 					// No candidate — leave linkedUser nil; caller falls through to Step C/D.
@@ -815,7 +815,7 @@ func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model
 				if errors.Is(err, repository.ErrDuplicate) {
 					// Race — another caller already wrote a different sub onto
 					// this row. Re-read inside the same TX by THIS caller's sub.
-					reread, rerr := findUserByProviderID(tx, p.provider, p.sub)
+					reread, rerr := findUserByProviderID(ctx, tx, p.provider, p.sub)
 					if rerr != nil {
 						if errors.Is(rerr, repository.ErrNotFound) {
 							// Our sub doesn't own a row — fall through to Step C/D.
@@ -829,7 +829,7 @@ func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model
 				return err
 			}
 			// Updates succeeded — re-read the merged row inside the TX.
-			merged, mrr := repository.FindUserByID(tx, linkCandidate.ID)
+			merged, mrr := repository.FindUserByID(ctx, tx, linkCandidate.ID)
 			if mrr != nil {
 				return mrr
 			}
@@ -850,13 +850,13 @@ func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model
 		// WR-04: pass p.fullName so the SSO-supplied display name reaches the
 		// users.full_name column on promotion. Empty fullName preserves the
 		// existing name (repository guard).
-		pErr := repository.PromoteGuestToSSO(db, p.guestUserID, p.sub, p.email, p.provider, p.fullName, p.isPrivateRelay)
+		pErr := repository.PromoteGuestToSSO(ctx, db, p.guestUserID, p.sub, p.email, p.provider, p.fullName, p.isPrivateRelay)
 		if pErr == nil {
-			return repository.FindUserByID(db, p.guestUserID)
+			return repository.FindUserByID(ctx, db, p.guestUserID)
 		}
 		if errors.Is(pErr, repository.ErrDuplicate) {
 			// Race lost — another request grabbed this sub. Re-read.
-			return findUserByProviderID(db, p.provider, p.sub)
+			return findUserByProviderID(ctx, db, p.provider, p.sub)
 		}
 		if !errors.Is(pErr, repository.ErrNotFound) {
 			return nil, pErr
@@ -886,11 +886,11 @@ func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model
 		subCopy := p.sub
 		newUser.GoogleUserID = &subCopy
 	}
-	if err := repository.CreateUser(db, newUser); err != nil {
+	if err := repository.CreateUser(ctx, db, newUser); err != nil {
 		// W-4: every concurrent caller funnels through this branch — the
 		// re-read on ErrDuplicate is what keeps the response 200 instead of 500.
 		if errors.Is(err, repository.ErrDuplicate) {
-			return findUserByProviderID(db, p.provider, p.sub)
+			return findUserByProviderID(ctx, db, p.provider, p.sub)
 		}
 		return nil, err
 	}
@@ -905,7 +905,7 @@ func resolveSSOUser(db *gorm.DB, logger *zap.Logger, p ssoResolveParams) (*model
 		Plan:     "free",
 		IsActive: true,
 	}
-	if err := repository.CreateSubscription(db, &subscription); err != nil {
+	if err := repository.CreateSubscription(ctx, db, &subscription); err != nil {
 		logger.Warn("sso: failed to create free subscription for new user (continuing)",
 			zap.String("user_id", newUser.ID),
 			zap.String("provider", p.provider),
@@ -962,7 +962,7 @@ func AppleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier a
 		// trust-bearing lookup; it is never passed to FindUserByVerifiedEmailForLink.
 		_ = req.Email
 
-		user, err := resolveSSOUser(db, logger, ssoResolveParams{
+		user, err := resolveSSOUser(c.Context(), db, logger, ssoResolveParams{
 			provider:       "apple",
 			sub:            identity.Sub,
 			email:          identity.Email,
@@ -982,7 +982,7 @@ func AppleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier a
 		// FindSystemPlanID so the JWT carries the claim. Failure is non-fatal —
 		// middleware fallback covers it.
 		if user.PlanID == "" {
-			if systemPlanID, sysErr := repository.FindSystemPlanID(db); sysErr == nil && systemPlanID != "" {
+			if systemPlanID, sysErr := repository.FindSystemPlanID(c.Context(), db); sysErr == nil && systemPlanID != "" {
 				if uErr := db.Model(&model.User{}).Where("id = ?", user.ID).Update("plan_id", systemPlanID).Error; uErr == nil {
 					user.PlanID = systemPlanID
 				} else {
@@ -997,7 +997,7 @@ func AppleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier a
 			logger.Error("apple signin: generate tokens", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
-		if err := storeRefreshSession(db, user.ID, tokens.RefreshToken); err != nil {
+		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken); err != nil {
 			logger.Error("apple signin: store refresh", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
@@ -1032,7 +1032,7 @@ func GoogleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier 
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid identity token"})
 		}
 
-		user, err := resolveSSOUser(db, logger, ssoResolveParams{
+		user, err := resolveSSOUser(c.Context(), db, logger, ssoResolveParams{
 			provider:       "google",
 			sub:            identity.Sub,
 			email:          identity.Email,
@@ -1047,7 +1047,7 @@ func GoogleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier 
 
 		// Phase 3 D-29: same plan_id backfill as AppleSignIn. See comment there.
 		if user.PlanID == "" {
-			if systemPlanID, sysErr := repository.FindSystemPlanID(db); sysErr == nil && systemPlanID != "" {
+			if systemPlanID, sysErr := repository.FindSystemPlanID(c.Context(), db); sysErr == nil && systemPlanID != "" {
 				if uErr := db.Model(&model.User{}).Where("id = ?", user.ID).Update("plan_id", systemPlanID).Error; uErr == nil {
 					user.PlanID = systemPlanID
 				} else {
@@ -1062,7 +1062,7 @@ func GoogleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier 
 			logger.Error("google signin: generate tokens", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
-		if err := storeRefreshSession(db, user.ID, tokens.RefreshToken); err != nil {
+		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken); err != nil {
 			logger.Error("google signin: store refresh", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
@@ -1132,7 +1132,7 @@ func Logout(logger *zap.Logger, redisClient *redis.Client, db *gorm.DB) fiber.Ha
 		// means a partial failure leaves the user "still able to use their
 		// access token for ≤5min" rather than "still able to mint new
 		// access tokens via refresh forever" — the milder failure mode.
-		if _, err := repository.DeleteUserSessions(db, userID); err != nil {
+		if _, err := repository.DeleteUserSessions(c.Context(), db, userID); err != nil {
 			logger.Error("logout: delete sessions", zap.String("user_id", userID), zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}

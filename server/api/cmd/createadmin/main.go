@@ -18,6 +18,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"flag"
@@ -67,7 +68,7 @@ func main() {
 	// Two checks: a friendly pre-flight lookup, and a unique-constraint
 	// catch on insert in case two concurrent createadmin runs race.
 	emailHash := fmt.Sprintf("%x", sha256.Sum256([]byte(*email)))
-	if existing, err := repository.FindUserByEmailHash(db, emailHash); err == nil {
+	if existing, err := repository.FindUserByEmailHash(context.Background(), db, emailHash); err == nil {
 		log.Fatalf("user with email %s already exists (id=%s, role=%s)", *email, existing.ID, existing.Role)
 	} else if !errors.Is(err, repository.ErrNotFound) {
 		log.Fatalf("checking existing user: %v", err)
@@ -146,7 +147,7 @@ func createAdminUser(db *gorm.DB, emailHash string, passwordHash []byte) (*model
 		Role:             "admin",
 		SubscriptionTier: "free",
 	}
-	if err := repository.CreateUser(db, user); err != nil {
+	if err := repository.CreateUser(context.Background(), db, user); err != nil {
 		return nil, err
 	}
 	return user, nil

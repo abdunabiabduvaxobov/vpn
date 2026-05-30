@@ -1,6 +1,7 @@
 package repository_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -37,7 +38,7 @@ func TestDowngradeExpiredPlans_FlipsLapsedUsers(t *testing.T) {
 	userC := uuid.NewString()
 	_ = db.Create(&model.User{ID: userC, FullName: "C", SubscriptionTier: "free", PlanID: free.ID}).Error
 
-	rows, err := repository.DowngradeExpiredPlans(db)
+	rows, err := repository.DowngradeExpiredPlans(context.Background(), db)
 	if err != nil {
 		t.Fatalf("DowngradeExpiredPlans: %v", err)
 	}
@@ -65,7 +66,7 @@ func TestDowngradeExpiredPlans_FlipsLapsedUsers(t *testing.T) {
 	}
 
 	// Idempotent: second call returns 0 rows.
-	rows2, err := repository.DowngradeExpiredPlans(db)
+	rows2, err := repository.DowngradeExpiredPlans(context.Background(), db)
 	if err != nil {
 		t.Fatalf("second DowngradeExpiredPlans: %v", err)
 	}
@@ -102,7 +103,7 @@ func TestRunExpiryDowngrade_FindsUsersRegardlessOfSubActive(t *testing.T) {
 		t.Fatalf("flip sub D inactive: %v", err)
 	}
 
-	rows, err := repository.DowngradeExpiredPlans(db)
+	rows, err := repository.DowngradeExpiredPlans(context.Background(), db)
 	if err != nil {
 		t.Fatalf("DowngradeExpiredPlans: %v", err)
 	}
@@ -119,7 +120,7 @@ func TestRunExpiryDowngrade_FindsUsersRegardlessOfSubActive(t *testing.T) {
 func TestDowngradeExpiredPlans_EmptyTable_NoOp(t *testing.T) {
 	db := setupPlanRepoDB(t)
 	seedTwoPlans(t, db) // need system plan for FindSystemPlanID
-	rows, err := repository.DowngradeExpiredPlans(db)
+	rows, err := repository.DowngradeExpiredPlans(context.Background(), db)
 	if err != nil {
 		t.Errorf("empty users: expected no error, got %v", err)
 	}

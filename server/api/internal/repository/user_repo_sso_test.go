@@ -1,6 +1,7 @@
 package repository_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -122,7 +123,7 @@ func TestFindUserByAppleID_HappyPath(t *testing.T) {
 	db := newSSOTestDB(t)
 	wantID := seedSSOUser(t, db, ssoStrPtr("A123"), nil, ssoStrPtr("u@example.com"), true, false, "apple")
 
-	got, err := repository.FindUserByAppleID(db, "A123")
+	got, err := repository.FindUserByAppleID(context.Background(), db, "A123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestFindUserByAppleID_HappyPath(t *testing.T) {
 
 func TestFindUserByAppleID_NotFound(t *testing.T) {
 	db := newSSOTestDB(t)
-	_, err := repository.FindUserByAppleID(db, "DOES_NOT_EXIST")
+	_, err := repository.FindUserByAppleID(context.Background(), db, "DOES_NOT_EXIST")
 	if !errors.Is(err, repository.ErrNotFound) {
 		t.Errorf("want ErrNotFound, got %v", err)
 	}
@@ -142,7 +143,7 @@ func TestFindUserByAppleID_NotFound(t *testing.T) {
 func TestFindUserByGoogleID_HappyPath(t *testing.T) {
 	db := newSSOTestDB(t)
 	wantID := seedSSOUser(t, db, nil, ssoStrPtr("G456"), ssoStrPtr("u@example.com"), true, false, "google")
-	got, err := repository.FindUserByGoogleID(db, "G456")
+	got, err := repository.FindUserByGoogleID(context.Background(), db, "G456")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,7 +155,7 @@ func TestFindUserByGoogleID_HappyPath(t *testing.T) {
 func TestFindUserByVerifiedEmailForLink_HappyPath(t *testing.T) {
 	db := newSSOTestDB(t)
 	wantID := seedSSOUser(t, db, ssoStrPtr("A123"), nil, ssoStrPtr("x@example.com"), true, false, "apple")
-	got, err := repository.FindUserByVerifiedEmailForLink(db, "x@example.com")
+	got, err := repository.FindUserByVerifiedEmailForLink(context.Background(), db, "x@example.com")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestFindUserByVerifiedEmailForLink_HappyPath(t *testing.T) {
 func TestFindUserByVerifiedEmailForLink_UnverifiedEmail_Excluded(t *testing.T) {
 	db := newSSOTestDB(t)
 	seedSSOUser(t, db, ssoStrPtr("A123"), nil, ssoStrPtr("x@example.com"), false, false, "apple")
-	_, err := repository.FindUserByVerifiedEmailForLink(db, "x@example.com")
+	_, err := repository.FindUserByVerifiedEmailForLink(context.Background(), db, "x@example.com")
 	if !errors.Is(err, repository.ErrNotFound) {
 		t.Errorf("want ErrNotFound for unverified email, got %v", err)
 	}
@@ -178,7 +179,7 @@ func TestFindUserByVerifiedEmailForLink_UnverifiedEmail_Excluded(t *testing.T) {
 func TestFindUserByVerifiedEmailForLink_PrivateRelayExcluded(t *testing.T) {
 	db := newSSOTestDB(t)
 	seedSSOUser(t, db, ssoStrPtr("A123"), nil, ssoStrPtr("abc@privaterelay.appleid.com"), true, true, "apple")
-	_, err := repository.FindUserByVerifiedEmailForLink(db, "abc@privaterelay.appleid.com")
+	_, err := repository.FindUserByVerifiedEmailForLink(context.Background(), db, "abc@privaterelay.appleid.com")
 	if !errors.Is(err, repository.ErrNotFound) {
 		t.Errorf("CRITICAL: private-relay email MUST NOT match (T-2-RelaySkip). got %v", err)
 	}
@@ -188,10 +189,10 @@ func TestPromoteGuestToSSO_HappyPath_Apple(t *testing.T) {
 	db := newSSOTestDB(t)
 	guestID := seedGuestSSO(t, db)
 
-	if err := repository.PromoteGuestToSSO(db, guestID, "A123", "u@example.com", "apple", "", false); err != nil {
+	if err := repository.PromoteGuestToSSO(context.Background(), db, guestID, "A123", "u@example.com", "apple", "", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got, err := repository.FindUserByID(db, guestID)
+	got, err := repository.FindUserByID(context.Background(), db, guestID)
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
@@ -216,10 +217,10 @@ func TestPromoteGuestToSSO_HappyPath_Google(t *testing.T) {
 	db := newSSOTestDB(t)
 	guestID := seedGuestSSO(t, db)
 
-	if err := repository.PromoteGuestToSSO(db, guestID, "G456", "u@example.com", "google", "", false); err != nil {
+	if err := repository.PromoteGuestToSSO(context.Background(), db, guestID, "G456", "u@example.com", "google", "", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got, _ := repository.FindUserByID(db, guestID)
+	got, _ := repository.FindUserByID(context.Background(), db, guestID)
 	if got.GoogleUserID == nil || *got.GoogleUserID != "G456" {
 		t.Errorf("GoogleUserID: want G456, got %v", got.GoogleUserID)
 	}
@@ -231,10 +232,10 @@ func TestPromoteGuestToSSO_HappyPath_Google(t *testing.T) {
 func TestPromoteGuestToSSO_PrivateRelay(t *testing.T) {
 	db := newSSOTestDB(t)
 	guestID := seedGuestSSO(t, db)
-	if err := repository.PromoteGuestToSSO(db, guestID, "A999", "abc@privaterelay.appleid.com", "apple", "", true); err != nil {
+	if err := repository.PromoteGuestToSSO(context.Background(), db, guestID, "A999", "abc@privaterelay.appleid.com", "apple", "", true); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got, _ := repository.FindUserByID(db, guestID)
+	got, _ := repository.FindUserByID(context.Background(), db, guestID)
 	if !got.EmailIsPrivateRelay {
 		t.Errorf("EmailIsPrivateRelay: want true for relay address")
 	}
@@ -246,7 +247,7 @@ func TestPromoteGuestToSSO_DuplicateSub_ReturnsErrDuplicate(t *testing.T) {
 	seedSSOUser(t, db, ssoStrPtr("A123"), nil, ssoStrPtr("first@example.com"), true, false, "apple")
 	// Guest tries to promote with the same sub.
 	guestID := seedGuestSSO(t, db)
-	err := repository.PromoteGuestToSSO(db, guestID, "A123", "second@example.com", "apple", "", false)
+	err := repository.PromoteGuestToSSO(context.Background(), db, guestID, "A123", "second@example.com", "apple", "", false)
 	if !errors.Is(err, repository.ErrDuplicate) {
 		t.Errorf("want ErrDuplicate on partial-unique collision, got %v", err)
 	}
@@ -255,7 +256,7 @@ func TestPromoteGuestToSSO_DuplicateSub_ReturnsErrDuplicate(t *testing.T) {
 func TestPromoteGuestToSSO_InvalidProvider_ReturnsError(t *testing.T) {
 	db := newSSOTestDB(t)
 	guestID := seedGuestSSO(t, db)
-	err := repository.PromoteGuestToSSO(db, guestID, "A123", "u@example.com", "facebook", "", false)
+	err := repository.PromoteGuestToSSO(context.Background(), db, guestID, "A123", "u@example.com", "facebook", "", false)
 	if err == nil {
 		t.Fatal("expected error for invalid provider")
 	}
@@ -263,7 +264,7 @@ func TestPromoteGuestToSSO_InvalidProvider_ReturnsError(t *testing.T) {
 
 func TestPromoteGuestToSSO_GuestRowMissing_ReturnsErrNotFound(t *testing.T) {
 	db := newSSOTestDB(t)
-	err := repository.PromoteGuestToSSO(db, uuid.NewString(), "A123", "u@example.com", "apple", "", false)
+	err := repository.PromoteGuestToSSO(context.Background(), db, uuid.NewString(), "A123", "u@example.com", "apple", "", false)
 	if !errors.Is(err, repository.ErrNotFound) {
 		t.Errorf("want ErrNotFound for missing guest, got %v", err)
 	}
@@ -275,10 +276,10 @@ func TestPromoteGuestToSSO_GuestRowMissing_ReturnsErrNotFound(t *testing.T) {
 func TestPromoteGuestToSSO_UpdatesFullName(t *testing.T) {
 	db := newSSOTestDB(t)
 	guestID := seedGuestSSO(t, db) // full_name=''
-	if err := repository.PromoteGuestToSSO(db, guestID, "A123", "u@example.com", "apple", "Alice Apple", false); err != nil {
+	if err := repository.PromoteGuestToSSO(context.Background(), db, guestID, "A123", "u@example.com", "apple", "Alice Apple", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got, err := repository.FindUserByID(db, guestID)
+	got, err := repository.FindUserByID(context.Background(), db, guestID)
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
@@ -306,10 +307,10 @@ func TestPromoteGuestToSSO_EmptyFullName_PreservesExisting(t *testing.T) {
 		t.Fatalf("update full_name: %v", err)
 	}
 
-	if err := repository.PromoteGuestToSSO(db, guestID, "A123", "u@example.com", "apple", "", false); err != nil {
+	if err := repository.PromoteGuestToSSO(context.Background(), db, guestID, "A123", "u@example.com", "apple", "", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got, _ := repository.FindUserByID(db, guestID)
+	got, _ := repository.FindUserByID(context.Background(), db, guestID)
 	if got.FullName != "OriginalName" {
 		t.Errorf("FullName: want %q (preserved), got %q (WR-04 regression — empty fullName overwrote)",
 			"OriginalName", got.FullName)
@@ -340,7 +341,7 @@ func TestDeleteUserSessions_RemovesAllForUser(t *testing.T) {
 	seedSSOSession(t, db, b)
 	seedSSOSession(t, db, b)
 
-	count, err := repository.DeleteUserSessions(db, a)
+	count, err := repository.DeleteUserSessions(context.Background(), db, a)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -357,7 +358,7 @@ func TestDeleteUserSessions_RemovesAllForUser(t *testing.T) {
 
 func TestDeleteUserSessions_NoSessions_ReturnsZero(t *testing.T) {
 	db := newSSOTestDB(t)
-	count, err := repository.DeleteUserSessions(db, uuid.NewString())
+	count, err := repository.DeleteUserSessions(context.Background(), db, uuid.NewString())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -376,7 +377,7 @@ func TestReassignDevicesByUserID_MovesAllDevices(t *testing.T) {
 	d2 := seedSSODevice(t, db, guestID)
 	d3 := seedSSODevice(t, db, existingID)
 
-	count, err := repository.ReassignDevicesByUserID(db, guestID, existingID)
+	count, err := repository.ReassignDevicesByUserID(context.Background(), db, guestID, existingID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -406,7 +407,7 @@ func TestReassignDevicesByUserID_MovesAllDevices(t *testing.T) {
 func TestReassignDevicesByUserID_NoDevicesIsNoop(t *testing.T) {
 	db := newSSOTestDB(t)
 	guestID := seedGuestSSO(t, db)
-	count, err := repository.ReassignDevicesByUserID(db, guestID, uuid.NewString())
+	count, err := repository.ReassignDevicesByUserID(context.Background(), db, guestID, uuid.NewString())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

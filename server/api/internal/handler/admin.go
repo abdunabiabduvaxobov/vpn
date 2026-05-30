@@ -41,7 +41,7 @@ func AdminListUsers(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		page, limit := parsePagination(c)
 		search := c.Query("search")
 
-		users, total, err := repository.ListUsers(db, page, limit, search)
+		users, total, err := repository.ListUsers(c.Context(), db, page, limit, search)
 		if err != nil {
 			logger.Error("admin: failed to list users", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -83,7 +83,7 @@ func AdminGetUser(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		user, err := repository.FindUserByIDAdmin(db, userID)
+		user, err := repository.FindUserByIDAdmin(c.Context(), db, userID)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
@@ -145,7 +145,7 @@ func AdminUpdateUser(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 			// PAY-11 / D-24: validate tier against the plans table (no hardcoded enum).
 			// Lookup BY CODE — both active and inactive plans resolve so admins can
 			// re-attach a user to a soft-deleted plan if needed (grandfathering use case).
-			plan, perr := repository.FindPlanByCode(db, req.SubscriptionTier)
+			plan, perr := repository.FindPlanByCode(c.Context(), db, req.SubscriptionTier)
 			if perr != nil {
 				if errors.Is(perr, repository.ErrNotFound) {
 					return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -186,7 +186,7 @@ func AdminUpdateUser(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 			}
 		} else if req.ExtendDays > 0 {
 			// Extend from the current expiration or from now, whichever is later.
-			user, err := repository.FindUserByIDAdmin(db, userID)
+			user, err := repository.FindUserByIDAdmin(c.Context(), db, userID)
 			if err != nil {
 				if errors.Is(err, repository.ErrNotFound) {
 					return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
@@ -211,7 +211,7 @@ func AdminUpdateUser(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 			})
 		}
 
-		if err := repository.UpdateUser(db, userID, updates); err != nil {
+		if err := repository.UpdateUser(c.Context(), db, userID, updates); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 					"error": "user not found",
@@ -288,7 +288,7 @@ func toAdminServerResponse(s model.VPNServer) adminServerResponse {
 // fields hidden from the mobile client.
 func AdminListServers(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		servers, err := repository.ListAllServers(db)
+		servers, err := repository.ListAllServers(c.Context(), db)
 		if err != nil {
 			logger.Error("admin: failed to list servers", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -369,7 +369,7 @@ func AdminCreateServer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Clien
 			RealityShortID:   req.RealityShortID,
 		}
 
-		if err := repository.CreateServer(db, &server); err != nil {
+		if err := repository.CreateServer(c.Context(), db, &server); err != nil {
 			if errors.Is(err, repository.ErrDuplicate) {
 				return c.Status(fiber.StatusConflict).JSON(fiber.Map{
 					"error": "hostname already exists",
@@ -463,7 +463,7 @@ func AdminUpdateServer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Clien
 			})
 		}
 
-		if err := repository.UpdateServer(db, serverID, updates); err != nil {
+		if err := repository.UpdateServer(c.Context(), db, serverID, updates); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 					"error": "server not found",
@@ -507,7 +507,7 @@ func AdminDeleteServer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Clien
 			})
 		}
 
-		if err := repository.DeleteServer(db, serverID); err != nil {
+		if err := repository.DeleteServer(c.Context(), db, serverID); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 					"error": "server not found",
@@ -541,7 +541,7 @@ func AdminDeleteServer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Clien
 // Returns aggregate dashboard numbers: user counts, subscription counts, server counts.
 func AdminGetStats(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		stats, err := repository.GetGlobalStats(db)
+		stats, err := repository.GetGlobalStats(c.Context(), db)
 		if err != nil {
 			logger.Error("admin: failed to get stats", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -581,28 +581,28 @@ func AdminGetAnalytics(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		var out payload
 		errs := fiber.Map{}
 
-		if traffic, err := repository.GetBytesTimeseries(db, days); err != nil {
+		if traffic, err := repository.GetBytesTimeseries(c.Context(), db, days); err != nil {
 			logger.Error("analytics: bytes timeseries failed", zap.Error(err))
 			errs["traffic"] = err.Error()
 		} else {
 			out.Traffic = traffic
 		}
 
-		if platforms, err := repository.GetPlatformBreakdown(db); err != nil {
+		if platforms, err := repository.GetPlatformBreakdown(c.Context(), db); err != nil {
 			logger.Error("analytics: platform breakdown failed", zap.Error(err))
 			errs["platforms"] = err.Error()
 		} else {
 			out.Platforms = platforms
 		}
 
-		if tiers, err := repository.GetTierBreakdown(db); err != nil {
+		if tiers, err := repository.GetTierBreakdown(c.Context(), db); err != nil {
 			logger.Error("analytics: tier breakdown failed", zap.Error(err))
 			errs["tiers"] = err.Error()
 		} else {
 			out.Tiers = tiers
 		}
 
-		if top, err := repository.GetTopServers(db, days, topLimit); err != nil {
+		if top, err := repository.GetTopServers(c.Context(), db, days, topLimit); err != nil {
 			logger.Error("analytics: top servers failed", zap.Error(err))
 			errs["top_servers"] = err.Error()
 		} else {
@@ -623,7 +623,7 @@ func AdminGetAnalytics(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 func AdminGetStatsTimeseries(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		days, _ := strconv.Atoi(c.Query("days", "30"))
-		signups, connections, err := repository.GetTimeseries(db, days)
+		signups, connections, err := repository.GetTimeseries(c.Context(), db, days)
 		if err != nil {
 			logger.Error("admin: failed to get timeseries", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -653,7 +653,7 @@ func AdminListUserDevices(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		}
 		// Cheap 404 so the panel shows "user not found" instead of an
 		// empty device list when the admin pastes a bad ID.
-		if _, err := repository.FindUserByIDAdmin(db, userID); err != nil {
+		if _, err := repository.FindUserByIDAdmin(c.Context(), db, userID); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 					"error": "user not found",
@@ -664,7 +664,7 @@ func AdminListUserDevices(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 				"error": "internal server error",
 			})
 		}
-		devices, err := repository.ListDevicesByUser(db, userID)
+		devices, err := repository.ListDevicesByUser(c.Context(), db, userID)
 		if err != nil {
 			logger.Error("admin: failed to list user devices",
 				zap.String("user_id", userID),
@@ -693,7 +693,7 @@ func AdminListUserConnections(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		// Cheap 404 on missing user so the panel shows "user not
 		// found" instead of an empty list — matches the UX
 		// precedent set by AdminListUserDevices.
-		if _, err := repository.FindUserByIDAdmin(db, userID); err != nil {
+		if _, err := repository.FindUserByIDAdmin(c.Context(), db, userID); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 					"error": "user not found",
@@ -705,7 +705,7 @@ func AdminListUserConnections(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 		limit, _ := strconv.Atoi(c.Query("limit", "50"))
-		conns, err := repository.ListConnectionsByUser(db, userID, limit)
+		conns, err := repository.ListConnectionsByUser(c.Context(), db, userID, limit)
 		if err != nil {
 			logger.Error("admin: failed to list user connections",
 				zap.String("user_id", userID),
@@ -724,7 +724,7 @@ func AdminListUserConnections(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 func AdminGetAuditLog(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		page, limit := parsePagination(c)
-		entries, total, err := repository.ListAuditEntries(db, page, limit)
+		entries, total, err := repository.ListAuditEntries(c.Context(), db, page, limit)
 		if err != nil {
 			logger.Error("admin: failed to list audit entries", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -767,7 +767,7 @@ func AdminDeleteUserDevice(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 		// ErrNotFound for both "no such row" and "row exists but
 		// belongs to a different user" — the admin sees the same
 		// 404 either way, which is fine.
-		dev, err := repository.FindDeviceByID(db, deviceRowID)
+		dev, err := repository.FindDeviceByID(c.Context(), db, deviceRowID)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
@@ -793,7 +793,7 @@ func AdminDeleteUserDevice(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		if err := repository.AdminDeleteDevice(db, deviceRowID); err != nil {
+		if err := repository.AdminDeleteDevice(c.Context(), db, deviceRowID); err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 					"error": "device not found",

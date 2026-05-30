@@ -86,7 +86,7 @@ func AuditLog(db *gorm.DB, logger *zap.Logger) fiber.Handler {
 			Details:  details,
 			IP:       c.IP(),
 		}
-		if err := repository.CreateAuditEntry(db, entry); err != nil {
+		if err := repository.CreateAuditEntry(c.Context(), db, entry); err != nil {
 			// Never fail the admin action because audit persistence
 			// failed — the mutation already succeeded. Log loudly.
 			logger.Error("audit: failed to persist entry",

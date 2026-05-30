@@ -77,7 +77,7 @@ func CreateCheckoutSession(logger *zap.Logger, cfg *config.Config, db *gorm.DB, 
 		}
 
 		// Load user — must have email (SSO-identified, not guest).
-		user, err := repository.FindUserByID(db, userID)
+		user, err := repository.FindUserByID(c.Context(), db, userID)
 		if err != nil {
 			logger.Error("checkout: load user", zap.String("user_id", userID), zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
@@ -90,7 +90,7 @@ func CreateCheckoutSession(logger *zap.Logger, cfg *config.Config, db *gorm.DB, 
 		}
 
 		// Lookup plan + active offer.
-		plan, err := repository.FindPlanByCode(db, req.PlanCode)
+		plan, err := repository.FindPlanByCode(c.Context(), db, req.PlanCode)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "plan not found"})
@@ -101,7 +101,7 @@ func CreateCheckoutSession(logger *zap.Logger, cfg *config.Config, db *gorm.DB, 
 		if !plan.IsActive {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "plan not active"})
 		}
-		offer, err := repository.FindActiveOffer(db, plan.ID, req.Periodicity, req.Currency)
+		offer, err := repository.FindActiveOffer(c.Context(), db, plan.ID, req.Periodicity, req.Currency)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "no active offer for plan/periodicity/currency"})
@@ -115,7 +115,7 @@ func CreateCheckoutSession(logger *zap.Logger, cfg *config.Config, db *gorm.DB, 
 		}
 
 		// 60s idempotency reuse (ADR §9.2).
-		if existing, ierr := repository.FindActivePendingInvoice(db, userID, *offer.LavaOfferID, 60*time.Second); ierr == nil {
+		if existing, ierr := repository.FindActivePendingInvoice(c.Context(), db, userID, *offer.LavaOfferID, 60*time.Second); ierr == nil {
 			logger.Info("checkout: reusing pending invoice within 60s window",
 				zap.String("user_id", userID), zap.String("invoice_id", existing.ID))
 			return c.Status(fiber.StatusOK).JSON(fiber.Map{
@@ -166,7 +166,7 @@ func CreateCheckoutSession(logger *zap.Logger, cfg *config.Config, db *gorm.DB, 
 			Status:        "pending",
 			PaymentURL:    paymentURL,
 		}
-		if err := repository.CreateInvoice(db, inv); err != nil {
+		if err := repository.CreateInvoice(c.Context(), db, inv); err != nil {
 			logger.Error("checkout: CreateInvoice db insert failed", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
@@ -203,7 +203,7 @@ func CancelSubscription(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lav
 	return func(c *fiber.Ctx) error {
 		userID := c.Locals("user_id").(string)
 
-		user, err := repository.FindUserByID(db, userID)
+		user, err := repository.FindUserByID(c.Context(), db, userID)
 		if err != nil {
 			logger.Error("cancel: load user", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
@@ -282,7 +282,7 @@ func GetInvoice(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lavaClient 
 		invoiceID := c.Params("id")
 		escalate := c.Query("escalate") == "true"
 
-		inv, err := repository.FindInvoiceByID(db, invoiceID)
+		inv, err := repository.FindInvoiceByID(c.Context(), db, invoiceID)
 		if err != nil {
 			if errors.Is(err, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "invoice not found"})
@@ -317,7 +317,7 @@ func GetInvoice(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lavaClient 
 					)
 				}
 				if localStatus != inv.Status && localStatus != "" {
-					if uerr := repository.UpdateInvoiceStatus(db, inv.ID, localStatus); uerr != nil {
+					if uerr := repository.UpdateInvoiceStatus(c.Context(), db, inv.ID, localStatus); uerr != nil {
 						logger.Error("invoice: UpdateInvoiceStatus failed", zap.Error(uerr))
 						// Non-fatal — return what we have.
 					} else {

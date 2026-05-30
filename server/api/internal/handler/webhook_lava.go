@@ -91,7 +91,7 @@ func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lava
 			ContractID: &contractID,
 			Payload:    datatypes.JSON(rawBody),
 		}
-		isNew, err := repository.InsertWebhookEventIfNew(db, rec)
+		isNew, err := repository.InsertWebhookEventIfNew(c.Context(), db, rec)
 		if err != nil {
 			logger.Error("webhook: idempotency insert failed", zap.Error(err))
 			// 500 → lava retries (PAY-05).
@@ -110,15 +110,15 @@ func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lava
 		var processErr error
 		switch event.EventType {
 		case "payment.success":
-			processErr = handleLavaPaymentSuccess(logger, db, redisClient, &event)
+			processErr = handleLavaPaymentSuccess(c.Context(), logger, db, redisClient, &event)
 		case "subscription.recurring.payment.success":
-			processErr = handleLavaRecurringSuccess(logger, db, redisClient, &event)
+			processErr = handleLavaRecurringSuccess(c.Context(), logger, db, redisClient, &event)
 		case "payment.failed":
-			processErr = handleLavaPaymentFailed(logger, db, &event)
+			processErr = handleLavaPaymentFailed(c.Context(), logger, db, &event)
 		case "subscription.recurring.payment.failed":
-			processErr = handleLavaRecurringFailed(logger, db, &event)
+			processErr = handleLavaRecurringFailed(c.Context(), logger, db, &event)
 		case "subscription.cancelled":
-			processErr = handleLavaSubscriptionCancelled(logger, db, &event)
+			processErr = handleLavaSubscriptionCancelled(c.Context(), logger, db, &event)
 		default:
 			logger.Warn("webhook: unknown event type ignored",
 				zap.String("event_type", event.EventType),
@@ -128,7 +128,7 @@ func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lava
 			// WR-06: log MarkWebhookProcessed failures at Warn so an apparent
 			// stale forensic record (processed_at IS NULL on a 200 path) is
 			// correlatable to the actual repo error.
-			if merr := repository.MarkWebhookProcessed(db, rec.ID, nil); merr != nil {
+			if merr := repository.MarkWebhookProcessed(c.Context(), db, rec.ID, nil); merr != nil {
 				logger.Warn("webhook: MarkWebhookProcessed failed (forensic record will be stale)",
 					zap.String("event_id", rec.ID),
 					zap.String("event_type", event.EventType),
@@ -142,7 +142,7 @@ func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lava
 		// 5. Record outcome.
 		if processErr != nil {
 			errStr := processErr.Error()
-			if merr := repository.MarkWebhookProcessed(db, rec.ID, &errStr); merr != nil {
+			if merr := repository.MarkWebhookProcessed(c.Context(), db, rec.ID, &errStr); merr != nil {
 				logger.Warn("webhook: MarkWebhookProcessed failed (forensic record will be stale)",
 					zap.String("event_id", rec.ID),
 					zap.String("event_type", event.EventType),
@@ -159,7 +159,7 @@ func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lava
 			// can correlate the retry.
 			return c.SendStatus(fiber.StatusInternalServerError)
 		}
-		if merr := repository.MarkWebhookProcessed(db, rec.ID, nil); merr != nil {
+		if merr := repository.MarkWebhookProcessed(c.Context(), db, rec.ID, nil); merr != nil {
 			logger.Warn("webhook: MarkWebhookProcessed failed (forensic record will be stale)",
 				zap.String("event_id", rec.ID),
 				zap.String("event_type", event.EventType),
@@ -182,22 +182,22 @@ func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lava
 //  4. SetUserPlan(userID, planID, &contractId, expires_at) — transactional.
 //  5. UpsertLavaContract.
 //  6. UpdateInvoiceStatus to "paid".
-func handleLavaPaymentSuccess(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client, event *lava.WebhookEvent) error {
-	inv, err := repository.FindInvoiceByLavaID(db, event.ContractID)
+func handleLavaPaymentSuccess(ctx context.Context, logger *zap.Logger, db *gorm.DB, redisClient *redis.Client, event *lava.WebhookEvent) error {
+	inv, err := repository.FindInvoiceByLavaID(ctx, db, event.ContractID)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			return fmt.Errorf("payment.success: no invoice for contractId=%s", event.ContractID)
 		}
 		return fmt.Errorf("payment.success: FindInvoiceByLavaID: %w", err)
 	}
-	offerRow, err := repository.FindOfferByLavaOfferID(db, inv.OfferID)
+	offerRow, err := repository.FindOfferByLavaOfferID(ctx, db, inv.OfferID)
 	if err != nil {
 		return fmt.Errorf("payment.success: FindOfferByLavaOfferID(%s): %w", inv.OfferID, err)
 	}
 	// PAY-08 defence-in-depth: re-resolve plan.Code from offerRow.PlanID via FindPlanByID
 	// instead of trusting the denormalised inv.Plan column. The invoice was server-created
 	// in /checkout but the plans table is the authoritative source for tier semantics.
-	plan, err := repository.FindPlanByID(db, offerRow.PlanID)
+	plan, err := repository.FindPlanByID(ctx, db, offerRow.PlanID)
 	if err != nil {
 		return fmt.Errorf("payment.success: FindPlanByID(%s): %w", offerRow.PlanID, err)
 	}
@@ -213,12 +213,12 @@ func handleLavaPaymentSuccess(logger *zap.Logger, db *gorm.DB, redisClient *redi
 
 	// 1. SetUserPlan — transactional update of users + subscriptions row.
 	contractID := event.ContractID
-	if err := repository.SetUserPlan(db, inv.UserID, offerRow.PlanID, &contractID, expiresAt); err != nil {
+	if err := repository.SetUserPlan(ctx, db, inv.UserID, offerRow.PlanID, &contractID, expiresAt); err != nil {
 		return fmt.Errorf("payment.success: SetUserPlan(%s, %s): %w", inv.UserID, offerRow.PlanID, err)
 	}
 
 	// 2. UpsertLavaContract. Plan field uses freshly-resolved plan.Code (NOT inv.Plan) — PAY-08 defence-in-depth.
-	if err := repository.UpsertLavaContract(db, &model.LavaContract{
+	if err := repository.UpsertLavaContract(ctx, db, &model.LavaContract{
 		UserID:      inv.UserID,
 		ContractID:  contractID,
 		OfferID:     inv.OfferID,
@@ -233,7 +233,7 @@ func handleLavaPaymentSuccess(logger *zap.Logger, db *gorm.DB, redisClient *redi
 	}
 
 	// 3. Flip invoice status.
-	if err := repository.UpdateInvoiceStatus(db, inv.ID, "paid"); err != nil {
+	if err := repository.UpdateInvoiceStatus(ctx, db, inv.ID, "paid"); err != nil {
 		return fmt.Errorf("payment.success: UpdateInvoiceStatus: %w", err)
 	}
 
@@ -263,7 +263,7 @@ func handleLavaPaymentSuccess(logger *zap.Logger, db *gorm.DB, redisClient *redi
 // ORIGINAL contract; the event's contractId is the renewal's invoice id.
 // We look up the parent contract to find the user, then compute new
 // expires_at = old_expires_at + periodicity.
-func handleLavaRecurringSuccess(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client, event *lava.WebhookEvent) error {
+func handleLavaRecurringSuccess(ctx context.Context, logger *zap.Logger, db *gorm.DB, redisClient *redis.Client, event *lava.WebhookEvent) error {
 	parentID := ""
 	if event.ParentContractID != nil {
 		parentID = *event.ParentContractID
@@ -271,7 +271,7 @@ func handleLavaRecurringSuccess(logger *zap.Logger, db *gorm.DB, redisClient *re
 	if parentID == "" {
 		return fmt.Errorf("recurring.success: missing parentContractId")
 	}
-	parent, err := repository.FindLavaContractByContractID(db, parentID)
+	parent, err := repository.FindLavaContractByContractID(ctx, db, parentID)
 	if err != nil {
 		return fmt.Errorf("recurring.success: FindLavaContractByContractID(%s): %w", parentID, err)
 	}
@@ -288,7 +288,7 @@ func handleLavaRecurringSuccess(logger *zap.Logger, db *gorm.DB, redisClient *re
 
 	// SetUserPlan with new expires_at (keeps same plan_id; just refreshes expiry).
 	contractID := event.ContractID
-	planID, planErr := planIDFromContract(db, parent)
+	planID, planErr := planIDFromContract(ctx, db, parent)
 	if planErr != nil {
 		// WR-01: double-failure (offer gone AND system plan gone — exceedingly
 		// rare, only during a migration in-flight). Surface the error so the
@@ -297,12 +297,12 @@ func handleLavaRecurringSuccess(logger *zap.Logger, db *gorm.DB, redisClient *re
 		// returning record-not-found on every retry.
 		return fmt.Errorf("recurring.success: planIDFromContract: %w", planErr)
 	}
-	if err := repository.SetUserPlan(db, parent.UserID, planID, &contractID, &newExp); err != nil {
+	if err := repository.SetUserPlan(ctx, db, parent.UserID, planID, &contractID, &newExp); err != nil {
 		return fmt.Errorf("recurring.success: SetUserPlan: %w", err)
 	}
 
 	// Upsert child contract with parent_contract_id set.
-	if err := repository.UpsertLavaContract(db, &model.LavaContract{
+	if err := repository.UpsertLavaContract(ctx, db, &model.LavaContract{
 		UserID:           parent.UserID,
 		ContractID:       contractID,
 		ParentContractID: &parentID,
@@ -342,8 +342,8 @@ func handleLavaRecurringSuccess(logger *zap.Logger, db *gorm.DB, redisClient *re
 
 // handleLavaPaymentFailed marks the matching invoice as failed.
 // No tier change for first-payment failures.
-func handleLavaPaymentFailed(logger *zap.Logger, db *gorm.DB, event *lava.WebhookEvent) error {
-	inv, err := repository.FindInvoiceByLavaID(db, event.ContractID)
+func handleLavaPaymentFailed(ctx context.Context, logger *zap.Logger, db *gorm.DB, event *lava.WebhookEvent) error {
+	inv, err := repository.FindInvoiceByLavaID(ctx, db, event.ContractID)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			logger.Warn("payment.failed: no matching invoice", zap.String("contract_id", event.ContractID))
@@ -351,7 +351,7 @@ func handleLavaPaymentFailed(logger *zap.Logger, db *gorm.DB, event *lava.Webhoo
 		}
 		return fmt.Errorf("payment.failed: FindInvoiceByLavaID: %w", err)
 	}
-	if err := repository.UpdateInvoiceStatus(db, inv.ID, "failed"); err != nil {
+	if err := repository.UpdateInvoiceStatus(ctx, db, inv.ID, "failed"); err != nil {
 		return fmt.Errorf("payment.failed: UpdateInvoiceStatus: %w", err)
 	}
 	logger.Info("webhook: payment.failed recorded", zap.String("invoice_id", inv.ID))
@@ -365,7 +365,7 @@ func handleLavaPaymentFailed(logger *zap.Logger, db *gorm.DB, event *lava.Webhoo
 // handles the actual plan_id flip once expires_at lapses, regardless of is_active.
 //
 // D-19: flip both rows to is_active=false immediately; cron handles tier downgrade at expires_at via the broader WHERE clause in 03-09.
-func handleLavaRecurringFailed(logger *zap.Logger, db *gorm.DB, event *lava.WebhookEvent) error {
+func handleLavaRecurringFailed(ctx context.Context, logger *zap.Logger, db *gorm.DB, event *lava.WebhookEvent) error {
 	parentID := ""
 	if event.ParentContractID != nil {
 		parentID = *event.ParentContractID
@@ -377,7 +377,7 @@ func handleLavaRecurringFailed(logger *zap.Logger, db *gorm.DB, event *lava.Webh
 	// Resolve user_id from parent contract — we need it to find the matching
 	// subscriptions row (subscriptions is keyed by user_id, not contract_id
 	// directly; lava_contract_id is a nullable FK that may or may not equal parentID).
-	parent, ferr := repository.FindLavaContractByContractID(db, parentID)
+	parent, ferr := repository.FindLavaContractByContractID(ctx, db, parentID)
 	if ferr != nil {
 		if errors.Is(ferr, repository.ErrNotFound) {
 			logger.Warn("recurring.failed: parent contract not found — skipping",
@@ -389,7 +389,8 @@ func handleLavaRecurringFailed(logger *zap.Logger, db *gorm.DB, event *lava.Webh
 
 	// Single transaction: flip both subscriptions.is_active and
 	// lava_contracts.is_active to false atomically. Per D-19 literal reading.
-	err := db.Transaction(func(tx *gorm.DB) error {
+	// WithContext(ctx) so a client disconnect / wedged query is cancellable (PERF-07).
+	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&model.Subscription{}).
 			Where("user_id = ? AND lava_contract_id IS NOT NULL", parent.UserID).
 			Update("is_active", false).Error; err != nil {
@@ -414,12 +415,12 @@ func handleLavaRecurringFailed(logger *zap.Logger, db *gorm.DB, event *lava.Webh
 
 // handleLavaSubscriptionCancelled records cancellation without touching tier.
 // Cron downgrades after expires_at lapses.
-func handleLavaSubscriptionCancelled(logger *zap.Logger, db *gorm.DB, event *lava.WebhookEvent) error {
+func handleLavaSubscriptionCancelled(ctx context.Context, logger *zap.Logger, db *gorm.DB, event *lava.WebhookEvent) error {
 	// subscription.cancelled events have NO `timestamp` — they have `cancelledAt`
 	// (RESEARCH §1.5). The migration 020 UNIQUE uses COALESCE for idempotency;
 	// here we just need to update the contract.
 	now := time.Now()
-	if err := db.Model(&model.LavaContract{}).Where("contract_id = ?", event.ContractID).Updates(map[string]interface{}{
+	if err := db.WithContext(ctx).Model(&model.LavaContract{}).Where("contract_id = ?", event.ContractID).Updates(map[string]interface{}{
 		"is_active":    false,
 		"cancelled_at": &now,
 	}).Error; err != nil {
@@ -466,15 +467,15 @@ func periodicityToDuration(p string) time.Duration {
 // silently forwarded to SetUserPlan — producing record-not-found, a 500,
 // and a lava retry-storm that hits the same condition forever. The error
 // return lets the caller log loudly and the event row carry the cause.
-func planIDFromContract(db *gorm.DB, contract *model.LavaContract) (string, error) {
-	offer, oerr := repository.FindOfferByLavaOfferID(db, contract.OfferID)
+func planIDFromContract(ctx context.Context, db *gorm.DB, contract *model.LavaContract) (string, error) {
+	offer, oerr := repository.FindOfferByLavaOfferID(ctx, db, contract.OfferID)
 	if oerr == nil {
 		return offer.PlanID, nil
 	}
 	if !errors.Is(oerr, repository.ErrNotFound) {
 		return "", fmt.Errorf("planIDFromContract: lookup offer %q: %w", contract.OfferID, oerr)
 	}
-	sid, serr := repository.FindSystemPlanID(db)
+	sid, serr := repository.FindSystemPlanID(ctx, db)
 	if serr == nil {
 		return sid, nil
 	}
