@@ -74,6 +74,8 @@ func newServersTestDB(t *testing.T) *gorm.DB {
 			subscription_expires_at DATETIME,
 			role                    TEXT NOT NULL DEFAULT 'user',
 			plan_id                 TEXT NOT NULL DEFAULT '',
+			suspended_at            DATETIME,
+			suspended_reason        TEXT,
 			created_at              DATETIME,
 			updated_at              DATETIME
 		);

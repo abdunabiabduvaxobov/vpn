@@ -76,6 +76,8 @@ func newAuthTestDB(t *testing.T) *gorm.DB {
 			email_is_private_relay  INTEGER NOT NULL DEFAULT 0,
 			auth_provider           TEXT NOT NULL DEFAULT 'guest',
 			plan_id                 TEXT NOT NULL DEFAULT '',
+			suspended_at            DATETIME,
+			suspended_reason        TEXT,
 			created_at              DATETIME,
 			updated_at              DATETIME
 		)`,

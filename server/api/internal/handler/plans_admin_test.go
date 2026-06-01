@@ -62,6 +62,8 @@ func setupAdminPlansDB(t *testing.T) (*gorm.DB, *redis.Client) {
 			telegram_username TEXT,
 			telegram_first_name TEXT,
 			plan_id TEXT NOT NULL DEFAULT '',
+			suspended_at TIMESTAMP,
+			suspended_reason TEXT,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,

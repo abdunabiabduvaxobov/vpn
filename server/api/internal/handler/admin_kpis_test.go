@@ -51,6 +51,8 @@ func setupKPITestDB(t *testing.T) (*gorm.DB, *redis.Client) {
 			subscription_expires_at TIMESTAMP,
 			role TEXT NOT NULL DEFAULT 'user',
 			plan_id TEXT NOT NULL DEFAULT '',
+			suspended_at TIMESTAMP,
+			suspended_reason TEXT,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,

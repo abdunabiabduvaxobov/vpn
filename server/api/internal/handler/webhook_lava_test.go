@@ -60,6 +60,8 @@ func setupWebhookTestDB(t *testing.T) *gorm.DB {
 			telegram_username TEXT,
 			telegram_first_name TEXT,
 			plan_id TEXT NOT NULL DEFAULT '',
+			suspended_at TIMESTAMP,
+			suspended_reason TEXT,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,

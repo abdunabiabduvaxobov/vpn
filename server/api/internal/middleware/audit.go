@@ -17,9 +17,10 @@ import (
 // from c.Locals.
 //
 // Why post-handler instead of pre-handler:
-//   Running after c.Next() lets us skip audit writes for requests
-//   that failed validation (400), auth (401), or not-found (404).
-//   Otherwise every typo in a curl would spam the table.
+//
+//	Running after c.Next() lets us skip audit writes for requests
+//	that failed validation (400), auth (401), or not-found (404).
+//	Otherwise every typo in a curl would spam the table.
 //
 // Only GET requests are free — writes (POST/PATCH/PUT/DELETE) are
 // recorded. For write methods where the handler rejected the request
@@ -111,6 +112,15 @@ func describeAction(method, path string) string {
 	switch {
 	case method == fiber.MethodPost && strings.HasSuffix(stripped, "/admin/change-password"):
 		return "change_password"
+	// ADMIN-02 per-user controls. These POST /admin/users/:id/<action> routes
+	// come BEFORE the generic PATCH/DELETE /admin/users/ cases so the readable
+	// label wins over the post_admin_users_<uuid>_<action> fallback.
+	case method == fiber.MethodPost && strings.HasPrefix(stripped, "/admin/users/") && strings.HasSuffix(stripped, "/suspend"):
+		return "suspend_user"
+	case method == fiber.MethodPost && strings.HasPrefix(stripped, "/admin/users/") && strings.HasSuffix(stripped, "/unsuspend"):
+		return "unsuspend_user"
+	case method == fiber.MethodPost && strings.HasPrefix(stripped, "/admin/users/") && strings.HasSuffix(stripped, "/disconnect"):
+		return "disconnect_user"
 	case method == fiber.MethodPatch && strings.HasPrefix(stripped, "/admin/users/"):
 		return "update_user"
 	// Device delete must come before user delete because the device URL

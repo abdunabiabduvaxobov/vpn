@@ -84,6 +84,8 @@ func setupPlanRepoDB(t *testing.T) *gorm.DB {
 			email_is_private_relay INTEGER NOT NULL DEFAULT 0,
 			auth_provider TEXT NOT NULL DEFAULT 'guest',
 			plan_id TEXT NOT NULL DEFAULT '',
+			suspended_at TIMESTAMP,
+			suspended_reason TEXT,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,

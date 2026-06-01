@@ -83,6 +83,8 @@ func newHandlerTestDB(t *testing.T) *gorm.DB {
 			telegram_username       TEXT,
 			telegram_first_name     TEXT,
 			plan_id                 TEXT NOT NULL DEFAULT '',
+			suspended_at            DATETIME,
+			suspended_reason        TEXT,
 			created_at              DATETIME,
 			updated_at              DATETIME
 		);

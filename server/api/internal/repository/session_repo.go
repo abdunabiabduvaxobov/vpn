@@ -55,3 +55,18 @@ func DeleteUserSessions(ctx context.Context, db *gorm.DB, userID string) (int64,
 	}
 	return result.RowsAffected, nil
 }
+
+// ListSessionsByUser returns every refresh-session row for the given user,
+// newest first. Read-only — backs the admin panel's per-user "active sessions"
+// card (ADMIN-02). Indexed by idx_sessions_user_id.
+func ListSessionsByUser(ctx context.Context, db *gorm.DB, userID string) ([]model.Session, error) {
+	var sessions []model.Session
+	result := db.WithContext(ctx).
+		Where("user_id = ?", userID).
+		Order("created_at DESC").
+		Find(&sessions)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return sessions, nil
+}

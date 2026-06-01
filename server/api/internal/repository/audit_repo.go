@@ -57,6 +57,43 @@ func ListAuditEntries(ctx context.Context, db *gorm.DB, page, limit int) ([]mode
 	return entries, total, nil
 }
 
+// ListAuditEntriesByTarget returns the most recent audit rows whose
+// target_id matches the given user, newest first. Backs the admin panel's
+// per-user audit history card (ADMIN-02 — "who touched this user?", served by
+// idx_audit_log_target_id from migration 014). Paginated with page+limit the
+// same way ListAuditEntries is; limit capped at 200, default 50.
+func ListAuditEntriesByTarget(ctx context.Context, db *gorm.DB, targetID string, page, limit int) ([]model.AuditLogEntry, int64, error) {
+	if db == nil {
+		return nil, 0, errNilDB
+	}
+	db = db.WithContext(ctx)
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if page < 1 {
+		page = 1
+	}
+
+	var total int64
+	if err := db.Model(&model.AuditLogEntry{}).
+		Where("target_id = ?", targetID).
+		Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("counting audit entries for target %s: %w", targetID, err)
+	}
+
+	var entries []model.AuditLogEntry
+	offset := (page - 1) * limit
+	if err := db.
+		Where("target_id = ?", targetID).
+		Order("created_at DESC").
+		Offset(offset).
+		Limit(limit).
+		Find(&entries).Error; err != nil {
+		return nil, 0, fmt.Errorf("listing audit entries for target %s: %w", targetID, err)
+	}
+	return entries, total, nil
+}
+
 // ListConnectionsByUser returns the N most recent connections for a
 // user, newest first. Used by the per-user connection history card on
 // the admin panel's user detail page.

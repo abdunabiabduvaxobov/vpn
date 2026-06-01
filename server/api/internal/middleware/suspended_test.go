@@ -17,21 +17,12 @@ import (
 )
 
 // openSuspendedTestDB opens an in-memory SQLite users table including the
-// suspended_at/suspended_reason columns (migration 024). Reuses the same
-// explicit-schema convention as openAdminTestDB (admin_test.go) plus the two
-// suspension columns this middleware reads.
+// suspended_at/suspended_reason columns (migration 024). It reuses the
+// package-shared openAdminTestDB (admin_test.go), whose CREATE TABLE users
+// already carries the two suspension columns this middleware reads.
 func openSuspendedTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db := openAdminTestDB(t) // base users table, package-shared helper
-	// Add the two ADMIN-02 columns the production users table carries
-	// (migration 024). openAdminTestDB's CREATE predates them.
-	if err := db.Exec(`ALTER TABLE users ADD COLUMN suspended_at DATETIME`).Error; err != nil {
-		t.Fatalf("failed to add suspended_at: %v", err)
-	}
-	if err := db.Exec(`ALTER TABLE users ADD COLUMN suspended_reason TEXT`).Error; err != nil {
-		t.Fatalf("failed to add suspended_reason: %v", err)
-	}
-	return db
+	return openAdminTestDB(t)
 }
 
 // newSuspendedApp builds a minimal Fiber app: a faux-auth step injecting

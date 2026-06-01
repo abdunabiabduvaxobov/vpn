@@ -321,7 +321,12 @@ func main() {
 
 	// Protected routes (JWT required)
 	authMiddleware := middleware.AuthRequired(cfg.JWTSecret, redisClient, db)
-	protected := api.Group("", authMiddleware)
+	// SuspendedRequired (ADMIN-02, T-07-13) runs right after AuthRequired so
+	// EVERY protected user route rejects a suspended user's still-valid JWT on
+	// the next request. It is mounted ONLY here, never on the admin group below:
+	// an admin must not be able to lock themselves out, and admins are not
+	// suspendable in v1 (T-07-17).
+	protected := api.Group("", authMiddleware, middleware.SuspendedRequired(db))
 	// Phase 2 Logout (AUTH-08, D-26). Mounted under the protected group so
 	// AuthRequired validates the JWT and sets c.Locals("user_id") before
 	// the handler runs. The middleware also already checks
@@ -384,6 +389,14 @@ func main() {
 	admin.Get("/users/:id/devices", handler.AdminListUserDevices(logger, db))
 	admin.Delete("/users/:id/devices/:device_id", handler.AdminDeleteUserDevice(logger, db))
 	admin.Get("/users/:id/connections", handler.AdminListUserConnections(logger, db))
+	// ADMIN-02 per-user controls. suspend/unsuspend/disconnect are
+	// reason-carrying mutations that write the operator's reason into
+	// audit_log.details explicitly (Pitfall 4); audit-log/sessions are reads.
+	admin.Post("/users/:id/suspend", handler.AdminSuspendUser(logger, db, redisClient))
+	admin.Post("/users/:id/unsuspend", handler.AdminUnsuspendUser(logger, db, redisClient))
+	admin.Post("/users/:id/disconnect", handler.AdminDisconnectUser(logger, db, redisClient))
+	admin.Get("/users/:id/audit-log", handler.AdminGetUserAuditLog(logger, db))
+	admin.Get("/users/:id/sessions", handler.AdminListUserSessions(logger, db))
 	admin.Get("/audit-log", handler.AdminGetAuditLog(logger, db))
 	// Phase 3 lava admin endpoint (D-12 Option B). Proxies /api/v2/products
 	// via server-side API key so admin can pick lava offers from a dropdown.
