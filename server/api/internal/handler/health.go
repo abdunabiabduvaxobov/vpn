@@ -1,14 +1,18 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"runtime"
 	"strings"
 	"time"
 
+	"vpnapp/server/api/internal/cache"
+	"vpnapp/server/api/internal/lava"
 	"vpnapp/server/api/internal/repository"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -25,6 +29,127 @@ func Health() fiber.Handler {
 			"timestamp":  time.Now().UTC(),
 		})
 	}
+}
+
+// depCheckTimeout bounds each individual readyz dependency probe (DB / Redis).
+// 500ms per ADMIN-IMPROVEMENTS §4.1 — a hung dep yields "down", never a hung probe.
+const depCheckTimeout = 500 * time.Millisecond
+
+// lavaDialTimeout bounds the lazy lava-reachability refresh (only on cache miss).
+const lavaDialTimeout = 2 * time.Second
+
+// tunnelFreshWindow is how recent a tunnel's last_seen_at must be to count as alive.
+const tunnelFreshWindow = 90 * time.Second
+
+// Livez handles GET /livez — the K8s-style liveness probe (ADMIN-07).
+// Returns 200 immediately with ZERO I/O: no DB, no Redis, no network. As long
+// as the process can serve this handler it is "alive". Never gate it on deps —
+// that is what /readyz is for.
+func Livez() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"status": "alive"})
+	}
+}
+
+// Readyz handles GET /readyz — the K8s-style readiness probe (ADMIN-07).
+//
+// Returns 200 {data:{status:"ready"}} only when ALL four deps are healthy:
+//   - Postgres: SELECT 1 within depCheckTimeout
+//   - Redis:    PING within depCheckTimeout
+//   - lava:     cached reachability verdict (≤60s); lazy single dial on miss
+//     wrapped in lavaDialTimeout — NEVER a fresh dial per probe
+//   - tunnel:   at least one active vpn_servers row with last_seen_at within
+//     tunnelFreshWindow (cheap DB read, no network)
+//
+// Otherwise returns 503 {data:{deps:{postgres,redis,lava,tunnel}}} where each
+// value is the status WORD "ok" or "down" ONLY. T-07-09: the body NEVER carries
+// underlying error strings, hostnames, or versions — readyz is anonymous-facing.
+func Readyz(db *gorm.DB, redisClient *redis.Client, lavaClient *lava.Client) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		ctx := c.Context()
+
+		deps := map[string]string{
+			"postgres": statusWord(checkPostgres(ctx, db)),
+			"redis":    statusWord(checkRedis(ctx, redisClient)),
+			"lava":     statusWord(checkLava(ctx, redisClient, lavaClient)),
+			"tunnel":   statusWord(checkTunnel(ctx, db)),
+		}
+
+		for _, status := range deps {
+			if status != "ok" {
+				return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+					"data": fiber.Map{"deps": deps},
+				})
+			}
+		}
+		return c.JSON(fiber.Map{"data": fiber.Map{"status": "ready"}})
+	}
+}
+
+// statusWord maps a dep-check outcome to the only two words the readyz body may
+// expose. Keeping the mapping here guarantees no error string ever leaks (T-07-09).
+func statusWord(healthy bool) string {
+	if healthy {
+		return "ok"
+	}
+	return "down"
+}
+
+// checkPostgres runs SELECT 1 with a tight per-probe timeout.
+func checkPostgres(parent context.Context, db *gorm.DB) bool {
+	if db == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(parent, depCheckTimeout)
+	defer cancel()
+	return db.WithContext(ctx).Exec("SELECT 1").Error == nil
+}
+
+// checkRedis pings Redis with a tight per-probe timeout.
+func checkRedis(parent context.Context, redisClient *redis.Client) bool {
+	if redisClient == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(parent, depCheckTimeout)
+	defer cancel()
+	return redisClient.Ping(ctx).Err() == nil
+}
+
+// checkLava returns lava reachability from the Redis cache (≤60s). On a cache
+// miss it performs ONE lazy dial bounded by lavaDialTimeout and caches the
+// verdict — it NEVER dials lava on a cache hit (T-07-10 DoS mitigation). A cache
+// miss with no usable client treats lava as reachable-unknown → down only if the
+// single dial fails.
+func checkLava(parent context.Context, redisClient *redis.Client, lavaClient *lava.Client) bool {
+	verdict, _ := cache.GetLavaReachable(parent, redisClient)
+	switch verdict {
+	case "ok":
+		return true
+	case "down":
+		return false
+	}
+	// Cache miss → ONE lazy dial with a hard timeout; never block the probe.
+	if lavaClient == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(parent, lavaDialTimeout)
+	defer cancel()
+	_, err := lavaClient.ListProducts(ctx)
+	reachable := err == nil
+	_ = cache.SetLavaReachable(parent, redisClient, reachable)
+	return reachable
+}
+
+// checkTunnel reports whether at least one active tunnel posted a heartbeat
+// within tunnelFreshWindow. Cheap DB read of last_seen_at — no network call.
+func checkTunnel(parent context.Context, db *gorm.DB) bool {
+	if db == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(parent, depCheckTimeout)
+	defer cancel()
+	n, err := repository.CountFreshServers(ctx, db, tunnelFreshWindow)
+	return err == nil && n > 0
 }
 
 // GetSubscription handles GET /subscription.
