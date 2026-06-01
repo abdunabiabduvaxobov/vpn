@@ -15,7 +15,7 @@ export interface PlatformCount {
 }
 
 export interface TierCount {
-  tier: "free" | "premium" | "ultimate";
+  tier: "free" | "pro";
   count: number;
 }
 

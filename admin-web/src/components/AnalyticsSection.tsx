@@ -316,9 +316,7 @@ function TierCard({
                     "h-full rounded-full",
                     row.tier === "free"
                       ? "bg-muted-foreground/40"
-                      : row.tier === "premium"
-                        ? "bg-sky-400"
-                        : "bg-amber-400",
+                      : "bg-sky-400",
                   )}
                   style={{
                     width: total > 0 ? `${(row.count / total) * 100}%` : "0%",

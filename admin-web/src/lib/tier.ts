@@ -7,21 +7,20 @@ import type { AdminUser } from "@/api/users";
 export type Tier = AdminUser["subscription_tier"];
 export type Role = AdminUser["role"];
 
-export const TIER_OPTIONS: Tier[] = ["free", "premium", "ultimate"];
+export const TIER_OPTIONS: Tier[] = ["free", "pro"];
 
 // Tier labels mix Russian and English intentionally:
-// "Premium" and "Ultimate" are product brand names we keep in English
-// for consistency with the mobile app and Stripe product catalog.
-// "Free" becomes "Бесплатный" in Russian because it's a common word,
-// not a brand.
+// "Pro" is the product brand name we keep in English for consistency
+// with the mobile app and the lava.top product catalog. "Free" becomes
+// "Бесплатный" in Russian because it's a common word, not a brand.
+// (Migration 019 / D-08 collapsed the legacy premium+ultimate tiers into
+// a single "pro" plan — the plans table only carries free + pro.)
 export function tierLabel(tier: Tier): string {
   switch (tier) {
     case "free":
       return "Бесплатный";
-    case "premium":
-      return "Premium";
-    case "ultimate":
-      return "Ultimate";
+    case "pro":
+      return "Pro";
   }
 }
 
@@ -32,10 +31,8 @@ export function tierBadgeClass(tier: Tier): string {
   switch (tier) {
     case "free":
       return "bg-muted text-muted-foreground ring-1 ring-inset ring-border";
-    case "premium":
+    case "pro":
       return "bg-sky-500/10 text-sky-300 ring-1 ring-inset ring-sky-500/30";
-    case "ultimate":
-      return "bg-amber-500/10 text-amber-300 ring-1 ring-inset ring-amber-500/30";
   }
 }
 
@@ -48,15 +45,14 @@ export function roleBadgeClass(role: Role): string {
   }
 }
 
-// Device quota per tier — mirrors model.PlanLimits on the backend. Used
-// only for display hints; the actual enforcement is server-side.
+// Device quota per tier — mirrors the plans catalog on the backend
+// (migration 019 / D-08: free=1, pro=3). Used only for display hints; the
+// actual enforcement is server-side.
 export function tierDeviceLimit(tier: Tier): number {
   switch (tier) {
     case "free":
       return 1;
-    case "premium":
+    case "pro":
       return 3;
-    case "ultimate":
-      return 6;
   }
 }

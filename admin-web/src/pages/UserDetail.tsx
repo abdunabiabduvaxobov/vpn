@@ -369,17 +369,10 @@ export function UserDetail() {
         </CardHeader>
         <CardContent className="flex flex-wrap gap-2">
           <TierActionMenu
-            tier="premium"
-            label="Активировать Premium"
+            tier="pro"
+            label="Активировать Pro"
             busy={busy}
-            onSelect={(days) => applyUpgrade("premium", days)}
-            currentTier={user.subscription_tier}
-          />
-          <TierActionMenu
-            tier="ultimate"
-            label="Активировать Ultimate"
-            busy={busy}
-            onSelect={(days) => applyUpgrade("ultimate", days)}
+            onSelect={(days) => applyUpgrade("pro", days)}
             currentTier={user.subscription_tier}
           />
           <Button
@@ -462,7 +455,7 @@ export function UserDetail() {
             // work for free users?"
             subscription_tier:
               user.subscription_tier === "free"
-                ? "premium"
+                ? "pro"
                 : user.subscription_tier,
             subscription_expires_at: iso,
           });
@@ -1065,7 +1058,7 @@ function toDateInputValue(d: Date): string {
 
 // describeUpdate renders a human-readable toast message from the mutation
 // input so the admin gets an unambiguous confirmation of what they just
-// did ("Продлён Ultimate +90 дней"), not a generic "обновлено".
+// did ("Активирован Pro +90 дней"), not a generic "обновлено".
 function describeUpdate(input: UpdateUserInput): string {
   if (input.subscription_tier === "free") {
     return "Понижен до бесплатного";

@@ -696,7 +696,7 @@ function BroadcastFormDialog({
               <Label htmlFor="b-tier">Тариф (необяз.)</Label>
               <Input
                 id="b-tier"
-                placeholder="free / premium…"
+                placeholder="free / pro…"
                 value={targetTier}
                 onChange={(e) => setTargetTier(e.target.value)}
                 disabled={busy}

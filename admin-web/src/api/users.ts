@@ -6,7 +6,7 @@ import { api } from "@/api/client";
 export interface AdminUser {
   id: string;
   full_name: string;
-  subscription_tier: "free" | "premium" | "ultimate";
+  subscription_tier: "free" | "pro";
   subscription_expires_at: string | null;
   role: "user" | "admin";
   // ADR-006 Telegram recovery binding. All four nullable — users
@@ -64,7 +64,7 @@ export async function getUser(id: string): Promise<AdminUser> {
 // the caller actually wants to change; zero-valued fields are left
 // out rather than sent as empty strings/zeros.
 export interface UpdateUserInput {
-  subscription_tier?: "free" | "premium" | "ultimate";
+  subscription_tier?: "free" | "pro";
   role?: "user" | "admin";
   // RFC3339 timestamp, empty string clears the expiration, undefined
   // leaves the field alone. Matches the backend's *string pointer.
