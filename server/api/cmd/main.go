@@ -234,6 +234,13 @@ func main() {
 		// IP allowlist + X-Api-Key are the auth gates for this route.
 		middleware.SkipRule{Method: fiber.MethodPost, Path: "/api/v1/webhook/lava"},
 		middleware.SkipRule{Path: "/api/v1/admin/", Prefix: true},
+		// ADMIN-07 health probes. Load balancers / uptime monitors call these
+		// without an X-App-Version header — exempt them from the mobile gate.
+		middleware.SkipRule{Method: fiber.MethodGet, Path: "/api/v1/livez"},
+		middleware.SkipRule{Method: fiber.MethodGet, Path: "/api/v1/readyz"},
+		// ADMIN-07 internal machine endpoints (tunnel heartbeat). The tunnel
+		// server is not a mobile client; auth is the X-Internal-Secret gate.
+		middleware.SkipRule{Path: "/api/v1/internal/", Prefix: true},
 	))
 
 	// Redis-backed per-user rate limiting. Decodes the JWT (when present) to
@@ -263,6 +270,21 @@ func main() {
 		handler.LinkDevice(logger, cfg, db),
 	)
 	api.Get("/health", handler.Health())
+
+	// ADMIN-07 K8s-style probes (PUBLIC, no auth, exempt from the AppVersion gate).
+	//   - /livez does zero I/O and 200s whenever the process is alive.
+	//   - /readyz 200s only when DB+Redis+lava(cached)+tunnel-freshness all green,
+	//     else 503 with a status-word-only per-dep map (no leaked error detail).
+	api.Get("/livez", handler.Livez())
+	api.Get("/readyz", handler.Readyz(db, redisClient, lavaClient))
+
+	// ADMIN-07 internal machine endpoints. The /internal group is authed by a
+	// constant-time shared-secret compare (X-Internal-Secret) and is NOT mounted
+	// under /admin — it is intentionally non-audited per RESEARCH §9.2 (a
+	// high-frequency machine endpoint with no admin identity). The AppVersion
+	// gate skips /api/v1/internal/ (SkipRule above).
+	internalGroup := api.Group("/internal", middleware.InternalSecret(cfg.InternalHeartbeatSecret, logger))
+	internalGroup.Post("/servers/:id/heartbeat", handler.HeartbeatServer(logger, db))
 
 	// Phase 3 public plans endpoint (PAY-12). No auth — landing /pricing reads
 	// this. Cached in Redis (cache:plans:public:{currency}, TTL 60s); admin

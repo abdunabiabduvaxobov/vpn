@@ -86,6 +86,12 @@ type Config struct {
 	// Consumers (lava.Client constructor in cmd/main.go) read this; they never
 	// inspect LavaAPIKey vs LavaAPIKeySandbox directly.
 	LavaActiveAPIKey string
+
+	// InternalHeartbeatSecret is the shared secret the tunnel server presents in
+	// the X-Internal-Secret header on POST /api/v1/internal/servers/:id/heartbeat
+	// (ADMIN-07, T-07-08). It is a real auth secret, so RequireEnv() fails fast at
+	// boot when it is unset — the /internal group must never be reachable without it.
+	InternalHeartbeatSecret string
 }
 
 // Load reads configuration from environment variables.
@@ -146,6 +152,9 @@ func Load() (*Config, error) {
 	cfg.LavaWebhookAllowedCIDRs = getEnv("LAVA_WEBHOOK_ALLOWED_CIDRS", "")
 	cfg.LavaSuccessURL = getEnv("LAVA_SUCCESS_URL", "")
 	cfg.LavaFailURL = getEnv("LAVA_FAIL_URL", "")
+
+	// Phase 7 (ADMIN-07): tunnel-heartbeat shared secret. Required at boot.
+	cfg.InternalHeartbeatSecret = getEnv("INTERNAL_HEARTBEAT_SECRET", "")
 	// Resolve active key once at startup; RequireEnv enforces non-empty.
 	switch cfg.LavaEnv {
 	case "sandbox":
@@ -259,6 +268,8 @@ func RequireEnv() []string {
 		"LAVA_WEBHOOK_ALLOWED_CIDRS",
 		"LAVA_SUCCESS_URL",
 		"LAVA_FAIL_URL",
+		// Phase 7 (ADMIN-07 / T-07-08): tunnel-heartbeat shared secret.
+		"INTERNAL_HEARTBEAT_SECRET",
 	}
 	var missing []string
 	for _, key := range required {

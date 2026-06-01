@@ -73,6 +73,8 @@ func TestRequireEnv_ReturnsEmptyWhenAllSet(t *testing.T) {
 	t.Setenv("LAVA_WEBHOOK_ALLOWED_CIDRS", "0.0.0.0/0")
 	t.Setenv("LAVA_SUCCESS_URL", "https://risevpn.com/checkout/success")
 	t.Setenv("LAVA_FAIL_URL", "https://risevpn.com/checkout/fail")
+	// Phase 7 (ADMIN-07 / T-07-08) — tunnel-heartbeat shared secret is required.
+	t.Setenv("INTERNAL_HEARTBEAT_SECRET", "internal-hb-secret")
 
 	missing := config.RequireEnv()
 
@@ -191,6 +193,8 @@ func TestRequireEnv_MissingSSOKeys_Reported(t *testing.T) {
 	t.Setenv("LAVA_WEBHOOK_ALLOWED_CIDRS", "0.0.0.0/0")
 	t.Setenv("LAVA_SUCCESS_URL", "https://x")
 	t.Setenv("LAVA_FAIL_URL", "https://x")
+	// Phase 7 — set so the missing list stays the pure SSO subset.
+	t.Setenv("INTERNAL_HEARTBEAT_SECRET", "x")
 
 	missing := config.RequireEnv()
 

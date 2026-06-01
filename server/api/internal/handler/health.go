@@ -152,6 +152,54 @@ func checkTunnel(parent context.Context, db *gorm.DB) bool {
 	return err == nil && n > 0
 }
 
+// heartbeatRequest is the body the tunnel server POSTs on each heartbeat tick.
+// concurrent_conns is accepted for forward-compat but not yet persisted (v1).
+type heartbeatRequest struct {
+	LoadPercent     int `json:"load_percent"`
+	ConcurrentConns int `json:"concurrent_conns"`
+}
+
+// HeartbeatServer handles POST /api/v1/internal/servers/:id/heartbeat.
+//
+// Authed upstream by the InternalSecret middleware (constant-time shared-secret
+// compare). It records the tunnel's liveness by stamping vpn_servers.last_seen_at
+// = now and updating current_load, then returns 204. This endpoint is the one
+// intentionally NON-audited machine endpoint (RESEARCH §9.2): it is high-frequency
+// and carries no admin identity, so it does not mount under /admin's AuditLog.
+func HeartbeatServer(logger *zap.Logger, db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		serverID := c.Params("id")
+		if serverID == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "missing server id"})
+		}
+
+		var req heartbeatRequest
+		if err := c.BodyParser(&req); err != nil {
+			// A malformed body is a tunnel-side bug; record the heartbeat with a
+			// zero load rather than 4xx-flapping the freshness signal? No — a bad
+			// body means we cannot trust the payload, so reject it explicitly.
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		}
+
+		load := req.LoadPercent
+		if load < 0 {
+			load = 0
+		}
+		if load > 100 {
+			load = 100
+		}
+
+		if err := repository.TouchServerHeartbeat(c.Context(), db, serverID, load); err != nil {
+			logger.Error("heartbeat: TouchServerHeartbeat failed",
+				zap.String("server_id", serverID), zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "internal server error",
+			})
+		}
+		return c.SendStatus(fiber.StatusNoContent)
+	}
+}
+
 // GetSubscription handles GET /subscription.
 // Returns the user's active subscription from the database.
 //
