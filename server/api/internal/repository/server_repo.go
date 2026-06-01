@@ -56,6 +56,33 @@ func TouchServerHeartbeat(ctx context.Context, db *gorm.DB, serverID string, loa
 		}).Error
 }
 
+// ServerHealthRow is the per-server health detail the ADMIN-08 deps-health
+// endpoint returns: enough for an operator to see which tunnel is stale without
+// exposing the full VPNServer row (keys, endpoints). Admin-only — this detail
+// must NOT leak from the public /readyz (T-07-37).
+type ServerHealthRow struct {
+	ID          string     `json:"id"`
+	Hostname    string     `json:"hostname"`
+	IsActive    bool       `json:"is_active"`
+	CurrentLoad int        `json:"current_load"`
+	LastSeenAt  *time.Time `json:"last_seen_at"`
+}
+
+// ListServerHealth returns the per-server heartbeat detail for the admin
+// deps-health page, ordered by hostname for a stable display. ctx-threaded so a
+// slow read cannot hang the request beyond its deadline. It deliberately selects
+// only the health-relevant columns — never the REALITY keys / endpoints on the
+// full VPNServer row.
+func ListServerHealth(ctx context.Context, db *gorm.DB) ([]ServerHealthRow, error) {
+	var rows []ServerHealthRow
+	result := db.WithContext(ctx).
+		Model(&model.VPNServer{}).
+		Select("id", "hostname", "is_active", "current_load", "last_seen_at").
+		Order("hostname ASC").
+		Find(&rows)
+	return rows, result.Error
+}
+
 // FindServerByID looks up a VPN server by UUID.
 func FindServerByID(ctx context.Context, db *gorm.DB, id string) (*model.VPNServer, error) {
 	var server model.VPNServer

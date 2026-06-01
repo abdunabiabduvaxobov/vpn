@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
 
 	"vpnapp/server/api/internal/cache"
+	"vpnapp/server/api/internal/lava"
 	"vpnapp/server/api/internal/model"
 	"vpnapp/server/api/internal/repository"
 
@@ -226,6 +228,82 @@ func AdminDeleteBroadcast(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
 		return c.JSON(fiber.Map{"data": fiber.Map{"id": id}})
+	}
+}
+
+// AdminDepsHealth handles GET /admin/system/deps-health (ADMIN-08).
+//
+// It returns a DETAILED dependency map for the admin System page: live status
+// for postgres / redis / lava plus a per-tunnel-server list carrying
+// last_seen_at, current_load, and a fresh flag (last_seen_at within
+// tunnelFreshWindow). Unlike the public /readyz — which returns status WORDS
+// only so anonymous callers never see topology (T-07-09) — this route is on the
+// AdminRequired group, so the per-server detail is intentionally exposed
+// (T-07-37: gated behind admin auth).
+//
+// It reuses the SAME probe building blocks as Readyz (checkPostgres, checkRedis,
+// checkLava) so the DB/Redis checks carry the same 500ms timeouts and the lava
+// verdict comes from the ≤60s Redis cache — never a flaky per-poll dial
+// (T-07-38). Unlike Readyz it never 503s: it always returns 200 with whatever
+// the current per-dep status is, because the System page wants to RENDER a
+// degraded dep, not be told the request failed.
+func AdminDepsHealth(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client, lavaClient *lava.Client) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		ctx := c.Context()
+
+		servers, err := repository.ListServerHealth(ctx, db)
+		if err != nil {
+			logger.Error("admin: failed to list server health", zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+
+		cutoff := time.Now().Add(-tunnelFreshWindow)
+		tunnelServers := make([]fiber.Map, 0, len(servers))
+		for _, s := range servers {
+			fresh := s.LastSeenAt != nil && s.LastSeenAt.After(cutoff)
+			tunnelServers = append(tunnelServers, fiber.Map{
+				"id":           s.ID,
+				"hostname":     s.Hostname,
+				"is_active":    s.IsActive,
+				"current_load": s.CurrentLoad,
+				"last_seen_at": s.LastSeenAt,
+				"fresh":        fresh,
+			})
+		}
+
+		return c.JSON(fiber.Map{"data": fiber.Map{
+			"postgres":       statusWord(checkPostgres(ctx, db)),
+			"redis":          statusWord(checkRedis(ctx, redisClient)),
+			"lava":           lavaStatusWord(checkLavaVerdict(ctx, redisClient)),
+			"tunnel_servers": tunnelServers,
+		}})
+	}
+}
+
+// checkLavaVerdict reads the cached lava reachability verdict WITHOUT triggering
+// a dial. It mirrors the cache-read half of checkLava but, for the admin
+// deps-health view, distinguishes a cache miss ("unknown") from a definitive
+// "down" — the System page can render "unknown" honestly instead of falsely
+// claiming lava is down before the first verdict has been cached. It never
+// dials lava itself (T-07-38: reuses the same ≤60s cache as readyz).
+func checkLavaVerdict(ctx context.Context, redisClient *redis.Client) string {
+	verdict, _ := cache.GetLavaReachable(ctx, redisClient)
+	switch verdict {
+	case "ok", "down":
+		return verdict
+	default:
+		return "unknown"
+	}
+}
+
+// lavaStatusWord maps a cached lava verdict to the deps-health value. "ok"/"down"
+// pass through; anything else (cache miss) is "unknown".
+func lavaStatusWord(verdict string) string {
+	switch verdict {
+	case "ok", "down":
+		return verdict
+	default:
+		return "unknown"
 	}
 }
 

@@ -442,6 +442,12 @@ func main() {
 	admin.Post("/broadcasts", handler.AdminCreateBroadcast(logger, db))
 	admin.Patch("/broadcasts/:id", handler.AdminUpdateBroadcast(logger, db))
 	admin.Delete("/broadcasts/:id", handler.AdminDeleteBroadcast(logger, db))
+	// ADMIN-08 admin-only dependencies-health. Reuses the readyz probe (DB/Redis
+	// 500ms checks + the ≤60s Redis-cached lava reachability — no per-poll dial)
+	// and adds a per-tunnel-server last_seen_at + fresh flag. Detail is allowed
+	// here because the route is admin-authed (T-07-37); the public /readyz still
+	// returns status words only. GET, so AuditLog skips it.
+	admin.Get("/system/deps-health", handler.AdminDepsHealth(logger, db, redisClient, lavaClient))
 	// ADMIN-06 webhook event log + idempotent replay. List redacts buyer emails
 	// (T-07-34); detail shows the full payload (audited GET, §9.4); replay
 	// re-applies the STORED event via handler.applyLavaEvent under the same
