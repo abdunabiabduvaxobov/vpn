@@ -121,6 +121,8 @@ func describeAction(method, path string) string {
 		return "unsuspend_user"
 	case method == fiber.MethodPost && strings.HasPrefix(stripped, "/admin/users/") && strings.HasSuffix(stripped, "/disconnect"):
 		return "disconnect_user"
+	case method == fiber.MethodPost && strings.HasPrefix(stripped, "/admin/users/") && strings.HasSuffix(stripped, "/cancel-subscription"):
+		return "cancel_subscription"
 	case method == fiber.MethodPatch && strings.HasPrefix(stripped, "/admin/users/"):
 		return "update_user"
 	// Device delete must come before user delete because the device URL

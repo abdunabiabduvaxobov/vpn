@@ -275,6 +275,163 @@ func AdminListUserSessions(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	}
 }
 
+// cancelSubscriptionRequest is the force-cancel body. refund records ONLY a
+// local refund INTENT (A3 — internal/lava/ has no refund method, so no lava
+// refund endpoint is called); reason is the operator's required justification.
+type cancelSubscriptionRequest struct {
+	Refund bool   `json:"refund"`
+	Reason string `json:"reason"`
+}
+
+// errAlreadyCancelled is the sentinel returned from inside the WithUserLock
+// closure when the user's subscription is already cancelled, so the handler can
+// respond 409 without performing a (duplicate) cancel. It is NOT a DB error —
+// the transaction commits with no writes.
+var errAlreadyCancelled = errors.New("subscription already cancelled")
+
+// AdminCancelSubscription handles POST /admin/users/:id/cancel-subscription.
+// Body: {refund bool, reason string}. This is the ADMIN-03 force-cancel: it
+// resets the user to the system (free) plan and marks their active lava_contract
+// cancelled, all inside repository.WithUserLock keyed on the user_id — the SAME
+// key the lava webhook tier-grant path takes. The advisory lock serializes the
+// two writers so a force-cancel racing a payment.success can never leave a
+// hybrid state (tier=free with an active contract, or tier=pro with a cancelled
+// contract); the final state is always one of the two consistent outcomes
+// (proven by integration.TestForceCancelWebhookRace).
+//
+// A3 (LOCKED): refund=true records refund INTENT in the audit row only — there
+// is NO lava refund method and none is called. already-cancelled → 409 (no
+// double-cancel). The action is audited with the reason + refund_intent.
+func AdminCancelSubscription(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		userID := c.Params("id")
+		if userID == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "user id required"})
+		}
+		var req cancelSubscriptionRequest
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		}
+		reason := strings.TrimSpace(req.Reason)
+		if reason == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "reason is required"})
+		}
+		if len(reason) > maxSuspendReasonLen {
+			reason = reason[:maxSuspendReasonLen]
+		}
+		adminID, _ := c.Locals("user_id").(string)
+
+		var cancelledAt time.Time
+		var subscriptionID string
+
+		// All state reads + writes happen inside the advisory lock so the
+		// re-read of current state and the downgrade are serialized against a
+		// concurrent webhook tier-grant on the same user (ADMIN-03 / T-07-18).
+		lockErr := repository.WithUserLock(c.Context(), db, userID, func(tx *gorm.DB) error {
+			// 1. Re-read the user ON tx so we see the latest committed state
+			//    (a webhook that just granted Pro is now visible / serialized).
+			var u model.User
+			if err := tx.Where("id = ?", userID).First(&u).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return repository.ErrNotFound
+				}
+				return err
+			}
+
+			// 2. Find the user's active lava contract (if any). already-cancelled
+			//    means there is no active contract AND the user is already on a
+			//    non-paid tier — respond 409 (no double-cancel).
+			var contract model.LavaContract
+			contractErr := tx.Where("user_id = ? AND is_active = ?", userID, true).
+				Order("started_at DESC").First(&contract).Error
+			hasActiveContract := contractErr == nil
+			if contractErr != nil && !errors.Is(contractErr, gorm.ErrRecordNotFound) {
+				return contractErr
+			}
+			if !hasActiveContract {
+				// No active contract to cancel. If the user is already on the
+				// system/free plan there is nothing to do → 409.
+				return errAlreadyCancelled
+			}
+
+			// 3. Reset the user to the system (free) plan on tx (mirror
+			//    SetUserPlanTx with the system plan id, no contract, nil expiry).
+			var systemPlan model.Plan
+			if err := tx.Where("is_system = ?", true).First(&systemPlan).Error; err != nil {
+				return err
+			}
+			if err := repository.SetUserPlanTx(tx, userID, systemPlan.ID, nil, nil); err != nil {
+				return err
+			}
+
+			// 4. Mark the active contract cancelled.
+			now := time.Now()
+			if err := tx.Model(&model.LavaContract{}).
+				Where("id = ?", contract.ID).
+				Updates(map[string]interface{}{
+					"is_active":    false,
+					"cancelled_at": &now,
+				}).Error; err != nil {
+				return err
+			}
+			cancelledAt = now
+			subscriptionID = contract.ContractID
+
+			// 5. Audit the force-cancel ON tx so the row is part of the same
+			//    serialized transaction (reason + refund INTENT — A3).
+			if adminID != "" {
+				t := userID
+				entry := &model.AuditLogEntry{
+					AdminID:  adminID,
+					Action:   "cancel_subscription",
+					TargetID: &t,
+					Details: model.AuditDetails{
+						"reason":        reason,
+						"refund_intent": req.Refund,
+					},
+					IP: c.IP(),
+				}
+				if err := repository.CreateAuditEntry(c.Context(), tx, entry); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+
+		if lockErr != nil {
+			if errors.Is(lockErr, errAlreadyCancelled) {
+				return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "subscription already cancelled"})
+			}
+			if errors.Is(lockErr, repository.ErrNotFound) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+			}
+			logger.Error("admin: failed to force-cancel subscription",
+				zap.String("user_id", userID), zap.Error(lockErr))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
+		}
+
+		// After the lock commits: bust the entitlement cache so the downgrade is
+		// reflected on the next AuthRequired pass. Best-effort (5s TTL backstop).
+		if err := cache.BustUserCache(c.Context(), redisClient, userID); err != nil {
+			logger.Warn("admin: BustUserCache failed on cancel-subscription (5s TTL is the backstop)",
+				zap.String("user_id", userID), zap.Error(err))
+		}
+
+		refundStatus := "none"
+		if req.Refund {
+			refundStatus = "intent_recorded"
+		}
+		logger.Info("admin: force-cancelled subscription",
+			zap.String("user_id", userID), zap.Bool("refund_intent", req.Refund))
+
+		return c.JSON(fiber.Map{"data": fiber.Map{
+			"subscription_id": subscriptionID,
+			"cancelled_at":    cancelledAt.UTC().Format(time.RFC3339),
+			"refund_status":   refundStatus,
+		}})
+	}
+}
+
 // writeUserControlAudit persists the explicit, reason-carrying audit row for a
 // per-user control action. The acting admin is read from c.Locals("user_id")
 // (set by AuthRequired). A persistence failure is logged but never fails the

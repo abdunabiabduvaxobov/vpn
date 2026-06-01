@@ -395,6 +395,10 @@ func main() {
 	admin.Post("/users/:id/suspend", handler.AdminSuspendUser(logger, db, redisClient))
 	admin.Post("/users/:id/unsuspend", handler.AdminUnsuspendUser(logger, db, redisClient))
 	admin.Post("/users/:id/disconnect", handler.AdminDisconnectUser(logger, db, redisClient))
+	// ADMIN-03 force-cancel: resets the user to the system plan + marks the
+	// active lava contract cancelled, serialized against the webhook tier-grant
+	// via repository.WithUserLock on the same user_id (never a hybrid state).
+	admin.Post("/users/:id/cancel-subscription", handler.AdminCancelSubscription(logger, db, redisClient))
 	admin.Get("/users/:id/audit-log", handler.AdminGetUserAuditLog(logger, db))
 	admin.Get("/users/:id/sessions", handler.AdminListUserSessions(logger, db))
 	admin.Get("/audit-log", handler.AdminGetAuditLog(logger, db))

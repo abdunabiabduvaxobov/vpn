@@ -99,6 +99,30 @@ func newUserControlsDB(t *testing.T) *gorm.DB {
 			created_at        DATETIME,
 			updated_at        DATETIME
 		);
+		CREATE TABLE IF NOT EXISTS subscriptions (
+			id               TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			user_id          TEXT NOT NULL,
+			plan             TEXT NOT NULL DEFAULT 'free',
+			lava_contract_id TEXT,
+			is_active        INTEGER NOT NULL DEFAULT 1,
+			started_at       DATETIME,
+			expires_at       DATETIME
+		);
+		CREATE TABLE IF NOT EXISTS lava_contracts (
+			id                 TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			user_id            TEXT NOT NULL,
+			contract_id        TEXT NOT NULL UNIQUE,
+			parent_contract_id TEXT,
+			offer_id           TEXT NOT NULL,
+			plan               TEXT NOT NULL,
+			periodicity        TEXT NOT NULL,
+			currency           TEXT NOT NULL,
+			is_active          INTEGER NOT NULL DEFAULT 1,
+			started_at         DATETIME,
+			expires_at         DATETIME,
+			cancelled_at       DATETIME,
+			created_at         DATETIME
+		);
 	`
 	if err := db.Exec(ddl).Error; err != nil {
 		t.Fatalf("failed to create test tables: %v", err)
@@ -346,6 +370,168 @@ func TestAdminUserControls(t *testing.T) {
 		sResp, _ := sApp.Test(httptest.NewRequest(http.MethodGet, "/admin/users/"+userID+"/sessions", nil))
 		if sResp.StatusCode != http.StatusOK {
 			t.Errorf("sessions: expected 200, got %d", sResp.StatusCode)
+		}
+	})
+}
+
+// seedSystemPlan inserts the single is_system=true (free) plan the force-cancel
+// reset downgrades to, and returns its id.
+func seedSystemPlan(t *testing.T, db *gorm.DB) string {
+	t.Helper()
+	id := uuid.NewString()
+	if err := db.Exec(
+		`INSERT INTO plans (id, code, name, is_active, is_system, created_at, updated_at) VALUES (?, 'free', 'Free', 1, 1, ?, ?)`,
+		id, time.Now(), time.Now(),
+	).Error; err != nil {
+		t.Fatalf("seed system plan: %v", err)
+	}
+	return id
+}
+
+// seedPaidContract gives a user an active lava_contract + active subscription so
+// force-cancel has something to cancel. Returns the lava contract_id.
+func seedPaidContract(t *testing.T, db *gorm.DB, userID string) string {
+	t.Helper()
+	contractID := uuid.NewString()
+	if err := db.Exec(
+		`INSERT INTO lava_contracts (id, user_id, contract_id, offer_id, plan, periodicity, currency, is_active, started_at, created_at)
+		 VALUES (?, ?, ?, 'offer-1', 'pro', 'MONTHLY', 'USD', 1, ?, ?)`,
+		uuid.NewString(), userID, contractID, time.Now(), time.Now(),
+	).Error; err != nil {
+		t.Fatalf("seed lava contract: %v", err)
+	}
+	if err := db.Exec(
+		`INSERT INTO subscriptions (id, user_id, plan, lava_contract_id, is_active, started_at) VALUES (?, ?, 'pro', ?, 1, ?)`,
+		uuid.NewString(), userID, contractID, time.Now(),
+	).Error; err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+	return contractID
+}
+
+// postCancel POSTs the force-cancel body {refund, reason}.
+func postCancel(t *testing.T, app *fiber.App, path, reason string, refund bool) *http.Response {
+	t.Helper()
+	body, _ := json.Marshal(map[string]interface{}{"reason": reason, "refund": refund})
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request %s: %v", path, err)
+	}
+	return resp
+}
+
+// TestAdminCancelSubscription exercises the ADMIN-03 force-cancel handler on
+// SQLite (the advisory-lock SELECT is skipped on non-postgres but the write
+// logic runs). The live serialization proof is integration.TestForceCancelWebhookRace.
+func TestAdminCancelSubscription(t *testing.T) {
+	t.Run("force-cancel downgrades to system plan, cancels contract, records refund intent + audit", func(t *testing.T) {
+		db := newUserControlsDB(t)
+		rdb := newUserControlsRedis(t)
+		systemPlanID := seedSystemPlan(t, db)
+		userID := seedControlsUser(t, db, "pro")
+		contractID := seedPaidContract(t, db, userID)
+
+		app, _ := adminApp(http.MethodPost, "/admin/users/:id/cancel-subscription",
+			handler.AdminCancelSubscription(zap.NewNop(), db, rdb))
+		resp := postCancel(t, app, "/admin/users/"+userID+"/cancel-subscription", "chargeback fraud", true)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("cancel: expected 200, got %d", resp.StatusCode)
+		}
+
+		// User reset to the system (free) plan.
+		var u model.User
+		if err := db.First(&u, "id = ?", userID).Error; err != nil {
+			t.Fatalf("reload user: %v", err)
+		}
+		if u.PlanID != systemPlanID {
+			t.Errorf("cancel: plan_id = %q, want system %q", u.PlanID, systemPlanID)
+		}
+		if u.SubscriptionTier != "free" {
+			t.Errorf("cancel: subscription_tier = %q, want free", u.SubscriptionTier)
+		}
+
+		// Contract marked cancelled.
+		var contract model.LavaContract
+		if err := db.First(&contract, "contract_id = ?", contractID).Error; err != nil {
+			t.Fatalf("reload contract: %v", err)
+		}
+		if contract.IsActive {
+			t.Error("cancel: contract should be is_active=false")
+		}
+		if contract.CancelledAt == nil {
+			t.Error("cancel: contract cancelled_at should be set")
+		}
+
+		// Audit row carries reason + refund_intent.
+		var entries []model.AuditLogEntry
+		if err := db.Where("action = ? AND target_id = ?", "cancel_subscription", userID).Find(&entries).Error; err != nil {
+			t.Fatalf("load audit: %v", err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("cancel: expected 1 cancel_subscription audit row, got %d", len(entries))
+		}
+		if got, _ := entries[0].Details["reason"].(string); got != "chargeback fraud" {
+			t.Errorf("cancel: audit reason = %q, want %q", got, "chargeback fraud")
+		}
+		if got, _ := entries[0].Details["refund_intent"].(bool); !got {
+			t.Errorf("cancel: audit refund_intent = %v, want true", entries[0].Details["refund_intent"])
+		}
+	})
+
+	t.Run("already-cancelled (no active contract) returns 409", func(t *testing.T) {
+		db := newUserControlsDB(t)
+		rdb := newUserControlsRedis(t)
+		seedSystemPlan(t, db)
+		userID := seedControlsUser(t, db, "free") // no active contract
+
+		app, _ := adminApp(http.MethodPost, "/admin/users/:id/cancel-subscription",
+			handler.AdminCancelSubscription(zap.NewNop(), db, rdb))
+		resp := postCancel(t, app, "/admin/users/"+userID+"/cancel-subscription", "no contract here", false)
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("already-cancelled: expected 409, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("empty reason is rejected with 400", func(t *testing.T) {
+		db := newUserControlsDB(t)
+		rdb := newUserControlsRedis(t)
+		seedSystemPlan(t, db)
+		userID := seedControlsUser(t, db, "pro")
+		seedPaidContract(t, db, userID)
+
+		app, _ := adminApp(http.MethodPost, "/admin/users/:id/cancel-subscription",
+			handler.AdminCancelSubscription(zap.NewNop(), db, rdb))
+		resp := postCancel(t, app, "/admin/users/"+userID+"/cancel-subscription", "   ", false)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("empty reason: expected 400, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("refund=false records refund_status none", func(t *testing.T) {
+		db := newUserControlsDB(t)
+		rdb := newUserControlsRedis(t)
+		seedSystemPlan(t, db)
+		userID := seedControlsUser(t, db, "pro")
+		seedPaidContract(t, db, userID)
+
+		app, _ := adminApp(http.MethodPost, "/admin/users/:id/cancel-subscription",
+			handler.AdminCancelSubscription(zap.NewNop(), db, rdb))
+		resp := postCancel(t, app, "/admin/users/"+userID+"/cancel-subscription", "downgrade request", false)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("cancel refund=false: expected 200, got %d", resp.StatusCode)
+		}
+		var body struct {
+			Data struct {
+				RefundStatus string `json:"refund_status"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if body.Data.RefundStatus != "none" {
+			t.Errorf("refund=false: refund_status = %q, want none", body.Data.RefundStatus)
 		}
 	})
 }

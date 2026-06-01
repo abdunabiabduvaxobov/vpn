@@ -211,30 +211,45 @@ func handleLavaPaymentSuccess(ctx context.Context, logger *zap.Logger, db *gorm.
 		expiresAt = &t
 	}
 
-	// 1. SetUserPlan — transactional update of users + subscriptions row.
 	contractID := event.ContractID
-	if err := repository.SetUserPlan(ctx, db, inv.UserID, offerRow.PlanID, &contractID, expiresAt); err != nil {
-		return fmt.Errorf("payment.success: SetUserPlan(%s, %s): %w", inv.UserID, offerRow.PlanID, err)
-	}
 
-	// 2. UpsertLavaContract. Plan field uses freshly-resolved plan.Code (NOT inv.Plan) — PAY-08 defence-in-depth.
-	if err := repository.UpsertLavaContract(ctx, db, &model.LavaContract{
-		UserID:      inv.UserID,
-		ContractID:  contractID,
-		OfferID:     inv.OfferID,
-		Plan:        plan.Code, // freshly resolved via FindPlanByID, NOT inv.Plan denormalisation
-		Periodicity: inv.Periodicity,
-		Currency:    inv.Currency,
-		IsActive:    true,
-		StartedAt:   startedAt,
-		ExpiresAt:   expiresAt,
+	// ADMIN-03: serialize this tier-grant against the admin force-cancel path on
+	// the SAME per-user advisory lock key (repository.WithUserLock keyed on the
+	// resolved inv.UserID) so the two can never interleave into a hybrid state.
+	// The lock is ADDITIONAL — lava_webhook_events UNIQUE (checked in
+	// HandleLavaWebhook BEFORE dispatch, outside this lock) still provides event
+	// idempotency; this lock only serializes the user/subscription/contract
+	// WRITE block. All writes run on tx (the lock-holding transaction); using
+	// SetUserPlanTx instead of SetUserPlan keeps them inside the lock rather than
+	// opening a second, un-locked transaction.
+	if err := repository.WithUserLock(ctx, db, inv.UserID, func(tx *gorm.DB) error {
+		// 1. SetUserPlanTx — users + subscriptions row, on the lock tx.
+		if err := repository.SetUserPlanTx(tx, inv.UserID, offerRow.PlanID, &contractID, expiresAt); err != nil {
+			return fmt.Errorf("payment.success: SetUserPlanTx(%s, %s): %w", inv.UserID, offerRow.PlanID, err)
+		}
+
+		// 2. UpsertLavaContract. Plan field uses freshly-resolved plan.Code (NOT inv.Plan) — PAY-08 defence-in-depth.
+		if err := repository.UpsertLavaContract(ctx, tx, &model.LavaContract{
+			UserID:      inv.UserID,
+			ContractID:  contractID,
+			OfferID:     inv.OfferID,
+			Plan:        plan.Code, // freshly resolved via FindPlanByID, NOT inv.Plan denormalisation
+			Periodicity: inv.Periodicity,
+			Currency:    inv.Currency,
+			IsActive:    true,
+			StartedAt:   startedAt,
+			ExpiresAt:   expiresAt,
+		}); err != nil {
+			return fmt.Errorf("payment.success: UpsertLavaContract: %w", err)
+		}
+
+		// 3. Flip invoice status.
+		if err := repository.UpdateInvoiceStatus(ctx, tx, inv.ID, "paid"); err != nil {
+			return fmt.Errorf("payment.success: UpdateInvoiceStatus: %w", err)
+		}
+		return nil
 	}); err != nil {
-		return fmt.Errorf("payment.success: UpsertLavaContract: %w", err)
-	}
-
-	// 3. Flip invoice status.
-	if err := repository.UpdateInvoiceStatus(ctx, db, inv.ID, "paid"); err != nil {
-		return fmt.Errorf("payment.success: UpdateInvoiceStatus: %w", err)
+		return err
 	}
 
 	// PERF-04 / D-06: Pro is now granted — bust user:<id> so the buyer's
@@ -297,29 +312,40 @@ func handleLavaRecurringSuccess(ctx context.Context, logger *zap.Logger, db *gor
 		// returning record-not-found on every retry.
 		return fmt.Errorf("recurring.success: planIDFromContract: %w", planErr)
 	}
-	if err := repository.SetUserPlan(ctx, db, parent.UserID, planID, &contractID, &newExp); err != nil {
-		return fmt.Errorf("recurring.success: SetUserPlan: %w", err)
-	}
+	// ADMIN-03: same per-user advisory lock as payment.success and admin
+	// force-cancel — keyed on the resolved parent.UserID — serializes this
+	// renewal grant so it can never interleave a force-cancel into a hybrid
+	// state. Lock is ADDITIVE to the lava_webhook_events UNIQUE idempotency
+	// (checked before dispatch, outside this lock). All writes run on tx.
+	if err := repository.WithUserLock(ctx, db, parent.UserID, func(tx *gorm.DB) error {
+		// SetUserPlanTx with new expires_at (keeps same plan_id; just refreshes expiry).
+		if err := repository.SetUserPlanTx(tx, parent.UserID, planID, &contractID, &newExp); err != nil {
+			return fmt.Errorf("recurring.success: SetUserPlanTx: %w", err)
+		}
 
-	// Upsert child contract with parent_contract_id set.
-	if err := repository.UpsertLavaContract(ctx, db, &model.LavaContract{
-		UserID:           parent.UserID,
-		ContractID:       contractID,
-		ParentContractID: &parentID,
-		OfferID:          parent.OfferID,
-		Plan:             parent.Plan,
-		Periodicity:      parent.Periodicity,
-		Currency:         parent.Currency,
-		IsActive:         true,
-		StartedAt:        startedAt,
-		ExpiresAt:        &newExp,
+		// Upsert child contract with parent_contract_id set.
+		if err := repository.UpsertLavaContract(ctx, tx, &model.LavaContract{
+			UserID:           parent.UserID,
+			ContractID:       contractID,
+			ParentContractID: &parentID,
+			OfferID:          parent.OfferID,
+			Plan:             parent.Plan,
+			Periodicity:      parent.Periodicity,
+			Currency:         parent.Currency,
+			IsActive:         true,
+			StartedAt:        startedAt,
+			ExpiresAt:        &newExp,
+		}); err != nil {
+			return fmt.Errorf("recurring.success: UpsertLavaContract: %w", err)
+		}
+
+		// Also refresh parent's expires_at so the local view stays consistent.
+		if err := tx.Model(&model.LavaContract{}).Where("contract_id = ?", parentID).Update("expires_at", &newExp).Error; err != nil {
+			return fmt.Errorf("recurring.success: update parent expires_at: %w", err)
+		}
+		return nil
 	}); err != nil {
-		return fmt.Errorf("recurring.success: UpsertLavaContract: %w", err)
-	}
-
-	// Also refresh parent's expires_at so the local view stays consistent.
-	if err := db.Model(&model.LavaContract{}).Where("contract_id = ?", parentID).Update("expires_at", &newExp).Error; err != nil {
-		return fmt.Errorf("recurring.success: update parent expires_at: %w", err)
+		return err
 	}
 
 	// PERF-04 / D-06: expiry just extended — bust user:<id> so the renewed
