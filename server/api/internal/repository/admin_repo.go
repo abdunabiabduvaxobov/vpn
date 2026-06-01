@@ -166,6 +166,140 @@ func GetGlobalStats(ctx context.Context, db *gorm.DB) (map[string]interface{}, e
 	}, nil
 }
 
+// GetDashboardKPIs returns the GetGlobalStats aggregate counts PLUS the
+// ADMIN-01 live KPIs the operator dashboard's KPI bar shows:
+//
+//	paid_users          users on a non-system plan whose subscription has not lapsed
+//	active_connections  connections currently up (heartbeat within the last 2 minutes)
+//	signups_today/week/month  new users created in the trailing 1/7/30 days
+//	churn_30d           lava_contracts cancelled in the last 30 days
+//	failed_payments_30d lava_webhook_events of a *failed* type in the last 30 days
+//
+// The four GetGlobalStats keys (total_users, active_subscriptions, server_count,
+// active_server_count) are preserved unchanged — no regression.
+//
+// Time bounds are computed in Go and passed as bind parameters so the same
+// queries run on both Postgres (production) and SQLite (handler tests) without
+// dialect-specific `now() - interval` literals. Every query threads ctx
+// (PERF-07) via the single db.WithContext(ctx) session below.
+func GetDashboardKPIs(ctx context.Context, db *gorm.DB) (map[string]interface{}, error) {
+	if db == nil {
+		return nil, errNilDB
+	}
+
+	// Start from the existing global stats so the four legacy keys are
+	// guaranteed present and unchanged.
+	stats, err := GetGlobalStats(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+
+	db = db.WithContext(ctx)
+	now := time.Now().UTC()
+	heartbeatCutoff := now.Add(-2 * time.Minute)
+	dayAgo := now.AddDate(0, 0, -1)
+	weekAgo := now.AddDate(0, 0, -7)
+	monthAgo := now.AddDate(0, 0, -30)
+
+	// paid_users: on a non-system plan AND not lapsed. The system plan code is
+	// resolved via a correlated subquery against plans.is_system so we never
+	// hardcode the free-tier code.
+	var paidUsers int64
+	if err := db.Model(&model.User{}).
+		Where("subscription_tier != (SELECT code FROM plans WHERE is_system = ? LIMIT 1)", true).
+		Where("subscription_expires_at IS NULL OR subscription_expires_at > ?", now).
+		Count(&paidUsers).Error; err != nil {
+		return nil, fmt.Errorf("counting paid users: %w", err)
+	}
+
+	// active_connections: still up and heartbeating within the last 2 minutes.
+	var activeConnections int64
+	if err := db.Model(&model.Connection{}).
+		Where("disconnected_at IS NULL AND last_heartbeat_at > ?", heartbeatCutoff).
+		Count(&activeConnections).Error; err != nil {
+		return nil, fmt.Errorf("counting active connections: %w", err)
+	}
+
+	// signups_today / week / month: trailing windows on users.created_at.
+	var signupsToday, signupsWeek, signupsMonth int64
+	if err := db.Model(&model.User{}).Where("created_at > ?", dayAgo).Count(&signupsToday).Error; err != nil {
+		return nil, fmt.Errorf("counting signups today: %w", err)
+	}
+	if err := db.Model(&model.User{}).Where("created_at > ?", weekAgo).Count(&signupsWeek).Error; err != nil {
+		return nil, fmt.Errorf("counting signups week: %w", err)
+	}
+	if err := db.Model(&model.User{}).Where("created_at > ?", monthAgo).Count(&signupsMonth).Error; err != nil {
+		return nil, fmt.Errorf("counting signups month: %w", err)
+	}
+
+	// churn_30d: lava_contracts cancelled in the last 30 days (A2 — no new column).
+	var churn30d int64
+	if err := db.Table("lava_contracts").
+		Where("cancelled_at > ?", monthAgo).
+		Count(&churn30d).Error; err != nil {
+		return nil, fmt.Errorf("counting 30d churn: %w", err)
+	}
+
+	// failed_payments_30d: webhook events of a failed type in the last 30 days.
+	var failedPayments30d int64
+	if err := db.Table("lava_webhook_events").
+		Where("event_type LIKE ? AND received_at > ?", "%failed%", monthAgo).
+		Count(&failedPayments30d).Error; err != nil {
+		return nil, fmt.Errorf("counting 30d failed payments: %w", err)
+	}
+
+	stats["paid_users"] = paidUsers
+	stats["active_connections"] = activeConnections
+	stats["signups_today"] = signupsToday
+	stats["signups_week"] = signupsWeek
+	stats["signups_month"] = signupsMonth
+	stats["churn_30d"] = churn30d
+	stats["failed_payments_30d"] = failedPayments30d
+
+	return stats, nil
+}
+
+// GetMRR returns an estimated monthly recurring revenue for the given currency,
+// summed over the active paid users. Each paid user contributes the amount of
+// the active offer for their plan in that currency: a MONTHLY offer contributes
+// its full amount; a PERIOD_YEAR offer contributes amount/12 (annualised to a
+// monthly figure). Users whose plan has no matching active offer in the
+// requested currency contribute nothing.
+//
+// Returns (0, nil) when there are no paid users — an empty book is not an error.
+// The whole expression is one aggregate query so the dashboard's 60s poll
+// collapses to a single round-trip (and is cached 5 min in Redis by the caller,
+// T-07-05). currency is a bound parameter, never string-concatenated (T-07-07).
+func GetMRR(ctx context.Context, db *gorm.DB, currency string) (float64, error) {
+	if db == nil {
+		return 0, errNilDB
+	}
+
+	now := time.Now().UTC()
+
+	// Join users → their plan's active offer for the requested currency.
+	// MONTHLY contributes amount, PERIOD_YEAR contributes amount/12; any other
+	// periodicity contributes 0. COALESCE keeps the SUM defined (0) when no
+	// rows match. Parameterised CASE bounds + currency filter — no concatenation.
+	var mrr float64
+	row := db.WithContext(ctx).
+		Table("users").
+		Select(`COALESCE(SUM(
+			CASE
+				WHEN plan_offers.periodicity = ? THEN plan_offers.amount
+				WHEN plan_offers.periodicity = ? THEN plan_offers.amount / 12.0
+				ELSE 0
+			END), 0)`, "MONTHLY", "PERIOD_YEAR").
+		Joins("JOIN plans ON plans.id = users.plan_id AND plans.is_system = ?", false).
+		Joins("JOIN plan_offers ON plan_offers.plan_id = users.plan_id AND plan_offers.currency = ? AND plan_offers.is_active = ?", currency, true).
+		Where("users.subscription_expires_at IS NULL OR users.subscription_expires_at > ?", now).
+		Row()
+	if err := row.Scan(&mrr); err != nil {
+		return 0, fmt.Errorf("computing MRR for %s: %w", currency, err)
+	}
+	return mrr, nil
+}
+
 // TimeseriesBucket is a single day in a dashboard timeseries. The date
 // is formatted as YYYY-MM-DD in UTC so the frontend can plot without
 // further parsing, and the count is whatever the caller asked for
