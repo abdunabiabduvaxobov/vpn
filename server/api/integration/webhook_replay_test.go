@@ -47,18 +47,26 @@ func TestWebhookReplayIdempotent(t *testing.T) {
 
 	// --- Seed: free (system) + pro plans, a pro offer, a user, and a pending
 	// invoice keyed so the payment.success payload resolves to the pro plan. ---
-	systemPlanID := uuid.NewString()
-	proPlanID := uuid.NewString()
-	mustExec(t, db, `INSERT INTO plans (id, code, name, is_active, is_system) VALUES (?, 'free', 'Free', true, true)`, systemPlanID)
-	mustExec(t, db, `INSERT INTO plans (id, code, name, is_active, is_system) VALUES (?, 'pro', 'Pro', true, false)`, proPlanID)
+	// Migration 019 already seeds the 'free' (system) and 'pro' plans, and
+	// plans.code is UNIQUE — reuse their IDs rather than inserting duplicates.
+	var systemPlanID, proPlanID string
+	if err := mustQueryRow(t, db, `SELECT id FROM plans WHERE code = 'free'`).Scan(&systemPlanID); err != nil {
+		t.Fatalf("lookup free plan id: %v", err)
+	}
+	if err := mustQueryRow(t, db, `SELECT id FROM plans WHERE code = 'pro'`).Scan(&proPlanID); err != nil {
+		t.Fatalf("lookup pro plan id: %v", err)
+	}
 
 	// The lava-side offer UUID the invoice carries; FindOfferByLavaOfferID maps it
 	// back to the pro plan_id (PAY-08 reverse lookup).
+	// Migration 019 seeds 6 placeholder pro offers (lava_offer_id=NULL) covering
+	// every {periodicity}×{currency} slot. Configure the MONTHLY/USD one with a
+	// known lava offer id — exactly what an admin does in the UI picker — so
+	// FindOfferByLavaOfferID maps it back to the pro plan (PAY-08 reverse lookup).
 	lavaOfferID := uuid.NewString()
 	mustExec(t, db,
-		`INSERT INTO plan_offers (id, plan_id, periodicity, currency, amount, lava_offer_id, is_active)
-		 VALUES (?, ?, 'MONTHLY', 'USD', 5.00, ?, true)`,
-		uuid.NewString(), proPlanID, lavaOfferID)
+		`UPDATE plan_offers SET lava_offer_id = ? WHERE plan_id = ? AND periodicity = 'MONTHLY' AND currency = 'USD'`,
+		lavaOfferID, proPlanID)
 
 	userID := uuid.NewString()
 	mustExec(t, db,
@@ -141,6 +149,12 @@ func TestWebhookReplayIdempotent(t *testing.T) {
 	// --- Drive the replay HTTP handler once: status DELIVERED→REPLAYED + count++. ---
 	app := fiber.New()
 	adminID := uuid.NewString()
+	// audit_log.admin_id is NOT NULL REFERENCES users(id) (migration 014); the
+	// acting admin must exist or the audit insert fails its FK and the
+	// AuditLog middleware swallows the error, leaving zero audit rows.
+	mustExec(t, db,
+		`INSERT INTO users (id, subscription_tier, role, plan_id, auth_provider) VALUES (?, 'free', 'admin', ?, 'guest')`,
+		adminID, systemPlanID)
 	app.Use(func(c *fiber.Ctx) error {
 		c.Locals("user_id", adminID) // stand in for AuthRequired
 		return c.Next()

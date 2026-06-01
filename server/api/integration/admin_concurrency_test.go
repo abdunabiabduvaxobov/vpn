@@ -54,10 +54,15 @@ func TestForceCancelWebhookRace(t *testing.T) {
 
 	// Seed the two plans the two paths flip between: the system/free plan
 	// (force-cancel target) and a paid pro plan (webhook-grant target).
-	systemPlanID := uuid.NewString()
-	proPlanID := uuid.NewString()
-	mustExec(t, db, `INSERT INTO plans (id, code, name, is_active, is_system) VALUES (?, 'free', 'Free', true, true)`, systemPlanID)
-	mustExec(t, db, `INSERT INTO plans (id, code, name, is_active, is_system) VALUES (?, 'pro', 'Pro', true, false)`, proPlanID)
+	// Migration 019 already seeds the 'free' (system) and 'pro' plans, and
+	// plans.code is UNIQUE — reuse their IDs rather than inserting duplicates.
+	var systemPlanID, proPlanID string
+	if err := mustQueryRow(t, db, `SELECT id FROM plans WHERE code = 'free'`).Scan(&systemPlanID); err != nil {
+		t.Fatalf("lookup free plan id: %v", err)
+	}
+	if err := mustQueryRow(t, db, `SELECT id FROM plans WHERE code = 'pro'`).Scan(&proPlanID); err != nil {
+		t.Fatalf("lookup pro plan id: %v", err)
+	}
 
 	const iterations = 20
 	for i := 0; i < iterations; i++ {
