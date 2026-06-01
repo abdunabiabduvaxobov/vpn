@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"vpnapp/server/tunnel/internal"
 
@@ -66,6 +68,23 @@ func main() {
 		}
 	}
 
+	// --- Start API heartbeat emitter (ADMIN-07, optional) ---
+	// Only starts when all three required fields are configured, so AWG-only and
+	// dev nodes without the heartbeat config run unchanged. A minimum 30s interval
+	// is enforced to avoid hammering the API.
+	var hbCancel context.CancelFunc
+	if config.APIBaseURL != "" && config.ServerID != "" && config.HeartbeatSecret != "" {
+		interval := 30 * time.Second
+		if config.HeartbeatIntervalSeconds > 0 {
+			if cfgd := time.Duration(config.HeartbeatIntervalSeconds) * time.Second; cfgd > interval {
+				interval = cfgd
+			}
+		}
+		var hbCtx context.Context
+		hbCtx, hbCancel = context.WithCancel(context.Background())
+		go internal.StartHeartbeat(hbCtx, config.APIBaseURL, config.ServerID, config.HeartbeatSecret, interval, logger)
+	}
+
 	// --- Wait for shutdown signal (SIGINT or SIGTERM) ---
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -74,6 +93,10 @@ func main() {
 	logger.Info("received shutdown signal", zap.String("signal", sig.String()))
 
 	// --- Graceful shutdown ---
+
+	if hbCancel != nil {
+		hbCancel()
+	}
 
 	if awgServer != nil {
 		if err := awgServer.Stop(); err != nil {

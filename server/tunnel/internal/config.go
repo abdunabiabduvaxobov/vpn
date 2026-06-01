@@ -35,6 +35,17 @@ type Config struct {
 
 	// Health check endpoint port (separate from tunnel port)
 	HealthPort int `json:"health_port"`
+
+	// --- Optional API heartbeat (ADMIN-07) ---
+	// When all of APIBaseURL, ServerID and HeartbeatSecret are set, the tunnel
+	// starts a background emitter that POSTs to the API's
+	// /api/v1/internal/servers/:id/heartbeat so /readyz sees a fresh
+	// last_seen_at. These are OPTIONAL and NOT validated — an AWG-only or dev
+	// node without this config runs exactly as before (no emitter started).
+	APIBaseURL               string `json:"api_base_url"`
+	ServerID                 string `json:"server_id"`
+	HeartbeatSecret          string `json:"heartbeat_secret"`
+	HeartbeatIntervalSeconds int    `json:"heartbeat_interval_seconds"`
 }
 
 // WebSocketServerConfig holds settings for the optional WebSocket CDN inbound.
