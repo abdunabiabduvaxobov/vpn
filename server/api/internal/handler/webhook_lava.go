@@ -106,38 +106,13 @@ func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lava
 			return c.SendStatus(fiber.StatusOK)
 		}
 
-		// 4. Dispatch on event type.
-		var processErr error
-		switch event.EventType {
-		case "payment.success":
-			processErr = handleLavaPaymentSuccess(c.Context(), logger, db, redisClient, &event)
-		case "subscription.recurring.payment.success":
-			processErr = handleLavaRecurringSuccess(c.Context(), logger, db, redisClient, &event)
-		case "payment.failed":
-			processErr = handleLavaPaymentFailed(c.Context(), logger, db, &event)
-		case "subscription.recurring.payment.failed":
-			processErr = handleLavaRecurringFailed(c.Context(), logger, db, &event)
-		case "subscription.cancelled":
-			processErr = handleLavaSubscriptionCancelled(c.Context(), logger, db, &event)
-		default:
-			logger.Warn("webhook: unknown event type ignored",
-				zap.String("event_type", event.EventType),
-				zap.String("contract_id", contractID),
-			)
-			// Unknown but valid signature — record received and return 200.
-			// WR-06: log MarkWebhookProcessed failures at Warn so an apparent
-			// stale forensic record (processed_at IS NULL on a 200 path) is
-			// correlatable to the actual repo error.
-			if merr := repository.MarkWebhookProcessed(c.Context(), db, rec.ID, nil); merr != nil {
-				logger.Warn("webhook: MarkWebhookProcessed failed (forensic record will be stale)",
-					zap.String("event_id", rec.ID),
-					zap.String("event_type", event.EventType),
-					zap.String("contract_id", contractID),
-					zap.Error(merr),
-				)
-			}
-			return c.SendStatus(fiber.StatusOK)
-		}
+		// 4. Dispatch on event type via applyLavaEvent — the SAME transport-free
+		//    dispatch the admin replay endpoint re-invokes with the stored row
+		//    (ADMIN-06). Passing *rec means applyLavaEvent unmarshals the persisted
+		//    Payload, so live and replay run byte-identical dispatch logic. The
+		//    handleLava* success paths take WithUserLock internally (07-05), so the
+		//    lock is inherited on both the live and replay paths automatically.
+		processErr := applyLavaEvent(c.Context(), db, redisClient, logger, *rec)
 
 		// 5. Record outcome.
 		if processErr != nil {
@@ -168,6 +143,54 @@ func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lava
 			)
 		}
 		return c.SendStatus(fiber.StatusOK)
+	}
+}
+
+// applyLavaEvent is the transport-free dispatch core shared by the live webhook
+// handler (HandleLavaWebhook) and the admin replay endpoint
+// (AdminReplayWebhookEvent). It unmarshals the STORED payload (ev.Payload) into a
+// lava.WebhookEvent and runs the same event-type switch the live handler used to
+// run inline, calling the existing handleLava* functions.
+//
+// Idempotency (ADMIN-06 / T-07-32): re-invoking applyLavaEvent with the same
+// stored payload re-applies the SAME side effect. The tier grant is
+// set-not-increment (SetUserPlanTx SETS subscription_tier/expires_at, never adds),
+// so replaying a payment.success yields the same plan and an expiry anchored to
+// now+periodicity — never a compounding double-extend, never a second grant.
+//
+// Locking (ADMIN-03 / T-07-33): the handleLava* success paths take
+// repository.WithUserLock(user_id) internally (added in 07-05). Because both the
+// live and replay paths funnel through applyLavaEvent, a replay racing a live
+// webhook for the same user serializes on the same advisory lock and cannot
+// reopen the hybrid-state race.
+//
+// It returns an error on a processing failure (the live handler turns that into a
+// 500 so lava retries; the replay handler surfaces it to the admin). Unknown
+// event types are a no-op (nil) — recorded as received, never errored.
+func applyLavaEvent(ctx context.Context, db *gorm.DB, redisClient *redis.Client, logger *zap.Logger, ev model.LavaWebhookEvent) error {
+	var event lava.WebhookEvent
+	if err := json.Unmarshal([]byte(ev.Payload), &event); err != nil {
+		return fmt.Errorf("applyLavaEvent: unmarshal stored payload (event_id=%s): %w", ev.ID, err)
+	}
+
+	switch event.EventType {
+	case "payment.success":
+		return handleLavaPaymentSuccess(ctx, logger, db, redisClient, &event)
+	case "subscription.recurring.payment.success":
+		return handleLavaRecurringSuccess(ctx, logger, db, redisClient, &event)
+	case "payment.failed":
+		return handleLavaPaymentFailed(ctx, logger, db, &event)
+	case "subscription.recurring.payment.failed":
+		return handleLavaRecurringFailed(ctx, logger, db, &event)
+	case "subscription.cancelled":
+		return handleLavaSubscriptionCancelled(ctx, logger, db, &event)
+	default:
+		// Unknown but valid-signature event: record received, no side effect.
+		logger.Warn("webhook: unknown event type ignored",
+			zap.String("event_type", event.EventType),
+			zap.String("event_id", ev.ID),
+		)
+		return nil
 	}
 }
 

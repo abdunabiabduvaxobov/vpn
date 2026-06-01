@@ -151,7 +151,12 @@ func setupWebhookTestDB(t *testing.T) *gorm.DB {
 			payload TEXT NOT NULL,
 			received_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			processed_at TIMESTAMP,
-			error TEXT
+			error TEXT,
+			-- migration 024 (ADMIN-06): webhook log status + replay counter.
+			-- Mirrored here so MarkWebhookProcessed's status write succeeds on
+			-- the SQLite test DB exactly as it does on production Postgres.
+			status TEXT NOT NULL DEFAULT 'PENDING',
+			retried_count INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE UNIQUE INDEX idx_lava_webhook_events_natural_key
 			ON lava_webhook_events (
