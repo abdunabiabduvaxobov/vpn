@@ -356,7 +356,7 @@ func main() {
 	admin.Post("/servers", handler.AdminCreateServer(logger, db, redisClient))
 	admin.Patch("/servers/:id", handler.AdminUpdateServer(logger, db, redisClient))
 	admin.Delete("/servers/:id", handler.AdminDeleteServer(logger, db, redisClient))
-	admin.Get("/stats", handler.AdminGetStats(logger, db))
+	admin.Get("/stats", handler.AdminGetStats(logger, db, redisClient))
 	admin.Get("/stats/timeseries", handler.AdminGetStatsTimeseries(logger, db))
 	admin.Get("/analytics", handler.AdminGetAnalytics(logger, db))
 	admin.Get("/users/:id/devices", handler.AdminListUserDevices(logger, db))

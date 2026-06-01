@@ -54,7 +54,7 @@ func appWith(role string, h fiber.Handler) *fiber.App {
 // --- AdminGetStats ---
 
 func TestAdminGetStats_NilDB_Returns500(t *testing.T) {
-	app := appWith("admin", handler.AdminGetStats(stubLogger(), stubDB()))
+	app := appWith("admin", handler.AdminGetStats(stubLogger(), stubDB(), nil))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	resp, err := app.Test(req)
 	if err != nil {

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"time"
@@ -537,11 +538,30 @@ func AdminDeleteServer(logger *zap.Logger, db *gorm.DB, redisClient *redis.Clien
 	}
 }
 
+// adminMRRCacheTTL is how long a computed MRR figure is served from Redis
+// before recomputation. 5-min staleness on an estimate is acceptable
+// (RESEARCH) and collapses the dashboard's 60s poll to one aggregate per
+// window (T-07-05 DoS mitigation).
+const adminMRRCacheTTL = 5 * time.Minute
+
+// adminMRRCacheKeyPrefix namespaces the per-currency MRR cache entries.
+const adminMRRCacheKeyPrefix = "cache:admin:mrr:"
+
 // AdminGetStats handles GET /admin/stats.
-// Returns aggregate dashboard numbers: user counts, subscription counts, server counts.
-func AdminGetStats(logger *zap.Logger, db *gorm.DB) fiber.Handler {
+// Returns the dashboard KPI bar: the legacy aggregate counts (total_users,
+// active_subscriptions, server_count, active_server_count) PLUS the ADMIN-01
+// live KPIs — paid_users, mrr, active_connections, signups_today/week/month,
+// churn_30d, failed_payments_30d.
+//
+// MRR is the only expensive multi-join, so it is cached 5 minutes in Redis
+// under cache:admin:mrr:<currency> (currency from ?currency, default USD).
+// The cache is fail-open: any Redis error (outage, miss, parse failure) falls
+// back to computing MRR live so the endpoint never fails on a cache problem.
+func AdminGetStats(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		stats, err := repository.GetGlobalStats(c.Context(), db)
+		ctx := c.Context()
+
+		stats, err := repository.GetDashboardKPIs(ctx, db)
 		if err != nil {
 			logger.Error("admin: failed to get stats", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -549,10 +569,52 @@ func AdminGetStats(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 
+		// MRR is reported as a separate currency-scoped figure. Default to USD
+		// when no ?currency is supplied. currency is used only as a cache-key
+		// suffix and a bound WHERE parameter (T-07-07).
+		currency := c.Query("currency", "USD")
+		stats["mrr"] = adminResolveMRR(ctx, logger, db, redisClient, currency)
+
 		return c.JSON(fiber.Map{
 			"data": stats,
 		})
 	}
+}
+
+// adminResolveMRR returns the MRR for the currency, reading the 5-min Redis
+// cache first and recomputing on miss. Every Redis interaction is best-effort:
+// a cache read error, a miss, or a malformed cached value all fall through to a
+// live GetMRR computation, and a cache write error is logged but never fails
+// the request (fail-open per T-07-05 / the plan's Redis-outage requirement).
+func adminResolveMRR(ctx context.Context, logger *zap.Logger, db *gorm.DB, redisClient *redis.Client, currency string) float64 {
+	key := adminMRRCacheKeyPrefix + currency
+
+	if redisClient != nil {
+		if cached, err := redisClient.Get(ctx, key).Result(); err == nil {
+			if mrr, perr := strconv.ParseFloat(cached, 64); perr == nil {
+				return mrr
+			}
+			// Corrupt cache entry — fall through and recompute.
+			logger.Warn("admin: discarding unparseable cached MRR", zap.String("currency", currency))
+		}
+	}
+
+	mrr, err := repository.GetMRR(ctx, db, currency)
+	if err != nil {
+		// MRR is a best-effort estimate; a query failure must not sink the whole
+		// KPI bar. Log and report 0 for this currency.
+		logger.Error("admin: failed to compute MRR", zap.String("currency", currency), zap.Error(err))
+		return 0
+	}
+
+	if redisClient != nil {
+		if err := redisClient.Set(ctx, key, strconv.FormatFloat(mrr, 'f', -1, 64), adminMRRCacheTTL).Err(); err != nil {
+			logger.Warn("admin: failed to cache MRR (5-min staleness is the backstop)",
+				zap.String("currency", currency), zap.Error(err))
+		}
+	}
+
+	return mrr
 }
 
 // AdminGetAnalytics handles GET /admin/analytics.
