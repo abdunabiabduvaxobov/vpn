@@ -135,6 +135,16 @@ func describeAction(method, path string) string {
 		return "delete_server"
 	case method == fiber.MethodPatch && strings.HasPrefix(stripped, "/admin/servers/"):
 		return "update_server"
+	// ADMIN-04 server controls. These POST /admin/servers/:id/<action> routes
+	// come BEFORE the generic create_server case (which matches the
+	// /admin/servers POST prefix) so the readable label wins over the
+	// post_admin_servers_<uuid>_<action> fallback.
+	case method == fiber.MethodPost && strings.HasPrefix(stripped, "/admin/servers/") && strings.HasSuffix(stripped, "/drain"):
+		return "drain_server"
+	case method == fiber.MethodPost && strings.HasPrefix(stripped, "/admin/servers/") && strings.HasSuffix(stripped, "/undrain"):
+		return "undrain_server"
+	case method == fiber.MethodPost && strings.HasPrefix(stripped, "/admin/servers/") && strings.HasSuffix(stripped, "/disconnect"):
+		return "disconnect_server"
 	case method == fiber.MethodPost && strings.HasPrefix(stripped, "/admin/servers"):
 		return "create_server"
 

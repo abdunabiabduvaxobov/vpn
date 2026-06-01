@@ -6,11 +6,14 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"vpnapp/server/api/internal/repository"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v2"
@@ -262,13 +265,62 @@ func TestAdminGetStatsKPIs(t *testing.T) {
 
 // TestServerDrainHidesFromPublic is the ADMIN-04 server-drain proof (SC-4).
 //
-// GREEN behavior (plan 07-06): after setting vpn_servers.is_draining=true, a
-// non-admin GET /servers omits the draining server (repository.ListActiveServers
-// applies an is_draining=false filter), while an admin still sees it.
-//
-// RED now: the is_draining=false filter / repository.ListActiveServers do not
-// exist yet.
+// GREEN (plan 07-06): after setting vpn_servers.is_draining=true,
+// repository.ListActiveServers (the source GET /servers reads) omits the
+// draining server because of its `AND is_draining = false` filter, while
+// repository.ListAllServers (the admin source) still includes it.
 func TestServerDrainHidesFromPublic(t *testing.T) {
-	t.Skip("RED: pending 07-06 — asserts repository.ListActiveServers applies " +
-		"is_draining=false so a draining server is omitted from non-admin /servers")
+	db, _ := setupKPITestDB(t)
+	ctx := context.Background()
+
+	// Two active, non-draining servers.
+	if err := db.Exec(`INSERT INTO vpn_servers (id, hostname, is_active, is_draining) VALUES (?, 'srv-keep', 1, 0)`, "srv-keep").Error; err != nil {
+		t.Fatalf("seed srv-keep: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO vpn_servers (id, hostname, is_active, is_draining) VALUES (?, 'srv-drain', 1, 0)`, "srv-drain").Error; err != nil {
+		t.Fatalf("seed srv-drain: %v", err)
+	}
+
+	// Before drain: both appear in the public (active) list.
+	active, err := repository.ListActiveServers(ctx, db)
+	if err != nil {
+		t.Fatalf("ListActiveServers (pre-drain): %v", err)
+	}
+	if len(active) != 2 {
+		t.Fatalf("pre-drain ListActiveServers = %d servers, want 2", len(active))
+	}
+
+	// Drain srv-drain via the repository helper the handler uses.
+	if err := repository.UpdateServer(ctx, db, "srv-drain", map[string]interface{}{"is_draining": true}); err != nil {
+		t.Fatalf("UpdateServer drain: %v", err)
+	}
+
+	// After drain: the public list omits srv-drain.
+	active, err = repository.ListActiveServers(ctx, db)
+	if err != nil {
+		t.Fatalf("ListActiveServers (post-drain): %v", err)
+	}
+	for _, s := range active {
+		if s.ID == "srv-drain" {
+			t.Fatalf("drained server srv-drain still present in ListActiveServers: %+v", active)
+		}
+	}
+	if len(active) != 1 || active[0].ID != "srv-keep" {
+		t.Fatalf("post-drain ListActiveServers = %+v, want only srv-keep", active)
+	}
+
+	// But the admin list still includes the drained server (with is_draining=true).
+	all, err := repository.ListAllServers(ctx, db)
+	if err != nil {
+		t.Fatalf("ListAllServers: %v", err)
+	}
+	var sawDrainAsDraining bool
+	for _, s := range all {
+		if s.ID == "srv-drain" {
+			sawDrainAsDraining = s.IsDraining
+		}
+	}
+	if !sawDrainAsDraining {
+		t.Fatalf("admin ListAllServers must still include srv-drain with is_draining=true; got %+v", all)
+	}
 }

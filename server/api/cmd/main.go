@@ -383,6 +383,12 @@ func main() {
 	admin.Post("/servers", handler.AdminCreateServer(logger, db, redisClient))
 	admin.Patch("/servers/:id", handler.AdminUpdateServer(logger, db, redisClient))
 	admin.Delete("/servers/:id", handler.AdminDeleteServer(logger, db, redisClient))
+	// ADMIN-04 server controls: drain (no new connections; existing survive),
+	// undrain, force-disconnect-all-on-a-server (Option-B), per-server health.
+	admin.Post("/servers/:id/drain", handler.AdminDrainServer(logger, db, redisClient))
+	admin.Post("/servers/:id/undrain", handler.AdminUndrainServer(logger, db, redisClient))
+	admin.Post("/servers/:id/disconnect", handler.AdminDisconnectServer(logger, db, redisClient))
+	admin.Get("/servers/:id/health", handler.AdminServerHealth(logger, db))
 	admin.Get("/stats", handler.AdminGetStats(logger, db, redisClient))
 	admin.Get("/stats/timeseries", handler.AdminGetStatsTimeseries(logger, db))
 	admin.Get("/analytics", handler.AdminGetAnalytics(logger, db))
