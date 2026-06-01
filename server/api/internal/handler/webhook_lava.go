@@ -453,8 +453,13 @@ func handleLavaRecurringFailed(ctx context.Context, logger *zap.Logger, db *gorm
 
 	// Single transaction: flip both subscriptions.is_active and
 	// lava_contracts.is_active to false atomically. Per D-19 literal reading.
-	// WithContext(ctx) so a client disconnect / wedged query is cancellable (PERF-07).
-	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	// Serialized on parent.UserID via WithUserLock (ADMIN-03 / WR-03): every
+	// per-user contract/subscription writer must take the SAME advisory lock as
+	// the admin force-cancel and the *.success grant paths, so a
+	// recurring.payment.failed cannot interleave with a concurrent
+	// recurring.success / force-cancel into a hybrid state. WithUserLock already
+	// runs fn inside a ctx-bound transaction (PERF-07 cancellability preserved).
+	err := repository.WithUserLock(ctx, db, parent.UserID, func(tx *gorm.DB) error {
 		if err := tx.Model(&model.Subscription{}).
 			Where("user_id = ? AND lava_contract_id IS NOT NULL", parent.UserID).
 			Update("is_active", false).Error; err != nil {
@@ -484,14 +489,32 @@ func handleLavaSubscriptionCancelled(ctx context.Context, logger *zap.Logger, db
 	// (RESEARCH §1.5). The migration 020 UNIQUE uses COALESCE for idempotency;
 	// here we just need to update the contract.
 	now := time.Now()
-	if err := db.WithContext(ctx).Model(&model.LavaContract{}).Where("contract_id = ?", event.ContractID).Updates(map[string]interface{}{
-		"is_active":    false,
-		"cancelled_at": &now,
-	}).Error; err != nil {
+
+	// Resolve the contract's user_id so we can take the SAME per-user advisory
+	// lock the other contract-mutating webhook paths and the admin force-cancel
+	// use (ADMIN-03 / WR-02). A subscription.cancelled racing a recurring.success
+	// or an admin force-cancel on the same user must serialize, not interleave.
+	contract, ferr := repository.FindLavaContractByContractID(ctx, db, event.ContractID)
+	if ferr != nil {
+		if errors.Is(ferr, repository.ErrNotFound) {
+			logger.Warn("subscription.cancelled: contract not found — skipping",
+				zap.String("contract_id", event.ContractID))
+			return nil // benign — nothing to cancel; ack so lava stops retrying
+		}
+		return fmt.Errorf("subscription.cancelled: FindLavaContractByContractID: %w", ferr)
+	}
+
+	if err := repository.WithUserLock(ctx, db, contract.UserID, func(tx *gorm.DB) error {
+		return tx.Model(&model.LavaContract{}).Where("contract_id = ?", event.ContractID).Updates(map[string]interface{}{
+			"is_active":    false,
+			"cancelled_at": &now,
+		}).Error
+	}); err != nil {
 		return fmt.Errorf("subscription.cancelled: update contract: %w", err)
 	}
 	logger.Info("webhook: subscription.cancelled recorded",
-		zap.String("contract_id", event.ContractID))
+		zap.String("contract_id", event.ContractID),
+		zap.String("user_id", contract.UserID))
 	return nil
 }
 

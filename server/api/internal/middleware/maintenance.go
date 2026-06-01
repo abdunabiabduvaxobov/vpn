@@ -59,10 +59,18 @@ func Maintenance(db *gorm.DB, redis *redis.Client, logger *zap.Logger) fiber.Han
 // precedent: exact-path matches for the auth-login + liveness probes, prefix
 // matches for the admin + internal route trees.
 func isMaintenanceExempt(method, path string) bool {
+	// Normalize a trailing slash so a probe/LB configured as `/api/v1/livez/`
+	// (or `/api/v1/readyz/`) still matches the exact-path escape hatch (WR-01).
+	// Fiber's default StrictRouting:false treats `/x` and `/x/` as the same
+	// route, but these comparisons run on the raw path, so we normalize here.
+	path = strings.TrimRight(path, "/")
+	if path == "" {
+		path = "/"
+	}
 	switch {
-	case strings.HasPrefix(path, "/api/v1/admin/"):
+	case path == "/api/v1/admin" || strings.HasPrefix(path, "/api/v1/admin/"):
 		return true
-	case strings.HasPrefix(path, "/api/v1/internal/"):
+	case path == "/api/v1/internal" || strings.HasPrefix(path, "/api/v1/internal/"):
 		return true
 	case method == fiber.MethodPost && path == "/api/v1/auth/admin-login":
 		return true

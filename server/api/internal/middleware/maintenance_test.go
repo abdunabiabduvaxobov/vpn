@@ -124,6 +124,23 @@ func TestMaintenanceMiddleware(t *testing.T) {
 		}
 	})
 
+	// (c3) maintenance ON → probes with a trailing slash still bypass (WR-01).
+	// A load balancer configured as `/api/v1/livez/` (or `/readyz/`) must not be
+	// 503'd, otherwise an operator could never reach the system to turn
+	// maintenance back off via a health-gated path.
+	t.Run("on_exempts_probes_with_trailing_slash", func(t *testing.T) {
+		app := newMaintenanceApp(openMaintenanceTestDB(t, true))
+		if code := doReq(t, app, http.MethodGet, "/api/v1/livez/"); code != http.StatusOK {
+			t.Fatalf("expected /livez/ (trailing slash) to bypass maintenance (200), got %d", code)
+		}
+		if code := doReq(t, app, http.MethodGet, "/api/v1/readyz/"); code != http.StatusOK {
+			t.Fatalf("expected /readyz/ (trailing slash) to bypass maintenance (200), got %d", code)
+		}
+		if code := doReq(t, app, http.MethodGet, "/api/v1/admin/feature-flags/"); code != http.StatusOK {
+			t.Fatalf("expected admin path with trailing slash to bypass maintenance (200), got %d", code)
+		}
+	})
+
 	// (d) maintenance OFF → all paths pass.
 	t.Run("off_lets_all_paths_through", func(t *testing.T) {
 		app := newMaintenanceApp(openMaintenanceTestDB(t, false))
