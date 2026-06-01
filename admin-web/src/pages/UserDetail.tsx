@@ -5,15 +5,24 @@ import {
   ArrowDown,
   ArrowLeft,
   ArrowUp,
+  Ban,
   Calendar,
   CheckCircle2,
   Copy,
+  Unplug,
+  XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AxiosError } from "axios";
 
 import {
+  cancelSubscription,
+  disconnectUser,
   getUser,
+  getUserAuditLog,
+  getUserSessions,
+  suspendUser,
+  unsuspendUser,
   updateUser,
   type AdminUser,
   type UpdateUserInput,
@@ -27,6 +36,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -47,7 +57,17 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDate } from "@/lib/format";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import { formatDate, shortId } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
   roleBadgeClass,
@@ -56,6 +76,23 @@ import {
   tierLabel,
   type Tier,
 } from "@/lib/tier";
+
+// toastUserError maps the per-user-control backend statuses to friendly
+// toasts: 409 = already cancelled (force-cancel), 429 = force-disconnect
+// throttle. Everything else falls back to the server {error} string.
+function toastUserError(err: unknown, fallback: string) {
+  const axiosErr = err as AxiosError<{ error?: string }>;
+  const status = axiosErr.response?.status;
+  if (status === 409) {
+    toast.error("Подписка уже отменена");
+    return;
+  }
+  if (status === 429) {
+    toast.error("Слишком часто — подождите немного и повторите");
+    return;
+  }
+  toast.error(axiosErr.response?.data?.error ?? fallback);
+}
 
 // Days-to-extend presets shown on the Upgrade action. 30/90/365 covers the
 // three purchase tiers we document on the landing page; the custom dialog
@@ -104,6 +141,63 @@ export function UserDetail() {
   });
 
   const [customOpen, setCustomOpen] = useState(false);
+  // Dialog state for the three per-user controls. Each opens a reason-carrying
+  // confirm; force-cancel also carries a refund flag.
+  const [suspendOpen, setSuspendOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
+
+  // invalidate re-reads the user + the per-user history queries after any
+  // control mutation so the panel reflects the new state immediately.
+  async function invalidateUser() {
+    await qc.invalidateQueries({ queryKey: ["admin", "user", id] });
+    await qc.invalidateQueries({ queryKey: ["admin", "users"] });
+    await qc.invalidateQueries({ queryKey: ["admin", "user", id, "audit"] });
+    await qc.invalidateQueries({ queryKey: ["admin", "user", id, "sessions"] });
+  }
+
+  const suspendMutation = useMutation({
+    mutationFn: ({ reason, suspend }: { reason: string; suspend: boolean }) =>
+      suspend ? suspendUser(id, reason) : unsuspendUser(id, reason),
+    onSuccess: async (_data, vars) => {
+      await invalidateUser();
+      toast.success(vars.suspend ? "Пользователь заблокирован" : "Блокировка снята");
+      setSuspendOpen(false);
+    },
+    onError: (err: unknown) => toastUserError(err, "Не удалось изменить блокировку"),
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: ({ refund, reason }: { refund: boolean; reason: string }) =>
+      cancelSubscription(id, { refund, reason }),
+    onSuccess: async (res) => {
+      await invalidateUser();
+      await qc.invalidateQueries({ queryKey: ["admin", "stats"] });
+      toast.success(
+        res.refund_status === "intent_recorded"
+          ? "Pro отменён, возврат зафиксирован"
+          : "Pro отменён",
+      );
+      setCancelOpen(false);
+    },
+    onError: (err: unknown) => {
+      toastUserError(err, "Не удалось отменить подписку");
+      // 409 (already cancelled) is terminal for this dialog — close it so the
+      // operator re-reads the now-refreshed state rather than retrying.
+      if ((err as AxiosError).response?.status === 409) setCancelOpen(false);
+    },
+  });
+
+  const disconnectMutation = useMutation({
+    mutationFn: (reason: string) => disconnectUser(id, reason),
+    onSuccess: async (res) => {
+      await invalidateUser();
+      await qc.invalidateQueries({ queryKey: ["admin", "user", id, "connections"] });
+      toast.success(`Отключено подключений: ${res.killed_count}`);
+      setDisconnectOpen(false);
+    },
+    onError: (err: unknown) => toastUserError(err, "Не удалось отключить"),
+  });
 
   if (isLoading) {
     return (
@@ -152,6 +246,10 @@ export function UserDetail() {
   }
 
   const busy = mutation.isPending;
+  const controlsBusy =
+    suspendMutation.isPending ||
+    cancelMutation.isPending ||
+    disconnectMutation.isPending;
 
   return (
     <div className="space-y-6">
@@ -306,9 +404,50 @@ export function UserDetail() {
         </CardContent>
       </Card>
 
-      <DevicesSection userID={user.id} />
+      {/* Per-user controls (ADMIN-02): suspend, force-cancel, force-disconnect.
+          All three are reason-carrying; force-cancel + force-disconnect are
+          destructive and confirm with the user id echoed. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Контроль доступа</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={controlsBusy}
+            onClick={() => setSuspendOpen(true)}
+          >
+            <Ban className="size-4" />
+            Заблокировать / разблокировать…
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={controlsBusy}
+            onClick={() => setCancelOpen(true)}
+            className="text-destructive hover:text-destructive"
+          >
+            <XCircle className="size-4" />
+            Принудительно отменить Pro…
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={controlsBusy}
+            onClick={() => setDisconnectOpen(true)}
+            className="text-destructive hover:text-destructive"
+          >
+            <Unplug className="size-4" />
+            Принудительно отключить…
+          </Button>
+        </CardContent>
+      </Card>
 
-      <ConnectionsSection userID={user.id} />
+      {/* History tabs: audit log + active sessions + connections. */}
+      <UserHistoryTabs userID={user.id} />
+
+      <DevicesSection userID={user.id} />
 
       <CustomExpirationDialog
         open={customOpen}
@@ -330,7 +469,405 @@ export function UserDetail() {
           setCustomOpen(false);
         }}
       />
+
+      <SuspendDialog
+        open={suspendOpen}
+        onOpenChange={setSuspendOpen}
+        userID={user.id}
+        busy={suspendMutation.isPending}
+        onSubmit={(reason, suspend) =>
+          suspendMutation.mutate({ reason, suspend })
+        }
+      />
+
+      <CancelSubscriptionDialog
+        open={cancelOpen}
+        onOpenChange={setCancelOpen}
+        userID={user.id}
+        busy={cancelMutation.isPending}
+        onSubmit={(refund, reason) => cancelMutation.mutate({ refund, reason })}
+      />
+
+      <DisconnectDialog
+        open={disconnectOpen}
+        onOpenChange={setDisconnectOpen}
+        userID={user.id}
+        busy={disconnectMutation.isPending}
+        onSubmit={(reason) => disconnectMutation.mutate(reason)}
+      />
     </div>
+  );
+}
+
+// UserHistoryTabs renders the per-user audit log, active sessions, and the
+// existing connections history in a tabbed view (ADMIN-02 history).
+function UserHistoryTabs({ userID }: { userID: string }) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">История</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Tabs defaultValue="audit">
+          <TabsList>
+            <TabsTrigger value="audit">Аудит</TabsTrigger>
+            <TabsTrigger value="sessions">Сессии</TabsTrigger>
+            <TabsTrigger value="connections">Подключения</TabsTrigger>
+          </TabsList>
+          <TabsContent value="audit" className="pt-4">
+            <AuditLogTab userID={userID} />
+          </TabsContent>
+          <TabsContent value="sessions" className="pt-4">
+            <SessionsTab userID={userID} />
+          </TabsContent>
+          <TabsContent value="connections" className="pt-4">
+            <ConnectionsSection userID={userID} />
+          </TabsContent>
+        </Tabs>
+      </CardContent>
+    </Card>
+  );
+}
+
+function AuditLogTab({ userID }: { userID: string }) {
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["admin", "user", userID, "audit"],
+    queryFn: () => getUserAuditLog(userID, 1),
+    enabled: !!userID,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2">
+        <Skeleton className="h-8 w-full" />
+        <Skeleton className="h-8 w-full" />
+      </div>
+    );
+  }
+  if (isError) {
+    return (
+      <div className="text-sm text-destructive">
+        Не удалось загрузить аудит: {(error as Error).message}
+      </div>
+    );
+  }
+  const entries = data?.entries ?? [];
+  if (entries.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+        Записей аудита по этому пользователю пока нет.
+      </div>
+    );
+  }
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="w-[180px]">Когда</TableHead>
+          <TableHead className="w-[180px]">Действие</TableHead>
+          <TableHead>Детали</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {entries.map((e) => (
+          <TableRow key={e.id}>
+            <TableCell className="text-xs text-muted-foreground">
+              {formatDate(e.created_at)}
+            </TableCell>
+            <TableCell>
+              <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium font-mono ring-1 ring-inset ring-border">
+                {e.action}
+              </span>
+            </TableCell>
+            <TableCell className="text-xs text-muted-foreground">
+              {e.details && Object.keys(e.details).length > 0 ? (
+                <code className="break-all">{JSON.stringify(e.details)}</code>
+              ) : (
+                "—"
+              )}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function SessionsTab({ userID }: { userID: string }) {
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["admin", "user", userID, "sessions"],
+    queryFn: () => getUserSessions(userID),
+    enabled: !!userID,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2">
+        <Skeleton className="h-8 w-full" />
+        <Skeleton className="h-8 w-full" />
+      </div>
+    );
+  }
+  if (isError) {
+    return (
+      <div className="text-sm text-destructive">
+        Не удалось загрузить сессии: {(error as Error).message}
+      </div>
+    );
+  }
+  const sessions = data ?? [];
+  if (sessions.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+        Активных сессий нет.
+      </div>
+    );
+  }
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="w-[120px]">ID</TableHead>
+          <TableHead>Устройство</TableHead>
+          <TableHead className="w-[180px]">Создана</TableHead>
+          <TableHead className="w-[180px]">Истекает</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {sessions.map((s) => (
+          <TableRow key={s.id}>
+            <TableCell className="font-mono text-xs text-muted-foreground">
+              {shortId(s.id)}
+            </TableCell>
+            <TableCell className="text-xs">{s.device_info || "—"}</TableCell>
+            <TableCell className="text-xs text-muted-foreground">
+              {formatDate(s.created_at)}
+            </TableCell>
+            <TableCell className="text-xs text-muted-foreground">
+              {formatDate(s.expires_at)}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+// ReasonField is the shared required-reason textarea used by all three control
+// dialogs. The backend 400s on an empty reason, so the submit button is
+// disabled until at least one non-whitespace character is entered.
+function ReasonField({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor="reason">Причина (записывается в аудит)</Label>
+      <Textarea
+        id="reason"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        placeholder="Например: запрос поддержки #1234, нарушение ToS…"
+        rows={3}
+      />
+    </div>
+  );
+}
+
+function SuspendDialog({
+  open,
+  onOpenChange,
+  userID,
+  busy,
+  onSubmit,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  userID: string;
+  busy: boolean;
+  onSubmit: (reason: string, suspend: boolean) => void;
+}) {
+  const [reason, setReason] = useState("");
+  const trimmed = reason.trim();
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Блокировка пользователя</DialogTitle>
+          <DialogDescription>
+            Блокировка немедленно отзывает все сессии и закрывает доступ к API
+            (403 на следующем запросе). Разблокировка восстанавливает доступ.
+            Причина обязательна и попадёт в журнал аудита.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="rounded-md border border-border bg-muted/30 p-2 font-mono text-xs text-muted-foreground">
+          user_id: {userID}
+        </div>
+        <ReasonField value={reason} onChange={setReason} disabled={busy} />
+        <DialogFooter>
+          <Button
+            variant="outline"
+            size="sm"
+            type="button"
+            onClick={() => onOpenChange(false)}
+            disabled={busy}
+          >
+            Отмена
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            type="button"
+            disabled={busy || !trimmed}
+            onClick={() => onSubmit(trimmed, false)}
+          >
+            Разблокировать
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            type="button"
+            disabled={busy || !trimmed}
+            onClick={() => onSubmit(trimmed, true)}
+          >
+            Заблокировать
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CancelSubscriptionDialog({
+  open,
+  onOpenChange,
+  userID,
+  busy,
+  onSubmit,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  userID: string;
+  busy: boolean;
+  onSubmit: (refund: boolean, reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [refund, setRefund] = useState(false);
+  const trimmed = reason.trim();
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Принудительная отмена Pro</DialogTitle>
+          <DialogDescription>
+            Сбрасывает пользователя на бесплатный план и помечает активный
+            контракт отменённым. Возврат лишь ФИКСИРУЕТ намерение в аудите —
+            никакой запрос на возврат в lava.top не отправляется. Если подписка
+            уже отменена, вернётся 409.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-2 font-mono text-xs">
+          user_id: {userID}
+        </div>
+        <ReasonField value={reason} onChange={setReason} disabled={busy} />
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="refund"
+            checked={refund}
+            onCheckedChange={(v) => setRefund(v === true)}
+            disabled={busy}
+          />
+          <Label htmlFor="refund" className="text-sm font-normal">
+            Зафиксировать намерение возврата
+          </Label>
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            size="sm"
+            type="button"
+            onClick={() => onOpenChange(false)}
+            disabled={busy}
+          >
+            Отмена
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            type="button"
+            disabled={busy || !trimmed}
+            onClick={() => onSubmit(refund, trimmed)}
+          >
+            Отменить Pro
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DisconnectDialog({
+  open,
+  onOpenChange,
+  userID,
+  busy,
+  onSubmit,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  userID: string;
+  busy: boolean;
+  onSubmit: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  const trimmed = reason.trim();
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Принудительно отключить пользователя</DialogTitle>
+          <DialogDescription>
+            Все живые подключения пользователя помечаются отключёнными; туннели
+            разорвутся на ближайшем сборе устаревших соединений. Действие
+            ограничено по частоте — повторный вызов в течение 30 секунд вернёт
+            429.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-2 font-mono text-xs">
+          user_id: {userID}
+        </div>
+        <ReasonField value={reason} onChange={setReason} disabled={busy} />
+        <DialogFooter>
+          <Button
+            variant="outline"
+            size="sm"
+            type="button"
+            onClick={() => onOpenChange(false)}
+            disabled={busy}
+          >
+            Отмена
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            type="button"
+            disabled={busy || !trimmed}
+            onClick={() => onSubmit(trimmed)}
+          >
+            Отключить
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
