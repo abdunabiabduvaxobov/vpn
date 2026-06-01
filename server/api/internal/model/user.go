@@ -37,15 +37,23 @@ type User struct {
 	// addresses are not a global identity, exposing them would
 	// surface a routable Apple-side mailbox. AuthProvider is a soft
 	// enum, last-used provider wins (D-07).
-	AppleUserID         *string   `json:"-" gorm:"column:apple_user_id;uniqueIndex"`
-	GoogleUserID        *string   `json:"-" gorm:"column:google_user_id;uniqueIndex"`
-	Email               *string   `json:"email" gorm:"column:email;size:320"`
-	EmailVerified       bool      `json:"email_verified" gorm:"column:email_verified;default:false"`
-	EmailIsPrivateRelay bool      `json:"-" gorm:"column:email_is_private_relay;default:false"`
-	AuthProvider        string    `json:"auth_provider" gorm:"column:auth_provider;default:guest"`
-	PlanID              string    `json:"plan_id" gorm:"column:plan_id;type:uuid;not null;index"`
-	CreatedAt           time.Time `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt           time.Time `json:"-" gorm:"autoUpdateTime"`
+	AppleUserID         *string `json:"-" gorm:"column:apple_user_id;uniqueIndex"`
+	GoogleUserID        *string `json:"-" gorm:"column:google_user_id;uniqueIndex"`
+	Email               *string `json:"email" gorm:"column:email;size:320"`
+	EmailVerified       bool    `json:"email_verified" gorm:"column:email_verified;default:false"`
+	EmailIsPrivateRelay bool    `json:"-" gorm:"column:email_is_private_relay;default:false"`
+	AuthProvider        string  `json:"auth_provider" gorm:"column:auth_provider;default:guest"`
+	PlanID              string  `json:"plan_id" gorm:"column:plan_id;type:uuid;not null;index"`
+	// Suspension columns (ADMIN-02, migration 024). SuspendedAt is the
+	// authority bit: a non-nil value means the account is suspended and
+	// SuspendedRequired 403s the user on the next protected request.
+	// SuspendedReason carries the operator's free-text justification
+	// (also persisted to audit_log.details, Pitfall 4). Both nullable so
+	// every pre-024 / unsuspended row reads as nil.
+	SuspendedAt     *time.Time `json:"suspended_at" gorm:"column:suspended_at"`
+	SuspendedReason *string    `json:"suspended_reason" gorm:"column:suspended_reason"`
+	CreatedAt       time.Time  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt       time.Time  `json:"-" gorm:"autoUpdateTime"`
 }
 
 // Session represents an active user session (refresh token).

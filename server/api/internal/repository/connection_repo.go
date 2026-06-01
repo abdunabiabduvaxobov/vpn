@@ -89,6 +89,28 @@ func DisconnectConnection(ctx context.Context, db *gorm.DB, id string, bytesUp, 
 	return nil
 }
 
+// DisconnectConnectionsByUser marks every live connection of the given user
+// as disconnected (sets disconnected_at=now() where disconnected_at IS NULL).
+// Returns the number of rows affected — the "killed_count" the admin
+// disconnect handler reports.
+//
+// Per Option-B (LOCKED, plan 07-04): this is the DB-side of a force-disconnect.
+// The live VLESS/REALITY tunnels are NOT killed in real time; they die on the
+// existing ~3-min STALE_CONNECTION_AFTER sweep (CleanupStaleConnections), which
+// only acts on rows that still have disconnected_at IS NULL — so flipping the
+// timestamp here is what removes them from "active" immediately and stops the
+// stale sweep from being needed for accounting. There is no Redis tunnel:kill
+// channel by design.
+func DisconnectConnectionsByUser(ctx context.Context, db *gorm.DB, userID string) (int64, error) {
+	result := db.WithContext(ctx).Model(&model.Connection{}).
+		Where("user_id = ? AND disconnected_at IS NULL", userID).
+		Update("disconnected_at", time.Now())
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return result.RowsAffected, nil
+}
+
 // CountActiveConnections returns the number of connections for a user that have no
 // disconnected_at timestamp — i.e. connections that are still live.
 func CountActiveConnections(ctx context.Context, db *gorm.DB, userID string) (int64, error) {
