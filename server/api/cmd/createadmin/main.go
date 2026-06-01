@@ -139,6 +139,19 @@ func readPassword(in *os.File, prompt *os.File) (string, error) {
 // Returns ErrDuplicate from the underlying repository if the email_hash
 // already exists.
 func createAdminUser(db *gorm.DB, emailHash string, passwordHash []byte) (*model.User, error) {
+	// D-29: resolve the system plan_id BEFORE the INSERT. users.plan_id is
+	// `uuid NOT NULL` (migration 019) with no DB default and model.User.PlanID is
+	// a non-pointer string, so an unset value serializes to plan_id='' and
+	// Postgres rejects the INSERT with SQLSTATE 22P02. Setting it here mirrors the
+	// GuestLogin fix and keeps the app layer as the single source of plan_id.
+	systemPlanID, err := repository.FindSystemPlanID(context.Background(), db)
+	if err != nil {
+		return nil, fmt.Errorf("resolving system plan id: %w", err)
+	}
+	if systemPlanID == "" {
+		return nil, fmt.Errorf("resolving system plan id: no system plan configured")
+	}
+
 	hashStr := string(passwordHash)
 	user := &model.User{
 		EmailHash:        &emailHash,
@@ -146,6 +159,7 @@ func createAdminUser(db *gorm.DB, emailHash string, passwordHash []byte) (*model
 		FullName:         "Admin",
 		Role:             "admin",
 		SubscriptionTier: "free",
+		PlanID:           systemPlanID,
 	}
 	if err := repository.CreateUser(context.Background(), db, user); err != nil {
 		return nil, err

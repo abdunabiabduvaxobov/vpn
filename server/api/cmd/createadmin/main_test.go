@@ -220,5 +220,35 @@ func openSeedTestDB(t *testing.T) *gorm.DB {
 	if err := db.Exec(stmt).Error; err != nil {
 		t.Fatalf("failed to create users table: %v", err)
 	}
+
+	// D-29: createAdminUser now resolves the system plan_id via
+	// repository.FindSystemPlanID and sets users.plan_id BEFORE the INSERT (the
+	// production users.plan_id column is `uuid NOT NULL`). The test DB therefore
+	// needs the plans table and the seeded is_system='free' row that migration 019
+	// ships, otherwise createAdminUser fails with "no system plan configured".
+	planStmt := `CREATE TABLE IF NOT EXISTS plans (
+		id                TEXT PRIMARY KEY,
+		code              TEXT NOT NULL UNIQUE,
+		name              TEXT NOT NULL,
+		description       TEXT NOT NULL DEFAULT '',
+		max_devices       INTEGER NOT NULL,
+		max_servers       INTEGER NOT NULL,
+		speed_limit_mbps  INTEGER NOT NULL DEFAULT 0,
+		is_active         INTEGER NOT NULL DEFAULT 1,
+		is_system         INTEGER NOT NULL DEFAULT 0,
+		sort_order        INTEGER NOT NULL DEFAULT 0,
+		created_at        DATETIME,
+		updated_at        DATETIME
+	)`
+	if err := db.Exec(planStmt).Error; err != nil {
+		t.Fatalf("failed to create plans table: %v", err)
+	}
+	if err := db.Exec(
+		`INSERT INTO plans (id, code, name, max_devices, max_servers, is_active, is_system, sort_order)
+		 VALUES ('00000000-0000-0000-0000-0000000000fr', 'free', 'Free', 1, 3, 1, 1, 0)`,
+	).Error; err != nil {
+		t.Fatalf("failed to seed system plan: %v", err)
+	}
+
 	return db
 }

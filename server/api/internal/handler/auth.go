@@ -444,8 +444,27 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 		suffix := strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
 		guestName := "guest_" + suffix
 
+		// D-29: resolve the system plan_id BEFORE the INSERT. users.plan_id is
+		// `uuid NOT NULL` (migration 019) with no DB default, and model.User.PlanID
+		// is a non-pointer `string` with no `default` GORM tag — so an unset value
+		// serializes to plan_id='' and Postgres rejects the INSERT with
+		// "invalid input syntax for type uuid" (SQLSTATE 22P02). Setting it here,
+		// as the single source of truth at INSERT time, is the fix.
+		//
+		// Fail loud (500) when no system plan exists: there is no valid INSERT
+		// without a plan_id on a NOT NULL uuid column, so silently inserting ''
+		// (the old non-fatal warn) is precisely the bug we are closing.
+		systemPlanID, sysErr := repository.FindSystemPlanID(c.Context(), db)
+		if sysErr != nil || systemPlanID == "" {
+			logger.Error("guest login: no system plan configured", zap.Error(sysErr))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "internal server error",
+			})
+		}
+
 		user := model.User{
 			FullName: guestName,
+			PlanID:   systemPlanID,
 			// EmailHash and PasswordHash left nil — guest account
 		}
 		if err := repository.CreateUser(c.Context(), db, &user); err != nil {
@@ -517,22 +536,9 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 			}
 		}
 
-		// Phase 3 D-29: assign system plan_id to the fresh guest user so their
-		// JWT carries plan_id from the very first token. Repository's
-		// FindSystemPlanID returns the UUID of the single is_system=true plan
-		// (idx_plans_one_system partial unique enforces exactly one row).
-		// Failure is non-fatal — the middleware's DB fallback path covers it.
-		if systemPlanID, sysErr := repository.FindSystemPlanID(c.Context(), db); sysErr == nil && systemPlanID != "" {
-			if uErr := db.Model(&model.User{}).Where("id = ?", user.ID).Update("plan_id", systemPlanID).Error; uErr != nil {
-				logger.Warn("guest login: failed to set system plan_id on fresh user (continuing)",
-					zap.String("user_id", user.ID),
-					zap.Error(uErr),
-				)
-			} else {
-				user.PlanID = systemPlanID
-			}
-		}
-
+		// plan_id is now set on the struct literal above (single source of truth
+		// at INSERT time), so user.PlanID already carries the system plan id here —
+		// the previous post-insert UPDATE was dead code and has been removed.
 		tokens, err := generateTokens(user.ID, "free", "user", user.FullName, user.PlanID, cfg.JWTSecret)
 		if err != nil {
 			logger.Error("failed to generate guest tokens", zap.Error(err))

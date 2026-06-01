@@ -150,6 +150,19 @@ func newAuthTestDB(t *testing.T) *gorm.DB {
 			t.Fatalf("failed to create auth test table: %v", err)
 		}
 	}
+
+	// D-29: GuestLogin (and the SSO handlers) now resolve the system plan_id via
+	// repository.FindSystemPlanID and set users.plan_id BEFORE the INSERT, so the
+	// in-memory schema MUST carry the seeded is_system='free' plan that migration
+	// 019 ships in production. Without this row GuestLogin returns 500 ("no system
+	// plan configured") — exactly the fail-loud guard. Mirror migration 019's seed.
+	if err := db.Exec(
+		`INSERT INTO plans (id, code, name, max_devices, max_servers, is_active, is_system, sort_order)
+		 VALUES ('00000000-0000-0000-0000-0000000000fr', 'free', 'Free', 1, 3, 1, 1, 0)`,
+	).Error; err != nil {
+		t.Fatalf("failed to seed system plan: %v", err)
+	}
+
 	return db
 }
 
