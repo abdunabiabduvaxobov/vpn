@@ -225,6 +225,9 @@ func main() {
 		// Phase 3 public plans (PAY-12). Landing-site browsers GET /plans
 		// directly and don't send X-App-Version. No auth on this route.
 		middleware.SkipRule{Method: fiber.MethodGet, Path: "/api/v1/plans"},
+		// ADMIN-05 public broadcast banners. Landing + mobile GET /broadcasts
+		// and may not send X-App-Version — exempt like /plans. No auth.
+		middleware.SkipRule{Method: fiber.MethodGet, Path: "/api/v1/broadcasts"},
 		middleware.SkipRule{Method: fiber.MethodPost, Path: "/api/v1/auth/admin-login"},
 		// The web admin panel does not send X-App-Version. Both the refresh
 		// endpoint (called whenever the 5-min access token expires) and the
@@ -250,9 +253,22 @@ func main() {
 	// API routes
 	api := app.Group("/api/v1")
 
+	// ADMIN-05/08 maintenance gate (mounted right after RateLimit, on the
+	// /api/v1 group so it covers public + protected). When maintenance_mode is
+	// ON it 503s every NON-exempt request; the operator escape hatch
+	// (/admin/*, /auth/admin-login, /livez, /readyz, /internal/*) always passes
+	// so the operator can turn it back off (Pitfall 5 / T-07-27). Fails open on
+	// a flag read error so a Redis+DB outage never locks the whole site out.
+	api.Use(middleware.Maintenance(db, redisClient, logger))
+
 	// Public routes (no auth required)
 	api.Post("/auth/refresh", handler.RefreshToken(logger, cfg, db))
-	api.Post("/auth/guest", handler.GuestLogin(logger, db, cfg))
+	// signups_off (ADMIN-05) gates guest creation: when ON, RequireFlagOff 503s
+	// before the handler runs. Route-scoped so GuestLogin stays unchanged.
+	api.Post("/auth/guest",
+		middleware.RequireFlagOff(db, redisClient, logger, "signups_off", "signups are temporarily disabled"),
+		handler.GuestLogin(logger, db, cfg),
+	)
 	api.Post("/auth/admin-login", handler.AdminLogin(logger, cfg, db))
 	// Phase 2 SSO endpoints (D-26). Public — optionally read Authorization
 	// for guest-promotion intent (D-06). Logout (AUTH-08) is mounted under
@@ -292,6 +308,10 @@ func main() {
 	// mutation. Currency derived from ?currency=USD|EUR|RUB or Accept-Language
 	// (D-27); response excludes admin-only fields per D-27.
 	api.Get("/plans", handler.ListPlansPublic(logger, db, redisClient))
+
+	// ADMIN-05 public broadcast banners. No auth — landing + mobile read the
+	// active set on foreground. Returns ONLY {title, body, severity} (T-07-29).
+	api.Get("/broadcasts", handler.ListBroadcastsPublic(logger, db))
 
 	// Phase 3 lava webhook (PAY-03..09). PUBLIC route — auth is via:
 	//   1. LavaWebhookIPAllowlist (TCP-layer RemoteIP check, 403 on miss).
@@ -348,7 +368,12 @@ func main() {
 	// Stripe-era subscription/checkout path.
 	// All three are PROTECTED (JWT required) — guest users get 403 from the handler
 	// itself (CreateCheckoutSession checks user.Email presence).
-	protected.Post("/checkout", handler.CreateCheckoutSession(logger, cfg, db, lavaClient))
+	// payments_off (ADMIN-05) gates checkout: when ON, RequireFlagOff 503s
+	// before CreateCheckoutSession runs (route-scoped, handler unchanged).
+	protected.Post("/checkout",
+		middleware.RequireFlagOff(db, redisClient, logger, "payments_off", "payments are temporarily disabled"),
+		handler.CreateCheckoutSession(logger, cfg, db, lavaClient),
+	)
 	protected.Post("/subscription/cancel", handler.CancelSubscription(logger, cfg, db, lavaClient))
 	protected.Get("/invoices/:id", handler.GetInvoice(logger, cfg, db, lavaClient))
 	// Plan sharing — owner generates a code, friend's device redeems it via /auth/link.
@@ -408,6 +433,15 @@ func main() {
 	admin.Get("/users/:id/audit-log", handler.AdminGetUserAuditLog(logger, db))
 	admin.Get("/users/:id/sessions", handler.AdminListUserSessions(logger, db))
 	admin.Get("/audit-log", handler.AdminGetAuditLog(logger, db))
+	// ADMIN-05 system controls. Feature-flag list/set (set busts the ~10s flag
+	// cache + audits with reason) and broadcast CRUD. All inherit AuthRequired +
+	// AdminRequired + AuditLog from the admin group (T-07-31).
+	admin.Get("/feature-flags", handler.AdminListFeatureFlags(logger, db))
+	admin.Put("/feature-flags/:key", handler.AdminSetFeatureFlag(logger, db, redisClient))
+	admin.Get("/broadcasts", handler.AdminListBroadcasts(logger, db))
+	admin.Post("/broadcasts", handler.AdminCreateBroadcast(logger, db))
+	admin.Patch("/broadcasts/:id", handler.AdminUpdateBroadcast(logger, db))
+	admin.Delete("/broadcasts/:id", handler.AdminDeleteBroadcast(logger, db))
 	// Phase 3 lava admin endpoint (D-12 Option B). Proxies /api/v2/products
 	// via server-side API key so admin can pick lava offers from a dropdown.
 	// Inherits AuthRequired + AdminRequired + AuditLog from the admin group.

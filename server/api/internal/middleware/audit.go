@@ -177,6 +177,17 @@ func describeAction(method, path string) string {
 		return "update_plan"
 	case method == fiber.MethodDelete && strings.HasPrefix(stripped, "/admin/plans/"):
 		return "delete_plan"
+
+	// --- ADMIN-05 system controls. ---
+	// Feature-flag set (PUT /admin/feature-flags/:key) + broadcast CRUD.
+	case method == fiber.MethodPut && strings.HasPrefix(stripped, "/admin/feature-flags/"):
+		return "set_feature_flag"
+	case method == fiber.MethodPost && stripped == "/admin/broadcasts":
+		return "create_broadcast"
+	case method == fiber.MethodPatch && strings.HasPrefix(stripped, "/admin/broadcasts/"):
+		return "update_broadcast"
+	case method == fiber.MethodDelete && strings.HasPrefix(stripped, "/admin/broadcasts/"):
+		return "delete_broadcast"
 	}
 	// Fallback: sanitise the path into a snake_case action name so the
 	// audit_log.action column (VARCHAR(64)) can't overflow on deep URLs
