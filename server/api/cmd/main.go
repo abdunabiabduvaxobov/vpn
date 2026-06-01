@@ -442,6 +442,14 @@ func main() {
 	admin.Post("/broadcasts", handler.AdminCreateBroadcast(logger, db))
 	admin.Patch("/broadcasts/:id", handler.AdminUpdateBroadcast(logger, db))
 	admin.Delete("/broadcasts/:id", handler.AdminDeleteBroadcast(logger, db))
+	// ADMIN-06 webhook event log + idempotent replay. List redacts buyer emails
+	// (T-07-34); detail shows the full payload (audited GET, §9.4); replay
+	// re-applies the STORED event via handler.applyLavaEvent under the same
+	// per-user WithUserLock as the live path (07-05), flips status→REPLAYED, and
+	// bumps retried_count. All inherit AuthRequired + AdminRequired + AuditLog.
+	admin.Get("/webhook-events", handler.AdminListWebhookEvents(logger, db))
+	admin.Get("/webhook-events/:id", handler.AdminGetWebhookEvent(logger, db))
+	admin.Post("/webhook-events/:id/replay", handler.AdminReplayWebhookEvent(logger, db, redisClient))
 	// Phase 3 lava admin endpoint (D-12 Option B). Proxies /api/v2/products
 	// via server-side API key so admin can pick lava offers from a dropdown.
 	// Inherits AuthRequired + AdminRequired + AuditLog from the admin group.

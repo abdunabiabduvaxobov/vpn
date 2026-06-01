@@ -10,3 +10,7 @@
 ## [07-07] internal/repository/TestCtxCancelAbortsQuery requires Docker
 - Pre-existing testcontainers test that t.Fatalf-s when Docker is absent (not introduced by 07-07; unrelated to system controls).
 - Passes under `-short` and with Docker. Orchestrator post-wave Docker validation covers it.
+
+## [07-08] internal/repository/TestCtxCancelAbortsQuery still Docker-gated (re-confirmed)
+- Same pre-existing test (from phase 06, `ctx_cancel_test.go`, untouched by 07-08). It `t.Fatalf`s without Docker rather than `t.Skip`ing.
+- Out of scope for 07-08 (webhook replay): not in this plan's modified files; fails only in the non-`-short` repository run on a Docker-less host. The new `TestWebhookReplayIdempotent` itself SKIPs cleanly without Docker as designed.

@@ -168,6 +168,21 @@ func HandleLavaWebhook(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lava
 // 500 so lava retries; the replay handler surfaces it to the admin). Unknown
 // event types are a no-op (nil) — recorded as received, never errored.
 func applyLavaEvent(ctx context.Context, db *gorm.DB, redisClient *redis.Client, logger *zap.Logger, ev model.LavaWebhookEvent) error {
+	return applyLavaEventImpl(ctx, db, redisClient, logger, ev)
+}
+
+// ApplyLavaEvent is the exported entry point to the transport-free dispatch core
+// (applyLavaEvent). It exists so the ADMIN-06 replay-idempotency proof
+// (integration.TestWebhookReplayIdempotent, which lives in a different package)
+// can re-apply a STORED event row twice and assert the grant is idempotent under
+// WithUserLock. Production replay goes through AdminReplayWebhookEvent (which
+// calls the unexported form); this exported alias does not bypass any of that
+// handler's status/audit/lock guarantees — it is the same dispatch logic.
+func ApplyLavaEvent(ctx context.Context, db *gorm.DB, redisClient *redis.Client, logger *zap.Logger, ev model.LavaWebhookEvent) error {
+	return applyLavaEventImpl(ctx, db, redisClient, logger, ev)
+}
+
+func applyLavaEventImpl(ctx context.Context, db *gorm.DB, redisClient *redis.Client, logger *zap.Logger, ev model.LavaWebhookEvent) error {
 	var event lava.WebhookEvent
 	if err := json.Unmarshal([]byte(ev.Payload), &event); err != nil {
 		return fmt.Errorf("applyLavaEvent: unmarshal stored payload (event_id=%s): %w", ev.ID, err)

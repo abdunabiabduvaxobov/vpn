@@ -178,6 +178,11 @@ func describeAction(method, path string) string {
 	case method == fiber.MethodDelete && strings.HasPrefix(stripped, "/admin/plans/"):
 		return "delete_plan"
 
+	// --- ADMIN-06 webhook event log + replay. ---
+	// POST /admin/webhook-events/:id/replay re-applies a stored lava event.
+	case method == fiber.MethodPost && strings.HasPrefix(stripped, "/admin/webhook-events/") && strings.HasSuffix(stripped, "/replay"):
+		return "replay_webhook"
+
 	// --- ADMIN-05 system controls. ---
 	// Feature-flag set (PUT /admin/feature-flags/:key) + broadcast CRUD.
 	case method == fiber.MethodPut && strings.HasPrefix(stripped, "/admin/feature-flags/"):

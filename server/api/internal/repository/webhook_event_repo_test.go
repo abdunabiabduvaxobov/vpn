@@ -45,6 +45,11 @@ func setupWebhookRepoDB(t *testing.T) *gorm.DB {
 			received_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			processed_at TIMESTAMP,
 			error TEXT,
+			-- migration 024 (ADMIN-06) columns: status lifecycle + replay counter.
+			-- Mirrored so model.LavaWebhookEvent's GORM INSERTs (which now include
+			-- these fields) succeed on the SQLite test DB.
+			status TEXT NOT NULL DEFAULT 'PENDING',
+			retried_count INTEGER NOT NULL DEFAULT 0,
 			UNIQUE (event_type, contract_id, payload)
 		)`,
 		`CREATE TABLE lava_contracts (
