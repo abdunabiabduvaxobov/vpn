@@ -259,6 +259,16 @@ version disclosure.
 
 ---
 
+## Resolution (post-review fixes — commit `1453b11`)
+
+| Finding | Disposition | Notes |
+|---------|-------------|-------|
+| WR-01 | **Fixed** | `isMaintenanceExempt` now trims a trailing slash before matching; probes `/livez/`, `/readyz/` and admin paths with trailing slash bypass maintenance. New regression subtest `on_exempts_probes_with_trailing_slash`. |
+| WR-02 | **Fixed** | `handleLavaSubscriptionCancelled` now resolves the contract's `user_id` and wraps the update in `repository.WithUserLock` — all contract-mutating webhook paths now serialize on the same per-user key (ADMIN-03 invariant). |
+| WR-03 | **Fixed** | `handleLavaRecurringFailed`'s two-row flip is now wrapped in `repository.WithUserLock(parent.UserID, …)` instead of a bare transaction. |
+| WR-04 | **Deferred (accepted risk)** | Narrowing the `subscriptions` predicate to `lava_contract_id = parentID` was NOT applied: the existing code comment documents that `lava_contract_id` "may or may not equal parentID", so the narrower predicate risks *missing* the row and regressing today's correct one-sub-per-user behavior. Latent only under a future multi-lava-subscription schema; revisit if/when that lands. |
+| IN-01..IN-06 | **Deferred** | Info-level; left for operator discretion (feature-flag allowlist, comment clarity, rune-vs-byte truncation, list-preview PII scope, pre-existing `/health` `go_version` disclosure). None are launch-blocking per project CLAUDE.md. |
+
 _Reviewed: 2026-06-01_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
