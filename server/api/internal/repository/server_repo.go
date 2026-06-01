@@ -10,10 +10,19 @@ import (
 	"gorm.io/gorm"
 )
 
-// ListActiveServers returns all active VPN servers ordered by load.
+// ListActiveServers returns all active, non-draining VPN servers ordered by load.
+//
+// The `AND is_draining = false` filter is the load-bearing half of ADMIN-04
+// drain mode: a drained server (is_draining=true) must vanish from non-admin
+// GET /servers so no new connections are handed out, while existing tunnels
+// survive. The admin path (ListAllServers) is intentionally unfiltered so
+// operators still see drained servers. This DB filter makes a cache miss
+// correct even before BustServersCache runs (T-07-24).
 func ListActiveServers(ctx context.Context, db *gorm.DB) ([]model.VPNServer, error) {
 	var servers []model.VPNServer
-	result := db.WithContext(ctx).Where("is_active = ?", true).Order("current_load ASC").Find(&servers)
+	result := db.WithContext(ctx).
+		Where("is_active = ? AND is_draining = ?", true, false).
+		Order("current_load ASC").Find(&servers)
 	return servers, result.Error
 }
 

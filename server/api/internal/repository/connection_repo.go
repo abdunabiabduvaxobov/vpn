@@ -111,6 +111,38 @@ func DisconnectConnectionsByUser(ctx context.Context, db *gorm.DB, userID string
 	return result.RowsAffected, nil
 }
 
+// DisconnectConnectionsByServer marks every live connection on the given server
+// as disconnected (sets disconnected_at=now() where disconnected_at IS NULL).
+// Returns the number of rows affected — the "killed_count" the admin
+// force-disconnect / drain handler reports.
+//
+// Per Option-B (LOCKED, plan 07-06): this is the DB-side of a per-server
+// force-disconnect, mirroring DisconnectConnectionsByUser but scoped by
+// server_id. Live VLESS/REALITY tunnels are NOT killed in real time — they die
+// on the existing ~3-min STALE_CONNECTION_AFTER sweep; flipping the timestamp
+// here removes them from "active" immediately. There is no Redis tunnel:kill
+// channel by design (T-07-26 — accepted weaker guarantee).
+func DisconnectConnectionsByServer(ctx context.Context, db *gorm.DB, serverID string) (int64, error) {
+	result := db.WithContext(ctx).Model(&model.Connection{}).
+		Where("server_id = ? AND disconnected_at IS NULL", serverID).
+		Update("disconnected_at", time.Now())
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return result.RowsAffected, nil
+}
+
+// CountActiveConnectionsByServer returns the number of live connections on the
+// given server (disconnected_at IS NULL) — the concurrent_conns figure the
+// per-server health endpoint reports (ADMIN-04).
+func CountActiveConnectionsByServer(ctx context.Context, db *gorm.DB, serverID string) (int64, error) {
+	var count int64
+	result := db.WithContext(ctx).Model(&model.Connection{}).
+		Where("server_id = ? AND disconnected_at IS NULL", serverID).
+		Count(&count)
+	return count, result.Error
+}
+
 // CountActiveConnections returns the number of connections for a user that have no
 // disconnected_at timestamp — i.e. connections that are still live.
 func CountActiveConnections(ctx context.Context, db *gorm.DB, userID string) (int64, error) {

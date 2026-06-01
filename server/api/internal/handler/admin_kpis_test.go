@@ -85,6 +85,9 @@ func setupKPITestDB(t *testing.T) (*gorm.DB, *redis.Client) {
 			id TEXT PRIMARY KEY DEFAULT ` + uuidDefault + `,
 			hostname TEXT NOT NULL,
 			is_active INTEGER NOT NULL DEFAULT 1,
+			is_draining INTEGER NOT NULL DEFAULT 0,
+			current_load INTEGER NOT NULL DEFAULT 0,
+			last_seen_at TIMESTAMP,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE subscriptions (

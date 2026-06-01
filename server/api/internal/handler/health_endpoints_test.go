@@ -44,6 +44,7 @@ func setupHealthTestDB(t *testing.T) *gorm.DB {
 		hostname TEXT,
 		current_load INTEGER NOT NULL DEFAULT 0,
 		is_active INTEGER NOT NULL DEFAULT 1,
+		is_draining INTEGER NOT NULL DEFAULT 0,
 		last_seen_at TIMESTAMP
 	)`).Error; err != nil {
 		t.Fatalf("create vpn_servers: %v", err)

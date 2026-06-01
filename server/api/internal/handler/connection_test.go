@@ -49,6 +49,8 @@ func newHandlerTestDB(t *testing.T) *gorm.DB {
 			capacity INTEGER NOT NULL DEFAULT 500,
 			current_load INTEGER NOT NULL DEFAULT 0,
 			is_active INTEGER NOT NULL DEFAULT 1,
+			is_draining INTEGER NOT NULL DEFAULT 0,
+			last_seen_at DATETIME,
 			reality_public_key TEXT,
 			reality_short_id TEXT,
 			ws_enabled INTEGER NOT NULL DEFAULT 0,

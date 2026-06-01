@@ -20,7 +20,14 @@ type VPNServer struct {
 	Capacity         int       `json:"-" gorm:"not null;default:500"`
 	CurrentLoad      int       `json:"load_percent" gorm:"default:0"`
 	IsActive         bool      `json:"is_active" gorm:"default:true;index"`
-	RealityPublicKey string    `json:"-" gorm:"column:reality_public_key"`
+	// IsDraining (migration 024) marks a server in drain mode: existing
+	// connections survive but ListActiveServers excludes it, so non-admin
+	// GET /servers stops handing it out for new connections (ADMIN-04).
+	IsDraining bool `json:"is_draining" gorm:"column:is_draining;not null;default:false"`
+	// LastSeenAt (migration 024) is the last tunnel-heartbeat timestamp,
+	// written by TouchServerHeartbeat. Nil until the server first reports.
+	LastSeenAt       *time.Time `json:"last_seen_at" gorm:"column:last_seen_at"`
+	RealityPublicKey string     `json:"-" gorm:"column:reality_public_key"`
 	RealityShortID   string    `json:"-" gorm:"column:reality_short_id"`
 	// WebSocket CDN transport fields (migration 005).
 	// WSEnabled is true only when the server has Cloudflare CDN + Nginx configured.

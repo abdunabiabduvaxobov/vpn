@@ -117,6 +117,8 @@ func setupPlanRepoDB(t *testing.T) *gorm.DB {
 			protocol TEXT NOT NULL DEFAULT 'vless',
 			capacity INTEGER NOT NULL DEFAULT 500,
 			is_active INTEGER NOT NULL DEFAULT 1,
+			is_draining INTEGER NOT NULL DEFAULT 0,
+			last_seen_at TIMESTAMP,
 			current_load INTEGER NOT NULL DEFAULT 0,
 			reality_public_key TEXT NOT NULL DEFAULT '',
 			reality_short_id TEXT NOT NULL DEFAULT '',
