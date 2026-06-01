@@ -197,48 +197,65 @@ func ListPlanServersJoined(ctx context.Context, db *gorm.DB, planID string) ([]m
 // needed; matches subscription_repo.go::CreateOrUpdateSubscription style).
 func SetUserPlan(ctx context.Context, db *gorm.DB, userID, planID string, lavaContractID *string, expiresAt *time.Time) error {
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 1. Resolve the plan's code so we can write the denormalized subscription_tier.
-		var plan model.Plan
-		if err := tx.Where("id = ?", planID).First(&plan).Error; err != nil {
-			return err
-		}
-
-		// 2. Update users row.
-		updates := map[string]interface{}{
-			"plan_id":           planID,
-			"subscription_tier": plan.Code,
-		}
-		// nil expiresAt clears the column (cron path); non-nil sets it.
-		updates["subscription_expires_at"] = expiresAt
-		if err := tx.Model(&model.User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
-			return err
-		}
-
-		// 3. Upsert the subscriptions row (manual find+update OR insert).
-		var existing model.Subscription
-		findErr := tx.Where("user_id = ? AND is_active = ?", userID, true).Order("started_at DESC").First(&existing).Error
-		if findErr != nil && !errors.Is(findErr, gorm.ErrRecordNotFound) {
-			return findErr
-		}
-		if errors.Is(findErr, gorm.ErrRecordNotFound) {
-			// No active subscription — insert one.
-			sub := &model.Subscription{
-				UserID:         userID,
-				Plan:           plan.Code,
-				LavaContractID: lavaContractID,
-				IsActive:       true,
-				ExpiresAt:      expiresAt,
-			}
-			return tx.Create(sub).Error
-		}
-		// Update existing.
-		return tx.Model(&existing).Updates(map[string]interface{}{
-			"plan":             plan.Code,
-			"lava_contract_id": lavaContractID,
-			"expires_at":       expiresAt,
-			"is_active":        true,
-		}).Error
+		return SetUserPlanTx(tx, userID, planID, lavaContractID, expiresAt)
 	})
+}
+
+// SetUserPlanTx performs the exact user + subscription writes SetUserPlan does,
+// but on a caller-supplied *gorm.DB transaction (tx) instead of opening its own.
+//
+// This is the tx-aware variant used by code paths that already hold a
+// transaction — notably WithUserLock (ADMIN-03): the lava webhook tier-grant
+// and the admin force-cancel both run their writes on the lock-holding tx, so
+// calling SetUserPlan(db, ...) there would open a SECOND, un-locked transaction
+// outside the advisory lock and defeat the serialization. Callers inside a lock
+// MUST use SetUserPlanTx(tx, ...); everyone else keeps calling SetUserPlan,
+// which simply wraps this in its own transaction.
+//
+// The subscription upsert uses the existing "find active, update OR insert"
+// pattern (matches the original SetUserPlan body verbatim).
+func SetUserPlanTx(tx *gorm.DB, userID, planID string, lavaContractID *string, expiresAt *time.Time) error {
+	// 1. Resolve the plan's code so we can write the denormalized subscription_tier.
+	var plan model.Plan
+	if err := tx.Where("id = ?", planID).First(&plan).Error; err != nil {
+		return err
+	}
+
+	// 2. Update users row.
+	updates := map[string]interface{}{
+		"plan_id":           planID,
+		"subscription_tier": plan.Code,
+	}
+	// nil expiresAt clears the column (cron path); non-nil sets it.
+	updates["subscription_expires_at"] = expiresAt
+	if err := tx.Model(&model.User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
+		return err
+	}
+
+	// 3. Upsert the subscriptions row (manual find+update OR insert).
+	var existing model.Subscription
+	findErr := tx.Where("user_id = ? AND is_active = ?", userID, true).Order("started_at DESC").First(&existing).Error
+	if findErr != nil && !errors.Is(findErr, gorm.ErrRecordNotFound) {
+		return findErr
+	}
+	if errors.Is(findErr, gorm.ErrRecordNotFound) {
+		// No active subscription — insert one.
+		sub := &model.Subscription{
+			UserID:         userID,
+			Plan:           plan.Code,
+			LavaContractID: lavaContractID,
+			IsActive:       true,
+			ExpiresAt:      expiresAt,
+		}
+		return tx.Create(sub).Error
+	}
+	// Update existing.
+	return tx.Model(&existing).Updates(map[string]interface{}{
+		"plan":             plan.Code,
+		"lava_contract_id": lavaContractID,
+		"expires_at":       expiresAt,
+		"is_active":        true,
+	}).Error
 }
 
 // --- Plan CRUD (admin) ---
