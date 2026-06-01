@@ -14,7 +14,7 @@ progress:
 
 # STATE: RiseVPN
 
-**Updated:** 2026-05-22
+**Updated:** 2026-06-02 — Quick task 260602-214 (guest-login plan_id blocker fixed)
 
 ## Project Reference
 
@@ -78,6 +78,12 @@ From ADR-007 §15:
 ### Blockers
 
 - (none yet)
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260602-214 | Fix guest-login/createadmin plan_id NOT NULL blocker (assign system plan before CreateUser + real-Postgres onboarding test) | 2026-06-02 | 0e97975 | [260602-214-fix-guest-login-createadmin-plan-id-not-](./quick/260602-214-fix-guest-login-createadmin-plan-id-not-/) |
 
 ## Session Continuity
 
