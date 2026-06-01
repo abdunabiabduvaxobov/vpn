@@ -26,6 +26,12 @@ const Activity = lazy(() =>
 const Settings = lazy(() =>
   import("@/pages/Settings").then((m) => ({ default: m.Settings })),
 );
+const Payments = lazy(() =>
+  import("@/pages/Payments").then((m) => ({ default: m.Payments })),
+);
+const System = lazy(() =>
+  import("@/pages/System").then((m) => ({ default: m.System })),
+);
 
 function LazyFallback() {
   return (
@@ -81,6 +87,22 @@ export default function App() {
           element={
             <Suspense fallback={<LazyFallback />}>
               <Settings />
+            </Suspense>
+          }
+        />
+        <Route
+          path="/payments"
+          element={
+            <Suspense fallback={<LazyFallback />}>
+              <Payments />
+            </Suspense>
+          }
+        />
+        <Route
+          path="/system"
+          element={
+            <Suspense fallback={<LazyFallback />}>
+              <System />
             </Suspense>
           }
         />

@@ -1,6 +1,8 @@
 import { NavLink, Navigate, Outlet, useNavigate } from "react-router-dom";
 import {
   Activity,
+  CreditCard,
+  HeartPulse,
   LayoutDashboard,
   LogOut,
   Server,
@@ -21,6 +23,8 @@ const navItems = [
   { to: "/users", label: "Пользователи", Icon: Users },
   { to: "/servers", label: "Серверы", Icon: Server },
   { to: "/plans", label: "Тарифы", Icon: Tag },
+  { to: "/payments", label: "Платежи", Icon: CreditCard },
+  { to: "/system", label: "Система", Icon: HeartPulse },
   { to: "/activity", label: "Журнал", Icon: Activity },
   { to: "/settings", label: "Настройки", Icon: Settings },
 ];
