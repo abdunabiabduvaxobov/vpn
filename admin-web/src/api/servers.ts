@@ -17,6 +17,11 @@ export interface AdminServer {
   // load_percent is what the GORM struct serialises for "current_load".
   load_percent: number;
   is_active: boolean;
+  // is_draining (migration 024 / ADMIN-04): existing tunnels survive but no
+  // NEW connections are handed out and the server drops from the public
+  // /servers list. last_seen_at is the last tunnel heartbeat (null = never).
+  is_draining: boolean;
+  last_seen_at: string | null;
   created_at: string;
 }
 
@@ -53,4 +58,58 @@ export async function updateServer(
 // removed, so a subsequent toggle back to active via updateServer works.
 export async function deleteServer(id: string): Promise<void> {
   await api.delete(`/api/v1/admin/servers/${id}`);
+}
+
+// --- ADMIN-04 server controls --------------------------------------------
+//
+// drain sets is_draining=true (existing tunnels survive, no new connections,
+// drops from the public /servers list). force=true ALSO force-disconnects
+// every live connection on the server, subject to the per-server throttle
+// (429 on a second call inside the 60s window). undrain reverses it.
+// disconnect is the standalone force-disconnect-all (also throttled).
+
+export async function drainServer(
+  id: string,
+  force = false,
+): Promise<{ id: string; is_draining: boolean; killed_count: number }> {
+  const resp = await api.post<{
+    id: string;
+    is_draining: boolean;
+    killed_count: number;
+  }>(`/api/v1/admin/servers/${id}/drain`, { force });
+  return resp.data;
+}
+
+export async function undrainServer(
+  id: string,
+): Promise<{ id: string; is_draining: boolean }> {
+  const resp = await api.post<{ id: string; is_draining: boolean }>(
+    `/api/v1/admin/servers/${id}/undrain`,
+    {},
+  );
+  return resp.data;
+}
+
+export async function disconnectServer(
+  id: string,
+): Promise<{ killed_count: number }> {
+  const resp = await api.post<{ killed_count: number }>(
+    `/api/v1/admin/servers/${id}/disconnect`,
+    {},
+  );
+  return resp.data;
+}
+
+// Operational snapshot for one server (live conn count, last heartbeat, load).
+export interface ServerHealth {
+  concurrent_conns: number;
+  last_seen_at: string | null;
+  current_load: number;
+}
+
+export async function getServerHealth(id: string): Promise<ServerHealth> {
+  const resp = await api.get<ServerHealth>(
+    `/api/v1/admin/servers/${id}/health`,
+  );
+  return resp.data;
 }

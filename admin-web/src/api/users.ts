@@ -89,3 +89,110 @@ export async function updateUser(
   );
   return resp.data;
 }
+
+// --- ADMIN-02 per-user controls ------------------------------------------
+//
+// All three reason-carrying mutations (suspend/unsuspend/disconnect) require a
+// non-empty reason (the backend 400s otherwise) which is written into the
+// audit log. cancel-subscription takes {refund, reason}. The backend
+// surfaces 409 (already cancelled) and 429 (force-disconnect throttle) which
+// the UI renders as toasts.
+
+export async function suspendUser(
+  id: string,
+  reason: string,
+): Promise<{ id: string; suspended_at: string }> {
+  const resp = await api.post<{ id: string; suspended_at: string }>(
+    `/api/v1/admin/users/${id}/suspend`,
+    { reason },
+  );
+  return resp.data;
+}
+
+export async function unsuspendUser(
+  id: string,
+  reason: string,
+): Promise<{ id: string }> {
+  const resp = await api.post<{ id: string }>(
+    `/api/v1/admin/users/${id}/unsuspend`,
+    { reason },
+  );
+  return resp.data;
+}
+
+export async function disconnectUser(
+  id: string,
+  reason: string,
+): Promise<{ killed_count: number }> {
+  const resp = await api.post<{ killed_count: number }>(
+    `/api/v1/admin/users/${id}/disconnect`,
+    { reason },
+  );
+  return resp.data;
+}
+
+export interface CancelSubscriptionInput {
+  refund: boolean;
+  reason: string;
+}
+
+export async function cancelSubscription(
+  id: string,
+  input: CancelSubscriptionInput,
+): Promise<{
+  subscription_id: string;
+  cancelled_at: string;
+  refund_status: string;
+}> {
+  const resp = await api.post<{
+    subscription_id: string;
+    cancelled_at: string;
+    refund_status: string;
+  }>(`/api/v1/admin/users/${id}/cancel-subscription`, input);
+  return resp.data;
+}
+
+// Audit-log row (mirror of model.AuditLogEntry). details is an opaque map
+// carrying the action's reason + action-specific fields.
+export interface AuditLogEntry {
+  id: string;
+  admin_id: string;
+  action: string;
+  target_id: string | null;
+  details: Record<string, unknown> | null;
+  ip: string;
+  created_at: string;
+}
+
+export interface UserAuditLogResponse {
+  entries: AuditLogEntry[];
+  pagination: Pagination;
+}
+
+// GET /admin/users/:id/audit-log?page=&limit= → { entries, pagination }.
+export async function getUserAuditLog(
+  id: string,
+  page = 1,
+): Promise<UserAuditLogResponse> {
+  const resp = await api.get<UserAuditLogResponse>(
+    `/api/v1/admin/users/${id}/audit-log`,
+    { params: { page, limit: 50 } },
+  );
+  return resp.data;
+}
+
+// Read-only session view — the refresh-token hash is never serialized.
+export interface UserSession {
+  id: string;
+  device_info: string;
+  created_at: string;
+  expires_at: string;
+}
+
+// GET /admin/users/:id/sessions → array of sessions.
+export async function getUserSessions(id: string): Promise<UserSession[]> {
+  const resp = await api.get<UserSession[]>(
+    `/api/v1/admin/users/${id}/sessions`,
+  );
+  return resp.data;
+}
