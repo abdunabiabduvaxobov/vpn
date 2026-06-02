@@ -83,6 +83,18 @@ func main() {
 		var hbCtx context.Context
 		hbCtx, hbCancel = context.WithCancel(context.Background())
 		go internal.StartHeartbeat(hbCtx, config.APIBaseURL, config.ServerID, config.HeartbeatSecret, interval, logger)
+
+		// --- Start HARD-02 per-user VLESS client sync (xray nodes only) ---
+		// Pulls the active UUID set from the API each tick, debounces, and
+		// reloads the xray client set so a revoked UUID stops being admitted at
+		// the wire. Only meaningful when an xray instance is running (AWG-only
+		// nodes have no VLESS client set). Reuses the heartbeat ctx + interval so
+		// it shuts down with the emitter; debounce coalesces rotation bursts and
+		// gives the documented 30-60s wire-propagation floor.
+		if xrayServer != nil {
+			debounce := 7 * time.Second
+			go internal.StartClientSync(hbCtx, xrayServer, config.APIBaseURL, config.ServerID, config.HeartbeatSecret, interval, debounce, logger)
+		}
 	}
 
 	// --- Wait for shutdown signal (SIGINT or SIGTERM) ---

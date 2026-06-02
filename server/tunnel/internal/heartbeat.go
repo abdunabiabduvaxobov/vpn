@@ -58,6 +58,127 @@ func StartHeartbeat(ctx context.Context, apiBaseURL, serverID, secret string, in
 	}
 }
 
+// clientReloader is the narrow capability StartClientSync needs from the tunnel
+// server: swap the active VLESS UUID set and regen+reload. *TunnelServer
+// satisfies it via ReloadClients. Kept as an interface so the sync loop is
+// decoupled from the concrete server and unit-testable without xray-core.
+type clientReloader interface {
+	ReloadClients(uuids []string) error
+}
+
+// vlessClientsResponse is the active-set payload the API returns at
+// GET /api/v1/internal/servers/:id/vless-clients (HARD-02). The etag is a stable
+// hash of the active UUID set so the tunnel can cheaply detect a change.
+type vlessClientsResponse struct {
+	UUIDs []string `json:"uuids"`
+	ETag  string   `json:"etag"`
+}
+
+// StartClientSync is the HARD-02 wire-enforcement pull loop. On each interval
+// tick it GETs the active per-user VLESS UUID set from the API
+// (/api/v1/internal/servers/:id/vless-clients, same X-Internal-Secret gate as
+// the heartbeat), and when the returned ETag differs from the last applied set
+// it DEBOUNCES (coalescing a burst of rotations) and then calls
+// server.ReloadClients with the new set.
+//
+// PROPAGATION FLOOR (Open-Risk 2 — DO NOT HIDE): the API rotates a user's UUID
+// IMMEDIATELY (the new identity is active and the old is_active=false in the same
+// tx), but the WIRE lags one reload cycle = the pull interval (>=30s) + the
+// debounce window (debounce). That is a realistic 30-60s wire-enforcement floor.
+// SC#2 "rotates" is therefore satisfied at the API instantly and at the wire
+// within 30-60s — not sub-second, because xray-core has no hot reload (each
+// reload is connection-dropping, so we MUST batch).
+//
+// Reliability: a failed pull is logged at Warn and the loop continues (a
+// transient API blip MUST NOT stop wire sync or crash the tunnel). An UNCHANGED
+// set (ETag match) is skipped entirely — no reload, so no needless connection
+// drops. Returns when ctx is cancelled (graceful shutdown).
+func StartClientSync(ctx context.Context, server clientReloader, apiBaseURL, serverID, secret string, interval, debounce time.Duration, logger *zap.Logger) {
+	url := apiBaseURL + "/api/v1/internal/servers/" + serverID + "/vless-clients"
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	logger.Info("tunnel vless-client sync started",
+		zap.String("url", url),
+		zap.Duration("interval", interval),
+		zap.Duration("debounce", debounce),
+		zap.String("propagation_floor", "30-60s wire enforcement (pull interval + debounce; xray-core has no hot reload)"),
+	)
+
+	var lastETag string
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info("tunnel vless-client sync stopping")
+			return
+		case <-ticker.C:
+			resp, etag, err := fetchActiveClients(ctx, client, url, secret)
+			if err != nil {
+				logger.Warn("vless-sync: fetch failed", zap.Error(err))
+				continue
+			}
+			if etag == lastETag {
+				// Unchanged active set — skip the connection-dropping reload.
+				continue
+			}
+			// DEBOUNCE: wait to coalesce a burst of rotations into one reload.
+			// Honour ctx so shutdown is not delayed by the debounce window.
+			if debounce > 0 {
+				select {
+				case <-ctx.Done():
+					logger.Info("tunnel vless-client sync stopping (during debounce)")
+					return
+				case <-time.After(debounce):
+				}
+			}
+			if err := server.ReloadClients(resp.UUIDs); err != nil {
+				logger.Error("vless-sync: ReloadClients failed — keeping previous active set",
+					zap.Error(err))
+				// Do NOT advance lastETag: retry on the next tick.
+				continue
+			}
+			lastETag = etag
+			logger.Info("vless-sync: active client set reloaded",
+				zap.Int("client_count", len(resp.UUIDs)),
+				zap.String("etag", etag),
+			)
+		}
+	}
+}
+
+// fetchActiveClients performs a single authed GET of the active UUID set and
+// returns the decoded body plus the effective ETag (the response's etag field,
+// falling back to the ETag header). Any transport / decode error is surfaced to
+// the caller, which logs-and-continues.
+func fetchActiveClients(ctx context.Context, client *http.Client, url, secret string) (vlessClientsResponse, string, error) {
+	var out vlessClientsResponse
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return out, "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("X-Internal-Secret", secret)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return out, "", fmt.Errorf("get: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return out, "", fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, "", fmt.Errorf("decode: %w", err)
+	}
+	etag := out.ETag
+	if etag == "" {
+		etag = resp.Header.Get("ETag")
+	}
+	return out, etag, nil
+}
+
 // postOnce sends a single heartbeat. Best-effort: any error is logged at Warn
 // and swallowed so the emitter loop never crashes the tunnel.
 func postOnce(ctx context.Context, client *http.Client, url, secret string, logger *zap.Logger) {
