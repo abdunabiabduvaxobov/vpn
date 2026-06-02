@@ -266,6 +266,17 @@ func handleLavaPaymentSuccess(ctx context.Context, logger *zap.Logger, db *gorm.
 			return fmt.Errorf("payment.success: SetUserPlanTx(%s, %s): %w", inv.UserID, offerRow.PlanID, err)
 		}
 
+		// 1b. HARD-02: rotate the user's VLESS UUID in the SAME lock tx as the
+		// tier grant — the buyer's prior identity is retired and a fresh one
+		// issued atomically with Pro unlock. The replay path funnels through this
+		// same applyLavaEventImpl, so replay rotates too; the active-set converges
+		// idempotently (ADMIN-06 set semantics — a re-rotate just issues another
+		// active UUID, and the tunnel admits whatever is currently active). The
+		// tunnel evicts the old UUID at its next reload (~30-60s wire floor).
+		if _, rerr := repository.RotateVlessUUID(ctx, tx, inv.UserID); rerr != nil {
+			return fmt.Errorf("payment.success: RotateVlessUUID(%s): %w", inv.UserID, rerr)
+		}
+
 		// 2. UpsertLavaContract. Plan field uses freshly-resolved plan.Code (NOT inv.Plan) — PAY-08 defence-in-depth.
 		if err := repository.UpsertLavaContract(ctx, tx, &model.LavaContract{
 			UserID:      inv.UserID,

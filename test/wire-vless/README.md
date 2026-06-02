@@ -9,6 +9,19 @@ client configured with that UUID cannot tunnel any traffic.
 This is the heaviest validation in Phase 8. It is run **manually at the phase
 gate** and is **not** part of `go test`.
 
+> **Status (plan 08-07, HARD-02 landed):** the API now issues per-user VLESS
+> UUIDs (`GetServerConfig` → `GetOrCreateActiveVlessUUID`), rotates them on plan
+> change, and exposes the active set at
+> `GET /api/v1/internal/servers/:id/vless-clients`; the tunnel pulls that set on
+> each heartbeat, debounces (~7s), and `ReloadClients` regenerates+reloads the
+> xray config. The active-set the tunnel admits is therefore the rows in
+> `user_vless_identities WHERE is_active = TRUE`. For THIS harness the active set
+> is pinned statically to `{U1}` via `tunnel-config.json -> clients`, so Step 4's
+> foreign `U2` is genuinely never activated and must reject. There is a **30-60s
+> wire-propagation floor** (heartbeat interval + debounce) between an API
+> rotation and the tunnel evicting the old UUID — wait it out before asserting a
+> rotation at the wire.
+
 > **SC#2 is proven by Step 4** (foreign UUID → rejection). Step 3 is the positive
 > control (active UUID → success); without it a Step-4 failure could be a setup
 > bug rather than a genuine rejection.

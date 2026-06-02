@@ -168,6 +168,17 @@ func setupWebhookTestDB(t *testing.T) *gorm.DB {
 					'no-timestamp'
 				)
 			)`,
+		// HARD-02 (migration 026): per-user VLESS identities. Mirrored here so the
+		// payment.success rotation (RotateVlessUUID inside the WithUserLock tx)
+		// has a table to write to on the SQLite test DB exactly as on production.
+		`CREATE TABLE user_vless_identities (
+			id          TEXT PRIMARY KEY DEFAULT ` + uuidDefault + `,
+			user_id     TEXT NOT NULL,
+			vless_uuid  TEXT NOT NULL UNIQUE,
+			is_active   INTEGER NOT NULL DEFAULT 1,
+			created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			revoked_at  TIMESTAMP
+		)`,
 	}
 	for _, s := range stmts {
 		if err := db.Exec(s).Error; err != nil {

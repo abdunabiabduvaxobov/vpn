@@ -310,6 +310,10 @@ func main() {
 	// gate skips /api/v1/internal/ (SkipRule above).
 	internalGroup := api.Group("/internal", middleware.InternalSecret(cfg.InternalHeartbeatSecret, logger))
 	internalGroup.Post("/servers/:id/heartbeat", handler.HeartbeatServer(logger, db))
+	// HARD-02: the tunnel pulls the active per-user VLESS UUID set here each
+	// heartbeat tick (same InternalSecret gate as /heartbeat) and reloads its
+	// xray config only when the returned ETag changes.
+	internalGroup.Get("/servers/:id/vless-clients", handler.ListServerVlessClients(logger, db))
 
 	// Phase 3 public plans endpoint (PAY-12). No auth — landing /pricing reads
 	// this. Cached in Redis (cache:plans:public:{currency}, TTL 60s); admin

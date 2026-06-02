@@ -239,13 +239,40 @@ func AdminUpdateUser(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 			updates["subscription_expires_at"] = base.Add(time.Duration(req.ExtendDays) * 24 * time.Hour)
 		}
 
-		if err := repository.UpdateUser(c.Context(), db, userID, updates); err != nil {
-			if errors.Is(err, repository.ErrNotFound) {
+		// HARD-02: when the admin actually changes the plan/tier, rotate the
+		// user's VLESS UUID in the SAME transaction as the user write, under the
+		// per-user advisory lock (ADMIN-03) so it serializes with the lava
+		// webhook tier-grant path. The old UUID is marked is_active=false and the
+		// new one is issued atomically with the tier change — the tunnel evicts
+		// the old UUID at its next reload (~30-60s wire floor). A pure
+		// role/expiry change (no tier delta) does NOT rotate, avoiding pointless
+		// UUID churn that would drop the user's live connection for no reason.
+		tierChanged := false
+		if _, ok := updates["subscription_tier"]; ok && before.SubscriptionTier != req.SubscriptionTier {
+			tierChanged = true
+		}
+
+		updateErr := func() error {
+			if !tierChanged {
+				return repository.UpdateUser(c.Context(), db, userID, updates)
+			}
+			return repository.WithUserLock(c.Context(), db, userID, func(tx *gorm.DB) error {
+				if err := tx.Model(&model.User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
+					return err
+				}
+				if _, rerr := repository.RotateVlessUUID(c.Context(), tx, userID); rerr != nil {
+					return rerr
+				}
+				return nil
+			})
+		}()
+		if updateErr != nil {
+			if errors.Is(updateErr, repository.ErrNotFound) {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 					"error": "user not found",
 				})
 			}
-			logger.Error("admin: failed to update user", zap.String("user_id", userID), zap.Error(err))
+			logger.Error("admin: failed to update user", zap.String("user_id", userID), zap.Error(updateErr))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "internal server error",
 			})
