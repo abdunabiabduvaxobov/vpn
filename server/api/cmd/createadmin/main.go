@@ -28,6 +28,7 @@ import (
 	"os"
 	"strings"
 
+	"vpnapp/server/api/internal/config"
 	"vpnapp/server/api/internal/model"
 	"vpnapp/server/api/internal/repository"
 
@@ -74,7 +75,7 @@ func main() {
 		log.Fatalf("checking existing user: %v", err)
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(pwd), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(pwd), config.BcryptCost)
 	if err != nil {
 		log.Fatalf("hashing password: %v", err)
 	}

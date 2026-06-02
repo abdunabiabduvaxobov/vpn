@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+// BcryptCost is the bcrypt work factor used for all NEW or changed password
+// hashes (HARD-11 / SECURITY-AUDIT S4-5). Raised from bcrypt.DefaultCost (10)
+// to 12 to make offline cracking of an exfiltrated admin hash ~4x more
+// expensive. Existing cost-10 hashes still verify because bcrypt embeds the
+// cost in the hash string — no migration is needed; only newly written hashes
+// (createadmin bootstrap + admin password-change) use the higher cost.
+const BcryptCost = 12
+
 // Config holds API server configuration loaded from environment variables.
 type Config struct {
 	Port                int

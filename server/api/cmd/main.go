@@ -16,6 +16,7 @@ import (
 	"vpnapp/server/api/internal/config"
 	"vpnapp/server/api/internal/handler"
 	"vpnapp/server/api/internal/lava"
+	applog "vpnapp/server/api/internal/logger"
 	"vpnapp/server/api/internal/middleware"
 	"vpnapp/server/api/internal/repository"
 	"vpnapp/server/api/internal/scheduler"
@@ -57,12 +58,20 @@ func buildFiberConfig(errorHandler fiber.ErrorHandler) fiber.Config {
 }
 
 func main() {
-	// Initialize logger
-	logger, err := zap.NewProduction()
+	// Initialize logger. The production base is wrapped with the redacting
+	// core (HARD-10 / SECURITY-AUDIT S4-4) so that token-shaped string fields
+	// (JWTs, 32-byte opaque tokens, API keys) and known-sensitive keys are
+	// replaced with [REDACTED] before any entry reaches log aggregation. Every
+	// downstream call site receives this wrapped logger unchanged.
+	baseLogger, err := zap.NewProduction()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to init logger: %v\n", err)
 		os.Exit(1)
 	}
+	// NewRedactingLogger wraps the production core (zap.WrapCore) so the
+	// resulting logger passed to every handler/middleware scrubs token-shaped
+	// fields. See internal/logger/logger.go.
+	logger := applog.NewRedactingLogger(baseLogger)
 	defer logger.Sync()
 
 	// Fail-fast aggregate env validator (HOTFIX-08 / D-04). Runs BEFORE
@@ -325,7 +334,7 @@ func main() {
 	// device_secret, tokens) and the request body would otherwise leak
 	// into log aggregation. Anything else needed for diagnosis should be
 	// added as an explicit field on the client side.
-	api.Post("/debug/error", func(c *fiber.Ctx) error {
+	api.Post("/debug/error", middleware.DebugErrorLimit(redisClient, logger), func(c *fiber.Ctx) error {
 		var body struct {
 			Error  string `json:"error"`
 			Action string `json:"action"`
@@ -355,7 +364,7 @@ func main() {
 	// the in-tree "token:blacklist:" prefix), subsequent requests with the
 	// same access token return 401 automatically.
 	protected.Post("/auth/logout", handler.Logout(logger, redisClient, db))
-	protected.Get("/servers", handler.ListServersCached(logger, db, redisClient))
+	protected.Get("/servers", handler.ListServersCached(logger, db, redisClient, cfg))
 	protected.Get("/servers/:id/config", handler.GetServerConfig(logger, db, cfg))
 	protected.Get("/subscription", handler.GetSubscription(logger, db))
 	protected.Get("/account", handler.GetAccount(logger, db))
@@ -396,11 +405,17 @@ func main() {
 	// Admin routes (JWT + admin role required).
 	// The audit middleware wraps the whole group so every mutating
 	// admin action is persisted to the audit_log table on success.
-	admin := api.Group("/admin",
+	// Admin security headers (HARD-08 / S2-5) are mounted FIRST on the group,
+	// before auth, so even a 401 from authMiddleware carries the hardened
+	// response headers. AdminSecurityHeaders returns helmet (nosniff, CSP,
+	// X-Frame-Options DENY) plus an unconditional Strict-Transport-Security.
+	adminMiddlewares := append(
+		middleware.AdminSecurityHeaders(),
 		authMiddleware,
 		middleware.AdminRequired(db),
 		middleware.AuditLog(db, logger),
 	)
+	admin := api.Group("/admin", adminMiddlewares...)
 	admin.Get("/users", handler.AdminListUsers(logger, db))
 	admin.Get("/users/:id", handler.AdminGetUser(logger, db))
 	admin.Patch("/users/:id", handler.AdminUpdateUser(logger, db, redisClient))

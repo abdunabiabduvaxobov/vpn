@@ -198,7 +198,7 @@ func AdminChangePassword(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 			})
 		}
 
-		newHash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+		newHash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), config.BcryptCost)
 		if err != nil {
 			logger.Error("change-password: bcrypt failed", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{

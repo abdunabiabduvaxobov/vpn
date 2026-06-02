@@ -1,9 +1,13 @@
 package handler
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"math/rand"
+	"sort"
 
 	"vpnapp/server/api/internal/cache"
 	"vpnapp/server/api/internal/config"
@@ -119,7 +123,7 @@ type WebSocketClientConfig struct {
 // TestServersCacheNoSelect) pins this handler to `ListServersCached` with the
 // (logger, db, redisClient) signature — see SUMMARY deviation [Rule 3]. The old
 // non-cached ListServers(logger, db) is removed to avoid a dead duplicate.
-func ListServersCached(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client) fiber.Handler {
+func ListServersCached(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client, cfg *config.Config) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userID, _ := c.Locals("user_id").(string)
 		role, _ := c.Locals("role").(string)
@@ -175,6 +179,20 @@ func ListServersCached(logger *zap.Logger, db *gorm.DB, redisClient *redis.Clien
 			}
 		}
 
+		// Per-user HMAC server ordering (HARD-14 / SECURITY-AUDIT S5-2).
+		// Applied IN GO, PER REQUEST, on the response slice ONLY — the cached
+		// blob (cache:servers:active) stays the shared, load-ordered full list
+		// and is NEVER reordered. The order is keyed by HMAC(JWTSecret,
+		// userID:serverID), so it is:
+		//   - stable for a given user across requests (deterministic key),
+		//   - different between users (userID is in the HMAC input),
+		//   - a pure permutation (no servers added or dropped).
+		// This defeats fleet enumeration via repeated free signups: an attacker
+		// cannot correlate server position across throwaway accounts to map the
+		// full server set. The HMAC key is server-side-only so the ordering
+		// cannot be predicted or forged by a client.
+		orderServersForUser(servers, userID, cfg.JWTSecret)
+
 		logger.Debug("listing servers",
 			zap.String("user_id", userID),
 			zap.String("role", role),
@@ -219,6 +237,29 @@ func loadActiveServersCached(c *fiber.Ctx, db *gorm.DB, redisClient *redis.Clien
 	}
 
 	return servers, nil
+}
+
+// orderServersForUser deterministically re-orders the server slice in place
+// with a per-user HMAC permutation (HARD-14 / S5-2). The sort key for each
+// server is the first 8 bytes of HMAC-SHA256(jwtSecret, userID + ":" + ID).
+// Because the key depends on both userID and serverID:
+//   - the same user sees a stable order across requests,
+//   - different users see different orders,
+//   - the result is always a permutation (sort never adds or drops elements).
+//
+// jwtSecret is used purely as a server-side HMAC key here; it never leaves the
+// process and gives the ordering its unpredictability. The sort is stable so
+// that, in the astronomically unlikely event of an 8-byte key collision, the
+// relative input order is preserved deterministically.
+func orderServersForUser(servers []model.VPNServer, userID, jwtSecret string) {
+	hmacKey := func(serverID string) []byte {
+		m := hmac.New(sha256.New, []byte(jwtSecret))
+		m.Write([]byte(userID + ":" + serverID))
+		return m.Sum(nil)[:8]
+	}
+	sort.SliceStable(servers, func(i, j int) bool {
+		return bytes.Compare(hmacKey(servers[i].ID), hmacKey(servers[j].ID)) < 0
+	})
 }
 
 // GetServerConfig handles GET /servers/:id/config.
