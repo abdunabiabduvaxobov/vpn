@@ -33,7 +33,7 @@ func CreateSubscription(ctx context.Context, db *gorm.DB, sub *model.Subscriptio
 // If an active subscription for the user already exists it is updated in place;
 // otherwise a new row is inserted.
 //
-// Phase 3 (D-11): writes lava_contract_id; the legacy Stripe column is gone.
+// Phase 3 (D-11): writes lava_contract_id; the legacy provider column is gone.
 func CreateOrUpdateSubscription(ctx context.Context, db *gorm.DB, sub *model.Subscription) error {
 	// Thread the request ctx onto the connection once; the lookup, the insert
 	// branch, and the update branch below all reuse the same context-bound session.

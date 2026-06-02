@@ -82,7 +82,7 @@ func UpdateUserTier(ctx context.Context, db *gorm.DB, userID, tier string) error
 // was just rebound to a plan owner via a share code. Refusing to delete
 // paid guests prevents a leaked device_id from becoming a plan-deletion
 // primitive (a guest who paid for premium then had their device row
-// re-linked must NOT be silently deleted along with their Stripe data).
+// re-linked must NOT be silently deleted along with their paid data).
 //
 // Returns ErrNotFound when the user does not exist OR does not match the
 // "safe orphan" pattern — callers must treat the not-found case as a soft
@@ -110,7 +110,7 @@ func DeleteOrphanGuestUser(ctx context.Context, db *gorm.DB, userID string) erro
 	}
 	// Defence in depth: refuse if any subscription row claims to be active
 	// (covers historical data where subscription_tier might be 'free' but
-	// a Stripe subscription is still on file).
+	// a paid subscription is still on file).
 	var subCount int64
 	if err := db.Model(&model.Subscription{}).
 		Where("user_id = ? AND is_active = ?", userID, true).

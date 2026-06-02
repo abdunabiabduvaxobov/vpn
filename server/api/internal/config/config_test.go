@@ -9,9 +9,9 @@ import (
 // HOTFIX-08 regression tests: fail-fast aggregate env validator. The required
 // set is intentionally the v2.1.0 runtime core only (D-03): JWT_SECRET,
 // DATABASE_URL, REDIS_URL, TUNNEL_VLESS_UUID. LAVA_* keys are NOT in this set
-// (Phase 3 owns that). Stripe vars are optional-with-warn (Stripe leaves in
-// Phase 8). The validator scans every var in one pass (D-04) so the operator
-// sees ALL missing keys in one structured log line.
+// (Phase 3 owns that). The reserved Apple .p8 keys are optional-with-warn. The
+// validator scans every var in one pass (D-04) so the operator sees ALL missing
+// keys in one structured log line.
 
 func TestRequireEnv_ReturnsAllMissingKeys(t *testing.T) {
 	// Force every required var to empty via t.Setenv (automatically restored
@@ -216,32 +216,30 @@ func TestRequireEnv_MissingSSOKeys_Reported(t *testing.T) {
 	}
 }
 
-func TestOptionalEnvWarnings_FlagsPlaceholders(t *testing.T) {
-	// Clear unrelated optional vars so the assertion is precise. The
-	// placeholder for STRIPE_PRICE_PREMIUM must be flagged even though it
-	// is non-empty — that's the whole point of the "placeholder" path.
-	t.Setenv("STRIPE_KEY", "sk_test_realvalue")
-	t.Setenv("STRIPE_WEBHOOK_SECRET", "whsec_realvalue")
-	t.Setenv("STRIPE_PRICE_PREMIUM", "price_PLACEHOLDER_PREMIUM")
-	t.Setenv("STRIPE_PRICE_ULTIMATE", "price_realvalue")
+func TestOptionalEnvWarnings_FlagsUnsetOptionalKeys(t *testing.T) {
+	// As of Phase 8 the optional set is the two reserved Apple .p8 keys
+	// (D-30). An UNSET optional key must be flagged so a deploy that forgot
+	// to configure the future authorizationCode exchange is visible; a key
+	// set to a real value must NOT be flagged.
+	t.Setenv("APPLE_KEY_ID", "")                   // unset -> must be flagged
+	t.Setenv("APPLE_PRIVATE_KEY_P8", "real-p8-pem") // real value -> must NOT be flagged
 
 	warned := config.OptionalEnvWarnings()
 
-	foundPremium := false
+	foundKeyID := false
 	for _, key := range warned {
-		if key == "STRIPE_PRICE_PREMIUM" {
-			foundPremium = true
+		if key == "APPLE_KEY_ID" {
+			foundKeyID = true
 			break
 		}
 	}
-	if !foundPremium {
-		t.Errorf("expected STRIPE_PRICE_PREMIUM in warned (placeholder value should be flagged), got %v", warned)
+	if !foundKeyID {
+		t.Errorf("expected APPLE_KEY_ID in warned (unset optional key should be flagged), got %v", warned)
 	}
 
-	// Vars set to real values must NOT appear.
+	// Keys set to real values must NOT appear.
 	for _, key := range warned {
-		switch key {
-		case "STRIPE_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PRICE_ULTIMATE":
+		if key == "APPLE_PRIVATE_KEY_P8" {
 			t.Errorf("unexpected %q in warned (real value should not flag): %v", key, warned)
 		}
 	}

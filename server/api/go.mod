@@ -12,7 +12,6 @@ require (
 	github.com/jackc/pgx/v5 v5.5.5
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/redis/go-redis/v9 v9.18.0
-	github.com/stripe/stripe-go/v81 v81.4.0
 	github.com/testcontainers/testcontainers-go v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	go.uber.org/zap v1.27.0

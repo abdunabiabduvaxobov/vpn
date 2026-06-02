@@ -22,10 +22,6 @@ type Config struct {
 	DatabaseURL         string
 	RedisURL            string
 	JWTSecret           string
-	StripeKey           string
-	StripeWebhookSecret string
-	StripePricePremium  string
-	StripePriceUltimate string
 	AppDeepLinkScheme   string
 	TunnelVLESSUUID     string
 	MinAppVersion       string
@@ -121,10 +117,6 @@ func Load() (*Config, error) {
 		DatabaseURL:          getEnv("DATABASE_URL", "postgres://localhost:5432/vpnapp?sslmode=disable"),
 		RedisURL:             getEnv("REDIS_URL", "redis://localhost:6379"),
 		JWTSecret:            getEnv("JWT_SECRET", ""),
-		StripeKey:            getEnv("STRIPE_KEY", ""),
-		StripeWebhookSecret:  getEnv("STRIPE_WEBHOOK_SECRET", ""),
-		StripePricePremium:   getEnv("STRIPE_PRICE_PREMIUM", "price_PLACEHOLDER_PREMIUM"),
-		StripePriceUltimate:  getEnv("STRIPE_PRICE_ULTIMATE", "price_PLACEHOLDER_ULTIMATE"),
 		AppDeepLinkScheme:    getEnv("APP_DEEP_LINK", "vpnapp"),
 		TunnelVLESSUUID:      getEnv("TUNNEL_VLESS_UUID", ""),
 		MinAppVersion:        getEnv("MIN_APP_VERSION", "2.0.0"),
@@ -306,18 +298,14 @@ func RequireEnv() []string {
 	return missing
 }
 
-// OptionalEnvWarnings reports payment-provider env vars that are unset, empty,
-// or set to a known placeholder string. These do NOT block startup but should
-// emit a single warn-log line so misconfigured deploys are visible.
+// OptionalEnvWarnings reports env vars that are unset, empty, or set to a known
+// placeholder string. These do NOT block startup but should emit a single
+// warn-log line so misconfigured deploys are visible.
 //
-// STRIPE_* are warned because Stripe leaves in Phase 8; once gone, this list
-// shrinks. LAVA_* will move to RequireEnv in Phase 3.
+// As of Phase 8 the only entries are the reserved Apple .p8 keys (D-30); the
+// legacy payment-provider vars were removed when that provider left in Phase 8.
 func OptionalEnvWarnings() []string {
 	optional := map[string]string{
-		"STRIPE_KEY":            "",
-		"STRIPE_WEBHOOK_SECRET": "",
-		"STRIPE_PRICE_PREMIUM":  "price_PLACEHOLDER_PREMIUM",
-		"STRIPE_PRICE_ULTIMATE": "price_PLACEHOLDER_ULTIMATE",
 		// SSO optional (D-30, Phase 2 AUTH-03) — reserved for future Apple authorizationCode exchange:
 		"APPLE_KEY_ID":         "",
 		"APPLE_PRIVATE_KEY_P8": "",

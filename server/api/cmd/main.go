@@ -101,14 +101,14 @@ func main() {
 		)
 	}
 
-	// Optional payment-provider env vars (HOTFIX-08 / D-03). Empty or
-	// placeholder Stripe values emit a single WARN line but do NOT block
-	// startup — Stripe leaves in Phase 8 and these will shrink to zero then.
-	// LAVA_* will be added to RequireEnv in Phase 3 when lava.top wires in.
+	// Optional env vars (HOTFIX-08 / D-03). Empty or placeholder values emit a
+	// single WARN line but do NOT block startup. As of Phase 8 the only entries
+	// are the reserved Apple .p8 keys (D-30) — the legacy payment-provider vars
+	// were removed when that provider left in Phase 8.
 	if warned := config.OptionalEnvWarnings(); len(warned) > 0 {
-		logger.Warn("optional payment-provider environment variables unset or placeholder",
+		logger.Warn("optional environment variables unset or placeholder",
 			zap.Strings("vars", warned),
-			zap.String("impact", "stripe checkout will fail at runtime; lava.top not yet wired"),
+			zap.String("impact", "reserved Apple authorizationCode exchange is not configured"),
 		)
 	}
 
@@ -325,7 +325,7 @@ func main() {
 	// Phase 3 lava webhook (PAY-03..09). PUBLIC route — auth is via:
 	//   1. LavaWebhookIPAllowlist (TCP-layer RemoteIP check, 403 on miss).
 	//   2. X-Api-Key header inside the handler (crypto/subtle.ConstantTimeCompare).
-	// The old Stripe webhook route has been removed (D-02).
+	// The old legacy-provider webhook route has been removed (D-02).
 	api.Post("/webhook/lava", lavaIPAllowlist, handler.HandleLavaWebhook(logger, cfg, db, lavaClient, redisClient))
 
 	// Debug endpoint — logs only the "error" and "action" fields from
@@ -374,7 +374,7 @@ func main() {
 	protected.Get("/connections", handler.ListActiveConnections(logger, db))
 	protected.Patch("/connections/:id/heartbeat", handler.HeartbeatConnection(logger, db, redisClient))
 	// Phase 3 lava endpoints (D-02). /checkout supersedes the legacy
-	// Stripe-era subscription/checkout path.
+	// provider-era subscription/checkout path.
 	// All three are PROTECTED (JWT required) — guest users get 403 from the handler
 	// itself (CreateCheckoutSession checks user.Email presence).
 	// payments_off (ADMIN-05) gates checkout: when ON, RequireFlagOff 503s

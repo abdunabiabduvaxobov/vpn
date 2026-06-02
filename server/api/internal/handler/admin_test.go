@@ -342,7 +342,6 @@ func newAdminTestDB(t *testing.T) *gorm.DB {
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
 			user_id TEXT NOT NULL,
 			plan TEXT NOT NULL DEFAULT 'free',
-			stripe_id TEXT,
 			is_active INTEGER NOT NULL DEFAULT 1,
 			started_at DATETIME,
 			expires_at DATETIME

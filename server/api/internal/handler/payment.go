@@ -2,7 +2,6 @@ package handler
 
 import (
 	"errors"
-	"fmt"
 	"time"
 
 	"vpnapp/server/api/internal/config"
@@ -361,8 +360,3 @@ func mapLavaStatusToLocal(lavaStatus string) string {
 		return ""
 	}
 }
-
-// Ensure the package compiles when imported by tests that previously
-// referenced Stripe helpers. The compile-time fmt usage prevents an
-// "imported and not used" error if no other reference remains.
-var _ = fmt.Sprintf
