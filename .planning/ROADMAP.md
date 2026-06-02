@@ -205,15 +205,15 @@ A user signs in once with Apple or Google, pays on risevpn.com via lava.top, and
   6. The zap log encoder redacts any string matching a JWT or base64url-32 pattern — even a stray `zap.String("token", x)` results in `"token": "[REDACTED]"` in the log aggregator.
   7. Admin routes return `Strict-Transport-Security`, `X-Content-Type-Options`, and a CSP header; admin search rejects searches shorter than 3 characters and never uses `ILIKE %x%` on non-indexed columns.
 **Plans**: 9 plans across 4 waves (W0 test infra; W1 API security batch + CI + mobile refactor; W2 refresh rework + Stripe removal; W3 VLESS UUID + mobile secure storage)
-  - [ ] 08-01-PLAN.md (wave 0) — Nyquist test infra: 13 Go RED tests + jest waitForDisconnected + wire-VLESS harness + SC#5 manual doc [HARD-01..17]
-  - [ ] 08-02-PLAN.md (wave 1, depends 01) — API security batch A: Telegram private-chat gate, admin search hardening, role-change audit diff, /health version removal [HARD-05, HARD-06, HARD-07, HARD-17]
-  - [ ] 08-03-PLAN.md (wave 1, depends 01) — API security batch B: redacting zap logger, admin helmet headers, bcrypt 10->12, fail-closed link limiter, /debug/error bucket, per-user HMAC server ordering [HARD-08, HARD-10, HARD-11, HARD-12, HARD-13, HARD-14]
-  - [ ] 08-06-PLAN.md (wave 1, depends 01) — Mobile: useVpnConnection decomposition + event-driven waitForDisconnected (busy-wait removed) [HARD-15]
-  - [ ] 08-08-PLAN.md (wave 1) — CI: govulncheck blocking PR workflow (both Go modules) + branch-protection runbook + deliberate-vuln proof [HARD-09]
-  - [ ] 08-04-PLAN.md (wave 2, depends 01+03) — Opaque device-bound refresh: migration 025 (device_id+issue_ip+clean-break), opaque mint, device hard-reject / IP soft-log [HARD-03, HARD-04]
-  - [ ] 08-05-PLAN.md (wave 2, depends 01+03) — Stripe removal: drop stripe-go dep, delete test fixtures, verify stripe_id absent (verify-only, no migration) [HARD-01]
-  - [ ] 08-07-PLAN.md (wave 3, depends 01+02+03+04+05) — Per-user VLESS UUID: migration 026, vless repo, per-user config + active-set endpoint, tunnel debounced regen+reload wire enforcement [HARD-02]
-  - [ ] 08-09-PLAN.md (wave 3, depends 01+04+06) — Mobile secure storage: react-native-keychain token store, AsyncStorage wipe, device_id on refresh, single coordinated re-login [HARD-16]
+  - [x] 08-01-PLAN.md (wave 0) — Nyquist test infra: 13 Go RED tests + jest waitForDisconnected + wire-VLESS harness + SC#5 manual doc [HARD-01..17]
+  - [x] 08-02-PLAN.md (wave 1, depends 01) — API security batch A: Telegram private-chat gate, admin search hardening, role-change audit diff, /health version removal [HARD-05, HARD-06, HARD-07, HARD-17]
+  - [x] 08-03-PLAN.md (wave 1, depends 01) — API security batch B: redacting zap logger, admin helmet headers, bcrypt 10->12, fail-closed link limiter, /debug/error bucket, per-user HMAC server ordering [HARD-08, HARD-10, HARD-11, HARD-12, HARD-13, HARD-14]
+  - [x] 08-06-PLAN.md (wave 1, depends 01) — Mobile: useVpnConnection decomposition + event-driven waitForDisconnected (busy-wait removed) [HARD-15]
+  - [x] 08-08-PLAN.md (wave 1) — CI: govulncheck blocking PR workflow (both Go modules) + branch-protection runbook + deliberate-vuln proof [HARD-09]
+  - [x] 08-04-PLAN.md (wave 2, depends 01+03) — Opaque device-bound refresh: migration 025 (device_id+issue_ip+clean-break), opaque mint, device hard-reject / IP soft-log [HARD-03, HARD-04]
+  - [x] 08-05-PLAN.md (wave 2, depends 01+03) — Stripe removal: drop stripe-go dep, delete test fixtures, verify stripe_id absent (verify-only, no migration) [HARD-01]
+  - [x] 08-07-PLAN.md (wave 3, depends 01+02+03+04+05) — Per-user VLESS UUID: migration 026, vless repo, per-user config + active-set endpoint, tunnel debounced regen+reload wire enforcement [HARD-02]
+  - [x] 08-09-PLAN.md (wave 3, depends 01+04+06) — Mobile secure storage: react-native-keychain token store, AsyncStorage wipe, device_id on refresh, single coordinated re-login [HARD-16]
 
 ## Dependency Graph
 
