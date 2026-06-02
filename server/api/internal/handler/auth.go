@@ -454,6 +454,7 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 							"error": "internal server error",
 						})
 					}
+					warnIfMobileSessionUnbound(c, logger, user.ID, req.DeviceID)
 					if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken, req.DeviceID, c.IP()); err != nil {
 						// Without a session row the token we'd return is dead on
 						// arrival — the next /auth/refresh would 401. Fail the
@@ -593,6 +594,7 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 		// Bind the session to req.DeviceID (may be "" for legacy clients that
 		// omit it — then the refresh hard check is skipped for this session,
 		// preserving legacy behaviour). issue_ip is recorded for the soft check.
+		warnIfMobileSessionUnbound(c, logger, user.ID, req.DeviceID)
 		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken, req.DeviceID, c.IP()); err != nil {
 			// User + subscription rows were just created, but without a
 			// session row the access token we'd return is dead on arrival
@@ -642,6 +644,34 @@ func storeRefreshSession(ctx context.Context, db *gorm.DB, userID, refreshToken,
 		ExpiresAt:        time.Now().Add(30 * 24 * time.Hour),
 	}
 	return repository.CreateSession(ctx, db, &session)
+}
+
+// warnIfMobileSessionUnbound emits a security signal (WR-01) when a
+// MOBILE-SHAPED request mints a session with an empty device_id.
+//
+// HARD-04's refresh hard check is deliberately skipped when the bound device_id
+// is empty (admin login + web SSO are not device-bound by design — see
+// RefreshToken). The empty binding is then carried forward across every rotation
+// (the rotated row keeps the same device_id), so a session lineage issued with
+// no device_id NEVER regains the hard check — a stolen 30-day refresh token on
+// such a lineage can be replayed from any device.
+//
+// The mobile RN client ALWAYS sends a device_id (getDeviceFingerprint) and is
+// gated by the AppVersion middleware to ALWAYS send X-App-Version; the web/admin
+// surfaces are skip-listed and send no X-App-Version. So "X-App-Version present
+// but device_id empty" is the one shape that should not happen on the mobile
+// surface — a malformed/old client, or a spoofed mobile request, getting a
+// hard-check-exempt session. We log it (rather than reject) to stay conservative:
+// legacy mobile clients that omit device_id keep working, web SSO/admin are
+// untouched, and the gap becomes observable for detection (audit S1-7 / T-08-04).
+func warnIfMobileSessionUnbound(c *fiber.Ctx, logger *zap.Logger, userID, deviceID string) {
+	if deviceID == "" && c.Get("X-App-Version") != "" {
+		logger.Warn("mobile session issued without device binding — refresh hard check will be skipped for this lineage (WR-01)",
+			zap.String("user_id", userID),
+			zap.String("app_version", c.Get("X-App-Version")),
+			zap.String("ip", c.IP()),
+		)
+	}
 }
 
 // generateTokens creates a JWT access token (5 min) and an OPAQUE refresh token
@@ -1070,6 +1100,7 @@ func AppleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier a
 		}
 		// HARD-04: bind the session to the device the user signed in from
 		// (req.DeviceID; empty for web sign-in, which skips the hard check).
+		warnIfMobileSessionUnbound(c, logger, user.ID, req.DeviceID)
 		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken, req.DeviceID, c.IP()); err != nil {
 			logger.Error("apple signin: store refresh", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
@@ -1137,6 +1168,7 @@ func GoogleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier 
 		}
 		// HARD-04: bind the session to the device the user signed in from
 		// (req.DeviceID; empty for web sign-in, which skips the hard check).
+		warnIfMobileSessionUnbound(c, logger, user.ID, req.DeviceID)
 		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken, req.DeviceID, c.IP()); err != nil {
 			logger.Error("google signin: store refresh", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
