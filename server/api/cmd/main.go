@@ -63,11 +63,15 @@ func main() {
 	// (JWTs, 32-byte opaque tokens, API keys) and known-sensitive keys are
 	// replaced with [REDACTED] before any entry reaches log aggregation. Every
 	// downstream call site receives this wrapped logger unchanged.
-	logger, err := applog.Production()
+	baseLogger, err := zap.NewProduction()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to init logger: %v\n", err)
 		os.Exit(1)
 	}
+	// NewRedactingLogger wraps the production core (zap.WrapCore) so the
+	// resulting logger passed to every handler/middleware scrubs token-shaped
+	// fields. See internal/logger/logger.go.
+	logger := applog.NewRedactingLogger(baseLogger)
 	defer logger.Sync()
 
 	// Fail-fast aggregate env validator (HOTFIX-08 / D-04). Runs BEFORE
