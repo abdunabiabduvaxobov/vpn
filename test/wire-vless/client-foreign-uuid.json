@@ -1,0 +1,44 @@
+{
+  "_comment": "HARD-02 SC#2 — THE PROOF. Presents U2, a foreign/revoked UUID that is NOT in the tunnel's active set (tunnel-config.json). Everything else (REALITY publicKey, serverName, shortId, flow) is IDENTICAL to client-good-uuid.json — the ONLY difference is the `id`. Expected after HARD-02 lands: the VLESS session is REJECTED; REALITY falls back to the impersonated dest (www.microsoft.com), no tunnel is established, and curl through the local SOCKS proxy on :10808 FAILS / times out. NOTE: until HARD-02 lands, the production tunnel still admits a single shared UUID — so set U2 here to that shared value to observe the current (insecure) ACCEPT, then re-run after HARD-02 with a genuinely foreign U2 to observe the REJECT. See README step 4.",
+  "log": { "loglevel": "info" },
+  "inbounds": [
+    {
+      "tag": "socks-in",
+      "port": 10808,
+      "listen": "0.0.0.0",
+      "protocol": "socks",
+      "settings": { "udp": true }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "proxy",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "tunnel",
+            "port": 8443,
+            "users": [
+              {
+                "id": "22222222-2222-4222-8222-222222222222",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "www.microsoft.com",
+          "fingerprint": "chrome",
+          "publicKey": "OAmaJn5JqNlYdNIulgafHAwZs8MLLuU8MXs9rt26sl0",
+          "shortId": "abcd1234"
+        }
+      }
+    }
+  ]
+}
