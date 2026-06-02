@@ -1,10 +1,11 @@
 ---
 phase: 1
 slug: hotfix-audit-critical-fixes
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: verified
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-05-22
+validated: 2026-06-03
 ---
 
 # Phase 1 — Validation Strategy
@@ -38,19 +39,19 @@ created: 2026-05-22
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 1-W0-01 | 00 | 0 | HOTFIX-01 | T-1-01 | Wave 0 test stub | unit | `test -f server/api/internal/repository/user_repo_subscription_test.go` | ❌ W0 | ⬜ pending |
-| 1-W0-02 | 00 | 0 | HOTFIX-03 | T-1-03 | Wave 0 test stub | unit | `test -f server/api/internal/cache/redis_test.go` | ❌ W0 | ⬜ pending |
-| 1-W0-03 | 00 | 0 | HOTFIX-04 | T-1-04 | Wave 0 test stub | integration | `test -f server/api/internal/handler/errorhandler_test.go` | ❌ W0 | ⬜ pending |
-| 1-W0-04 | 00 | 0 | HOTFIX-06 | T-1-06 | Wave 0 test stub | unit | `test -f server/api/cmd/createadmin/main_test.go` | ❌ W0 | ⬜ pending |
-| 1-W0-05 | 00 | 0 | HOTFIX-07 | T-1-07 | Wave 0 smoke | shell | `test -f server/api/scripts/smoke_test_session_index.sh` | ❌ W0 | ⬜ pending |
-| 1-06-01 | 06 | 1 | HOTFIX-06 | T-1-06 / V6.2.3 | `-password` argv rejected; stdin path works; seed tier='free' | shell + unit | `cd server/api && go test ./cmd/createadmin/... -v -run TestCreateAdmin` | ❌ W0 | ⬜ pending |
-| 1-08-01 | 08 | 2 | HOTFIX-08 | T-1-08 / V5 | Exit 1 + one aggregated log line on missing required env | shell + unit | `cd server/api && go test ./internal/config/... -v -run TestRequireEnv` | 🟡 extend | ⬜ pending |
-| 1-04-01 | 04 | 3 | HOTFIX-04 | T-1-04 / V7.4.1 | 5xx body scrubbed to `{"error":"internal server error","request_id":"<uuid>"}`; `X-Request-ID` echoed | integration | `cd server/api && go test ./internal/handler/... -v -run TestErrorHandler` | ❌ W0 | ⬜ pending |
-| 1-02-01 | 02 | 4 | HOTFIX-02 | T-1-02 / V4 | Demoted admin gets 403 on very next request with same JWT | integration | `cd server/api && go test ./internal/middleware/... -v -run TestAdminRequired_DemotionTakesEffect` | 🟡 extend | ⬜ pending |
-| 1-03-01 | 03 | 5 | HOTFIX-03 | T-1-03 / V5 | Every `IncrRateLimit` leaves `TTL > 0`; never -1 | unit (miniredis) | `cd server/api && go test ./internal/cache/... -v -run TestIncrRateLimit` | ❌ W0 | ⬜ pending |
-| 1-05-01 | 05 | 6 | HOTFIX-05 | T-1-05 / V3 | Failed insert during rotation rolls back delete; old session preserved | integration (sqlite) | `cd server/api && go test ./internal/handler/... -v -run TestRefreshToken_Rollback` | 🟡 extend | ⬜ pending |
-| 1-01-01 | 01 | 7 | HOTFIX-01 | T-1-01 | Scheduler downgrades expired pro user; `payment.go` diff empty (D-07 invariant — PHASE-WIDE) | unit + diff | `cd server/api && go test ./internal/repository/... -v -run TestDowngradeExpiredSubscriptions && BASE=$(git merge-base HEAD main) && [ $(git diff $BASE..HEAD -- server/api/internal/handler/payment.go \| wc -l) -eq 0 ]` | ❌ W0 | ⬜ pending |
-| 1-07-01 | 07 | 8 | HOTFIX-07 | T-1-07 / V3 | `EXPLAIN` shows `Index Scan using idx_sessions_refresh_token_hash_unique` (not `Seq Scan`) | DB smoke | `bash server/api/scripts/smoke_test_session_index.sh` | ❌ W0 | ⬜ pending |
+| 1-W0-01 | 00 | 0 | HOTFIX-01 | T-1-01 | Wave 0 test stub | unit | `test -f server/api/internal/repository/user_repo_subscription_test.go` | ❌ W0 | ✅ green |
+| 1-W0-02 | 00 | 0 | HOTFIX-03 | T-1-03 | Wave 0 test stub | unit | `test -f server/api/internal/cache/redis_test.go` | ❌ W0 | ✅ green |
+| 1-W0-03 | 00 | 0 | HOTFIX-04 | T-1-04 | Wave 0 test stub | integration | `test -f server/api/internal/handler/errorhandler_test.go` | ❌ W0 | ✅ green |
+| 1-W0-04 | 00 | 0 | HOTFIX-06 | T-1-06 | Wave 0 test stub | unit | `test -f server/api/cmd/createadmin/main_test.go` | ❌ W0 | ✅ green |
+| 1-W0-05 | 00 | 0 | HOTFIX-07 | T-1-07 | Wave 0 smoke | shell | `test -f server/api/scripts/smoke_test_session_index.sh` | ❌ W0 | ✅ green |
+| 1-06-01 | 06 | 1 | HOTFIX-06 | T-1-06 / V6.2.3 | `-password` argv rejected; stdin path works; seed tier='free' | shell + unit | `cd server/api && go test ./cmd/createadmin/... -v -run TestCreateAdmin` | ❌ W0 | ✅ green |
+| 1-08-01 | 08 | 2 | HOTFIX-08 | T-1-08 / V5 | Exit 1 + one aggregated log line on missing required env | shell + unit | `cd server/api && go test ./internal/config/... -v -run TestRequireEnv` | 🟡 extend | ✅ green |
+| 1-04-01 | 04 | 3 | HOTFIX-04 | T-1-04 / V7.4.1 | 5xx body scrubbed to `{"error":"internal server error","request_id":"<uuid>"}`; `X-Request-ID` echoed | integration | `cd server/api && go test ./internal/handler/... -v -run TestErrorHandler` | ❌ W0 | ✅ green |
+| 1-02-01 | 02 | 4 | HOTFIX-02 | T-1-02 / V4 | Demoted admin gets 403 on very next request with same JWT | integration | `cd server/api && go test ./internal/middleware/... -v -run TestAdminRequired_DemotionTakesEffect` | 🟡 extend | ✅ green |
+| 1-03-01 | 03 | 5 | HOTFIX-03 | T-1-03 / V5 | Every `IncrRateLimit` leaves `TTL > 0`; never -1 | unit (miniredis) | `cd server/api && go test ./internal/cache/... -v -run TestIncrRateLimit` | ❌ W0 | ✅ green |
+| 1-05-01 | 05 | 6 | HOTFIX-05 | T-1-05 / V3 | Failed insert during rotation rolls back delete; old session preserved | integration (sqlite) | `cd server/api && go test ./internal/handler/... -v -run TestRefreshToken_Rollback` | 🟡 extend | ✅ green |
+| 1-01-01 | 01 | 7 | HOTFIX-01 | T-1-01 | Scheduler downgrades expired pro user; `payment.go` diff empty (D-07 invariant — PHASE-WIDE) | unit + diff | `cd server/api && go test ./internal/repository/... -v -run TestDowngradeExpiredSubscriptions && BASE=$(git merge-base HEAD main) && [ $(git diff $BASE..HEAD -- server/api/internal/handler/payment.go \| wc -l) -eq 0 ]` | ❌ W0 | ✅ green |
+| 1-07-01 | 07 | 8 | HOTFIX-07 | T-1-07 / V3 | `EXPLAIN` shows `Index Scan using idx_sessions_refresh_token_hash_unique` (not `Seq Scan`) | DB smoke | `bash server/api/scripts/smoke_test_session_index.sh` | ✅ script present | 🔶 manual (real-PG EXPLAIN) |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -60,11 +61,11 @@ created: 2026-05-22
 
 ## Wave 0 Requirements
 
-- [ ] `server/api/internal/repository/user_repo_subscription_test.go` — HOTFIX-01 regression tests for `DowngradeExpiredSubscriptions`
-- [ ] `server/api/internal/cache/redis_test.go` — HOTFIX-03 atomic INCR+EXPIRE via miniredis (`github.com/alicebob/miniredis/v2`)
-- [ ] `server/api/internal/handler/errorhandler_test.go` — HOTFIX-04 scrub + `X-Request-ID` behavior via Fiber `app.Test()`
-- [ ] `server/api/cmd/createadmin/main_test.go` — HOTFIX-06 stdin path + seed-tier assertion (sqlite test DB)
-- [ ] `server/api/scripts/smoke_test_session_index.sh` — HOTFIX-07 EXPLAIN check against real Postgres (sqlite doesn't model `Index Scan` output)
+- [x] `server/api/internal/repository/user_repo_subscription_test.go` — HOTFIX-01 regression tests for `DowngradeExpiredSubscriptions`
+- [x] `server/api/internal/cache/redis_test.go` — HOTFIX-03 atomic INCR+EXPIRE via miniredis (`github.com/alicebob/miniredis/v2`)
+- [x] `server/api/internal/handler/errorhandler_test.go` — HOTFIX-04 scrub + `X-Request-ID` behavior via Fiber `app.Test()`
+- [x] `server/api/cmd/createadmin/main_test.go` — HOTFIX-06 stdin path + seed-tier assertion (sqlite test DB)
+- [x] `server/api/scripts/smoke_test_session_index.sh` — HOTFIX-07 EXPLAIN check against real Postgres (sqlite doesn't model `Index Scan` output)
 - [ ] **(Optional)** Promote shared sqlite-in-memory DB fixture to `server/api/internal/repository/testdb.go` if duplication forms across HOTFIX-01/02/05 tests (existing pattern in `subscription_repo_test.go`).
 
 Existing test files (extend, do not recreate):
@@ -101,13 +102,30 @@ Existing test files (extend, do not recreate):
 
 ---
 
+## Validation Audit 2026-06-03
+
+| Requirement | Test | Result |
+|-------------|------|--------|
+| HOTFIX-01 | `repository TestDowngradeExpiredSubscriptions` | ✅ green |
+| HOTFIX-02 | `middleware TestAdminRequired_DemotionTakesEffect` | ✅ green |
+| HOTFIX-03 | `cache TestIncrRateLimit` | ✅ green |
+| HOTFIX-04 | `handler TestErrorHandler` | ✅ green |
+| HOTFIX-05 | `handler TestRefreshToken_Rollback` | ✅ green |
+| HOTFIX-06 | `cmd/createadmin TestCreateAdmin` | ✅ green |
+| HOTFIX-07 | `scripts/smoke_test_session_index.sh` (real-PG EXPLAIN) | 🔶 manual — script present; needs live Postgres |
+| HOTFIX-08 | `config TestRequireEnv` | ✅ green |
+
+7/8 requirements have green automated coverage; HOTFIX-07 is genuinely manual (sqlite can't emit `Index Scan using <name>`; verified via the committed smoke script against staging Postgres). No automatable gaps found — the phase was verified during execution and this audit formalises that. `nyquist_compliant: true`.
+
+---
+
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all ❌ MISSING references in the Per-Task Verification Map
-- [ ] No watch-mode flags in any test command
-- [ ] Feedback latency < 60s for full suite
-- [ ] `nyquist_compliant: true` set in frontmatter once planner has assigned every task to a row above
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all ❌ MISSING references in the Per-Task Verification Map
+- [x] No watch-mode flags in any test command
+- [x] Feedback latency < 60s for full suite
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** verified 2026-06-03 (HOTFIX-07 manual via staging smoke)
