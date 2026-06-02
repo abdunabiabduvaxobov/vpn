@@ -241,11 +241,23 @@ func CancelSubscription(logger *zap.Logger, cfg *config.Config, db *gorm.DB, lav
 		}
 
 		// Mark local contract cancelled (tier NOT downgraded — expiry cron handles that).
+		//
+		// WR-04: run the contract write under the SAME per-user advisory lock the
+		// webhook paths use (handleLavaPaymentSuccess / handleLavaRecurringSuccess /
+		// handleLavaRecurringFailed / handleLavaSubscriptionCancelled all take
+		// repository.WithUserLock). Without it, a user tapping Cancel while a
+		// recurring.payment.success webhook for the same contract is in flight can
+		// interleave — the webhook sets is_active=true + extends expires_at while
+		// the cancel sets is_active=false + cancelled_at, and the final state
+		// depends on commit ordering (the hybrid state WithUserLock exists to
+		// prevent). Serializing on userID makes the two mutually exclusive.
 		now := time.Now()
-		if err := db.Model(&model.LavaContract{}).Where("id = ?", contract.ID).Updates(map[string]interface{}{
-			"is_active":    false,
-			"cancelled_at": &now,
-		}).Error; err != nil {
+		if err := repository.WithUserLock(c.Context(), db, userID, func(tx *gorm.DB) error {
+			return tx.Model(&model.LavaContract{}).Where("id = ?", contract.ID).Updates(map[string]interface{}{
+				"is_active":    false,
+				"cancelled_at": &now,
+			}).Error
+		}); err != nil {
 			logger.Error("cancel: update local contract failed", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
