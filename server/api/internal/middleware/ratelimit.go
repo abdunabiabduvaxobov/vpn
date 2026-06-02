@@ -33,12 +33,13 @@ const (
 
 // RateLimit returns per-user rate-limit middleware backed by Redis.
 //
-// When a valid Bearer token is present in the Authorization header, the JWT is
-// decoded (without verifying the signature — expiry/tamper checks happen in
-// AuthRequired) to extract the user ID for per-user rate limiting at
-// authenticatedRateLimit req/min.  If no token is present, or the token cannot
-// be decoded, the request is limited per client IP at unauthenticatedRateLimit
-// req/min.
+// When a FULLY-valid Bearer token is present in the Authorization header (WR-05:
+// signature AND expiry verified), the JWT's sub is extracted for per-user rate
+// limiting at authenticatedRateLimit req/min. If no token is present, or it is
+// forged, malformed, OR expired, the request is limited per client IP at
+// unauthenticatedRateLimit req/min — so a dead access token cannot keep the
+// higher authenticated bucket. AuthRequired still performs the authoritative
+// validation for protected routes.
 //
 // When Redis is unavailable IncrRateLimit returns an error and the request is
 // allowed through — the middleware degrades gracefully rather than blocking
@@ -160,32 +161,32 @@ func DebugErrorLimit(redisClient *redis.Client, logger *zap.Logger) fiber.Handle
 	}
 }
 
-// extractUserIDFromToken parses a JWT and returns the "sub" claim without
-// performing expiry or signature validation. It is used only for rate-limit key
-// selection — AuthRequired performs full validation for protected routes.
+// extractUserIDFromToken returns the "sub" claim of a FULLY-valid JWT (signature
+// + expiry), or "" otherwise. It is used only for rate-limit key selection: a
+// valid access token selects the higher authenticated bucket, anything else
+// (forged, malformed, OR expired) falls back to the per-IP bucket. AuthRequired
+// still performs the authoritative validation for protected routes.
+//
+// WR-05: previously this did ParseUnverified to grab claims and then verified
+// with jwt.WithoutClaimsValidation(), so (1) the sub was read from the UNVERIFIED
+// parse and (2) an expired-but-signed token kept the higher bucket. Both are
+// closed by parsing once WITH claims validation and reading sub from the verified
+// token's claims.
 func extractUserIDFromToken(tokenStr, jwtSecret string) string {
-	token, _, err := jwt.NewParser().ParseUnverified(tokenStr, jwt.MapClaims{})
-	if err != nil {
-		return ""
-	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		return ""
-	}
-
-	// Only use the claim if the signature is actually valid — we don't want
-	// an attacker to spoof a high-traffic user_id to bypass IP limiting.
-	verifiedToken, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+	verified, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, jwt.ErrSignatureInvalid
 		}
 		return []byte(jwtSecret), nil
-	}, jwt.WithoutClaimsValidation())
-	if err != nil || !verifiedToken.Valid {
+	}) // no WithoutClaimsValidation — expired tokens are rejected and fall back to the IP bucket
+	if err != nil || !verified.Valid {
 		return ""
 	}
 
+	claims, ok := verified.Claims.(jwt.MapClaims)
+	if !ok {
+		return ""
+	}
 	sub, _ := claims["sub"].(string)
 	return sub
 }
