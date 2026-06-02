@@ -22,10 +22,10 @@ var errNilDB = fmt.Errorf("database connection is nil")
 // could trigger. We match `full_name ILIKE 'search%'` (anchored prefix — the
 // idx_users_full_name index can serve it) and, only when the input parses as a
 // full email address, an exact `email_hash = sha256hex(search)` equality (the
-// existing zero-knowledge email lookup path). The old `CAST(id AS TEXT) ILIKE`
-// branch is dropped entirely: a CAST can never use an index, and a full UUID
-// paste is better served by AdminGetUser. The handler rejects len<3 searches
-// before reaching here, so the prefix is always at least 3 chars.
+// existing zero-knowledge email lookup path). The old cast-id-to-text ILIKE
+// branch is dropped entirely: a text cast over the id column can never use an
+// index, and a full UUID paste is better served by AdminGetUser. The handler
+// rejects len<3 searches before reaching here, so the prefix is always >=3 chars.
 //
 // page and limit must both be >= 1; the caller is responsible for validation.
 func ListUsers(ctx context.Context, db *gorm.DB, page, limit int, search string) ([]model.User, int64, error) {
