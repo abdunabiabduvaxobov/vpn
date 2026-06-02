@@ -186,6 +186,94 @@ func (s *TunnelServer) Stop() error {
 	return nil
 }
 
+// ReloadClients atomically swaps the tunnel's active VLESS UUID set and restarts
+// the running xray-core instance(s) so that, after the call returns, ONLY the
+// passed UUIDs are admitted at the wire (HARD-02 wire enforcement, D-05).
+//
+// CONNECTION-DROP TRADEOFF (08-RESEARCH §2.2): xray-core's core.Instance has NO
+// in-place hot reload — the only way to change the admitted client set is to
+// Close the old instance and start a fresh one from a rebuilt config. That Close
+// DROPS every live connection on the affected instance. This is accepted
+// pre-launch ("free hand to break things", no paying users) and is DEBOUNCED
+// upstream (the tunnel's heartbeat-driven pull loop, Task 3b) so a burst of
+// rotations coalesces into a single reload — giving a documented 30-60s wire
+// propagation floor rather than a reload per rotation.
+//
+// Concurrency: the whole swap runs under s.mu so a Start/Stop/ReloadClients can
+// never interleave and leave a half-built instance visible.
+//
+// Failure handling: on a core.New / Start error the method returns the error
+// WITHOUT clearing s.xrayInstance to nil for a stale handle — it leaves the
+// server flagged not-running and surfaces a clear failure so the supervising
+// process (or the next pull tick) can react, rather than silently swallowing a
+// reload that left no instance serving.
+func (s *TunnelServer) ReloadClients(uuids []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Swap the active set; buildXRayConfig reads s.config.Clients.
+	s.config.Clients = uuids
+
+	// --- REALITY (primary) instance ---
+	xrayConfig := s.buildXRayConfig()
+	jsonConfig, err := json.Marshal(xrayConfig)
+	if err != nil {
+		return fmt.Errorf("reload: marshaling xray config: %w", err)
+	}
+	xrayPbConfig, err := serial.LoadJSONConfig(bytes.NewReader(jsonConfig))
+	if err != nil {
+		return fmt.Errorf("reload: loading xray config: %w", err)
+	}
+	instance, err := core.New(xrayPbConfig)
+	if err != nil {
+		return fmt.Errorf("reload: creating xray instance: %w", err)
+	}
+	if err := instance.Start(); err != nil {
+		// Do not start; close the just-created instance to avoid leaking it.
+		_ = instance.Close()
+		return fmt.Errorf("reload: starting xray instance: %w", err)
+	}
+	// New instance is live — now close the old one (drops its connections).
+	if s.xrayInstance != nil {
+		if cerr := s.xrayInstance.Close(); cerr != nil {
+			s.logger.Error("reload: error closing previous xray instance", zap.Error(cerr))
+		}
+	}
+	s.xrayInstance = instance
+
+	// --- WebSocket instance (only if enabled) ---
+	if s.config.WebSocket.Enabled {
+		wsConfig := s.buildWebSocketConfig()
+		wsJSON, werr := json.Marshal(wsConfig)
+		if werr != nil {
+			return fmt.Errorf("reload: marshaling websocket config: %w", werr)
+		}
+		wsPb, werr := serial.LoadJSONConfig(bytes.NewReader(wsJSON))
+		if werr != nil {
+			return fmt.Errorf("reload: loading websocket config: %w", werr)
+		}
+		wsInstance, werr := core.New(wsPb)
+		if werr != nil {
+			return fmt.Errorf("reload: creating websocket instance: %w", werr)
+		}
+		if werr := wsInstance.Start(); werr != nil {
+			_ = wsInstance.Close()
+			return fmt.Errorf("reload: starting websocket instance: %w", werr)
+		}
+		if s.wsXrayInstance != nil {
+			if cerr := s.wsXrayInstance.Close(); cerr != nil {
+				s.logger.Error("reload: error closing previous websocket instance", zap.Error(cerr))
+			}
+		}
+		s.wsXrayInstance = wsInstance
+	}
+
+	s.logger.Info("xray client set reloaded — live connections dropped (xray-core has no hot reload)",
+		zap.Int("client_count", len(uuids)),
+	)
+	return nil
+}
+
 // buildXRayConfig creates the XRay-core JSON configuration for VLESS+REALITY.
 // This configuration makes the server appear as a legitimate HTTPS server
 // to any network observer or DPI system.
