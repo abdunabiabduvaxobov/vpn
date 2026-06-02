@@ -158,6 +158,13 @@ func (r *Recovery) handleUpdate(ctx context.Context, upd tgbotapi.Update) {
 	if msg == nil || msg.From == nil {
 		return
 	}
+	// S1-8 (HARD-05): refuse group/supergroup/channel chats silently — the bot
+	// must NEVER reply outside a private chat. Replies (/start, /help, /status)
+	// all echo to msg.Chat.ID; in a group that leaks account state to every
+	// member, so gate the whole dispatch on a private chat here.
+	if msg.Chat == nil || msg.Chat.Type != "private" {
+		return
+	}
 	// Commands only — ignore plain text, stickers, voice, photos.
 	if !msg.IsCommand() {
 		return
