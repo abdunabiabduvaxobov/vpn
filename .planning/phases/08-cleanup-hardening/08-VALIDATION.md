@@ -1,10 +1,11 @@
 ---
 phase: 8
 slug: cleanup-hardening
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: verified
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-06-02
+validated: 2026-06-03
 ---
 
 # Phase 8 — Validation Strategy
@@ -42,23 +43,23 @@ created: 2026-06-02
 
 | Req | SC | Surface | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |-----|----|---------|-----------------|-----------|-------------------|-------------|--------|
-| HARD-01 | SC#1 | Go API | `grep -rn stripe server/ --include=*.go` == 0; `stripe_id` column absent | shell + Go test + integration | `grep -rn stripe server/ --include=*.go` (expect 0); `TestNoStripeReferences` (durable grep gate, 08-05); existing `migrations_test.go` asserts column absence | ✅ assert / ❌ Wave 2 grep-gate test (08-05) | ⬜ pending |
-| HARD-02 | SC#2 | API + tunnel | two same-plan users get different UUIDs; rotate on plan change; **wire rejects revoked UUID** | unit (API) + integration (wire) | API `go test` UUIDs differ + rotate; wire harness: real VLESS handshake with revoked UUID FAILS | ❌ W0 (both) | ⬜ pending |
-| HARD-03 | — | Go API | refresh token opaque, not JWT | unit | assert `generateTokens` refresh matches `^[A-Za-z0-9_-]{43}$`, no `.` segments | ❌ W0 | ⬜ pending |
-| HARD-04 | SC#4 | Go API | device-B refresh → 401; device-A → 200 | unit | `go test` issue session device A, refresh device B → 401 | ❌ W0 | ⬜ pending |
-| HARD-05 | — | Go API/bot | group chat → no reply | unit | feed `Update{Chat.Type:"group"}` → assert no send | ❌ W0 | ⬜ pending |
-| HARD-06 | SC#7 | Go API | `len(search)<3` → 400; prefix query, no leading `%` | unit | assert short search rejected; generated SQL has no leading `%` | ❌ W0 | ⬜ pending |
-| HARD-07 | — | Go API | audit row carries before→after diff | unit | change role; assert audit `details.role = {before,after}` | ❌ W0 | ⬜ pending |
-| HARD-08 | SC#7 | Go API | admin responses carry HSTS/nosniff/CSP | unit | httptest on admin route; assert headers present | ❌ W0 | ⬜ pending |
-| HARD-09 | SC#3 | CI | vuln-introducing PR unmergeable | CI check | PR adding known-vuln dep → `govulncheck-action` job red; merge-block via GitHub branch-protection (manual) | ❌ Wave 1 (08-08) | ⬜ pending |
-| HARD-10 | SC#6 | Go API | `zap.String("token", jwt)` → `[REDACTED]` | unit | `zaptest/observer` core; JWT-shaped + base64url-32 → `[REDACTED]` | ❌ W0 | ⬜ pending |
-| HARD-11 | — | Go API | new hashes are bcrypt cost 12 | unit | `bcrypt.Cost(hash) == 12` | ❌ W0 | ⬜ pending |
-| HARD-12 | — | Go API | redis-down → 503 on link attempt | unit | stop miniredis; `LinkAttemptLimit` returns 503 | ❌ W0 | ⬜ pending |
-| HARD-13 | — | Go API | 6th call/min/IP on `/debug/error` → 429 | unit | 6 rapid calls one IP | ❌ W0 | ⬜ pending |
-| HARD-14 | — | Go API | per-user stable permutation of servers | unit | same user same order; two users differ; set equal | ❌ W0 | ⬜ pending |
-| HARD-15 | — | Mobile | `waitForDisconnected` resolves on state change (no busy-wait) | unit (jest) | subscribe-resolves test | ❌ W0 (+manual smoke) | ⬜ pending |
-| HARD-16 | SC#5 | Mobile | token in Keychain; absent from AsyncStorage plist | **manual (Xcode)** | sign in; Keychain Access shows entry; AsyncStorage manifest has no `auth-tokens` | ❌ manual-only | ⬜ pending |
-| HARD-17 | — | Go API | `/health` has no `go_version` | unit | httptest GET /health; assert key absent | ❌ W0 | ⬜ pending |
+| HARD-01 | SC#1 | Go API | `grep -rn stripe server/ --include=*.go` == 0; `stripe_id` column absent | Go test (durable fence) | `handler/stripe_removal_test.go` `TestNoStripeReferences` | ✅ stripe_removal_test.go | ✅ green |
+| HARD-02 | SC#2 | API + tunnel | two same-plan users get different UUIDs; rotate on plan change; **wire rejects revoked UUID** | unit (API) + integration (wire) | `handler/servers_vless_test.go` (isolation+rotation+gated active-set), `repository/vless_repo_active_test.go` (WR-03 partial-unique), `tunnel/internal/server_reload_test.go` (compiles/vets; runs once tunnel linker fixed) + `test/wire-vless/` harness | ✅ all present | ✅ green (API) · 🔶 wire harness manual |
+| HARD-03 | — | Go API | refresh token opaque, not JWT | unit | `handler/auth_opaque_refresh_test.go` `TestGenerateTokens_RefreshIsOpaque` | ✅ auth_opaque_refresh_test.go | ✅ green |
+| HARD-04 | SC#4 | Go API | device-B refresh → 401; device-A → 200 | unit | `handler/auth_refresh_device_test.go` `TestRefreshToken_DeviceBinding` (4 subtests) + WR-01 `TestWarnIfMobileSessionUnbound` | ✅ auth_refresh_device_test.go | ✅ green |
+| HARD-05 | — | Go API/bot | group chat → no reply | unit | `bot/recovery_private_test.go` `TestHandleUpdate_GroupChat_NoReply` (group/supergroup/channel → 0 sends) + `TestHandleUpdate_PrivateChat_Replies` control | ✅ recovery_private_test.go | ✅ green |
+| HARD-06 | SC#7 | Go API | `len(search)<3` → 400; prefix query, no leading `%` | unit | `handler/admin_search_test.go` `TestAdminListUsers_ShortSearchRejected` + `TestListUsers_SearchUsesPrefixNoLeadingWildcard` | ✅ admin_search_test.go | ✅ green |
+| HARD-07 | — | Go API | audit row carries before→after diff | integration (sqlite) | `handler/admin_audit_diff_test.go` `TestAdminUpdateUser_RoleChange_WritesBeforeAfterDiff` (asserts persisted `details.role.before/after`) | ✅ admin_audit_diff_test.go | ✅ green |
+| HARD-08 | SC#7 | Go API | admin responses carry HSTS/nosniff/CSP | unit | `middleware/security_headers_test.go` `TestAdminSecurityHeaders` | ✅ security_headers_test.go | ✅ green |
+| HARD-09 | SC#3 | CI | vuln-introducing PR unmergeable | CI check | `.github/workflows/ci.yml` govulncheck job present; merge-block via GitHub branch-protection | ✅ ci.yml | ✅ CI job green · 🔶 branch-protection toggle = OP-1 (HUMAN-UAT) |
+| HARD-10 | SC#6 | Go API | `zap.String("token", jwt)` → `[REDACTED]` | unit | `logger/logger_redact_test.go` `TestRedactJWTShaped`/`TestRedactBase64URL32`/`TestRedactByKey` (+2) | ✅ logger_redact_test.go | ✅ green |
+| HARD-11 | — | Go API | new hashes are bcrypt cost 12 | unit | `handler/bcrypt_cost_test.go` `TestBcryptCostIs12` | ✅ bcrypt_cost_test.go | ✅ green |
+| HARD-12 | — | Go API | redis-down → 503 on link attempt | unit | `middleware/ratelimit_failclosed_test.go` `TestLinkAttemptLimit_RedisDown_FailsClosed` | ✅ ratelimit_failclosed_test.go | ✅ green |
+| HARD-13 | — | Go API | 6th call/min/IP on `/debug/error` → 429 | unit | `middleware/debug_error_limit_test.go` `TestDebugErrorLimit_SixthCall429` + `_RedisDown_FailsOpen` | ✅ debug_error_limit_test.go | ✅ green |
+| HARD-14 | — | Go API | per-user stable permutation of servers | unit | `handler/servers_order_test.go` `TestServerOrderStablePerUser`/`DiffersBetweenUsers`/`PreservesSet` | ✅ servers_order_test.go | ✅ green |
+| HARD-15 | — | Mobile | `waitForDisconnected` resolves on state change (no busy-wait) | unit (jest) | `app/src/stores/vpnStore.test.ts` | ✅ vpnStore.test.ts | ✅ authored (jest blocked in sandbox; CI runs) · 🔶 device smoke |
+| HARD-16 | SC#5 | Mobile | token in Keychain; absent from AsyncStorage plist | **manual (Xcode)** + jest | `app/src/services/__tests__/secureTokenStore.test.ts`, `stores/__tests__/authStore.test.ts`, `services/__tests__/api.test.ts` (device_id) | ✅ all present | 🔶 manual-only on-device (SC#5) = OP-2/OP-3 (HUMAN-UAT) |
+| HARD-17 | — | Go API | `/health` has no `go_version` | unit | `handler/health_test.go` `TestHealth_NoGoVersion` | ✅ health_test.go | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -66,13 +67,13 @@ created: 2026-06-02
 
 ## Wave 0 Requirements
 
-- [ ] `server/tunnel/internal/server_reload_test.go` — `ReloadClients`/regen rebuilds config + restarts instance (HARD-02 tunnel side)
-- [ ] Wire-level VLESS harness (docker-compose or scripted xray client) — revoked-UUID rejection (HARD-02 SC#2). **Heaviest new infra.**
-- [ ] `server/api/internal/handler/servers_vless_test.go` — per-user UUID allocation/rotation + active-set endpoint (HARD-02)
-- [ ] `server/api/internal/handler/auth_refresh_device_test.go` — device-bind 401 (HARD-04)
-- [ ] `server/api/internal/logger/logger_redact_test.go` — zap redaction (HARD-10)
-- [ ] `app/src/stores/vpnStore.test.ts` — `waitForDisconnected` (HARD-15)
-- [ ] Manual procedure doc for SC#5 (Xcode Keychain check) — see Manual-Only below
+- [x] `server/tunnel/internal/server_reload_test.go` — `ReloadClients`/regen rebuilds config + restarts instance (HARD-02 tunnel side). Compiles+vets; execution blocked by the pre-existing tunnel test-binary linker issue (DEF in `deferred-items.md`).
+- [x] Wire-level VLESS harness (`test/wire-vless/` docker-compose + good/foreign UUID client configs) — revoked-UUID rejection (HARD-02 SC#2). Present; run is manual (see Manual-Only).
+- [x] `server/api/internal/handler/servers_vless_test.go` — per-user UUID allocation/rotation + active-set endpoint (HARD-02). GREEN.
+- [x] `server/api/internal/handler/auth_refresh_device_test.go` — device-bind 401 (HARD-04). GREEN.
+- [x] `server/api/internal/logger/logger_redact_test.go` — zap redaction (HARD-10). GREEN.
+- [x] `app/src/stores/vpnStore.test.ts` — `waitForDisconnected` (HARD-15). Authored; jest blocked in sandbox, runs in CI.
+- [x] Manual procedure doc for SC#5 (Xcode Keychain check) — `docs/manual-verification/08-keychain-asyncstorage.md`
 
 > **Note (Wave 1, not a Go-test Wave-0 dependency):** `.github/workflows/ci.yml` (govulncheck PR job, HARD-09) is *built* in Wave 1 by plan **08-08** (`depends_on: []`), not pre-seeded in Wave 0. It is a CI-config artifact (no Go test depends on it), and its blocking proof is the deliberate-vuln PR + branch-protection step in 08-08 Task 2. Listed here only for cross-reference.
 
@@ -90,13 +91,33 @@ created: 2026-06-02
 
 ---
 
+## Validation Audit 2026-06-03
+
+| Metric | Count |
+|--------|-------|
+| Requirements | 17 |
+| Automated-covered (green) | 15 |
+| Mobile (authored; jest sandbox-blocked, runs in CI) | 1 (HARD-15) |
+| Manual-only (on-device SC#5) | 1 (HARD-16) |
+| Gaps found this audit | 2 (HARD-05, HARD-07 — skip-gated stubs) |
+| Gaps resolved | 2 |
+| Escalated to manual-only | 0 |
+
+Both gaps were skip-gated RED stubs from 08-01 whose implementations had landed but were never un-skipped:
+- **HARD-05** filled in `bot/recovery_private_test.go` — a recording stub `*tgbotapi.BotAPI` (package-internal, no network) asserts group/supergroup/channel `/help` → 0 sends, with a private-chat positive control proving the gate (not a dead handler) suppresses the reply.
+- **HARD-07** filled in `handler/admin_audit_diff_test.go` — a SQLite-backed `AuditLog` middleware integration test asserts the role before/after diff persists into the audit row's `details` JSONB (the security-critical persistence seam), avoiding the testcontainer-Postgres infra the handler package lacks.
+
+Remaining non-automated items are genuine HUMAN-UAT (08-HUMAN-UAT.md): the wire-VLESS harness run, the iOS/Android on-device Keychain inspection (SC#5), and the govulncheck branch-protection toggle. The tunnel `server_reload_test.go` compiles/vets but is blocked from executing by a pre-existing toolchain linker issue (deferred-items.md).
+
+---
+
 ## Validation Sign-Off
 
-- [ ] All tasks have automated verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 120s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have automated verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 120s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** verified 2026-06-03
