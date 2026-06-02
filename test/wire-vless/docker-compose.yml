@@ -1,0 +1,63 @@
+# Wire-level VLESS rejection harness — HARD-02 SC#2.
+#
+# Proves at the WIRE that the RiseVPN tunnel admits ONLY UUIDs in its active
+# client set and rejects every foreign/revoked UUID (REALITY falls back to the
+# impersonated dest — no VLESS session is established).
+#
+# This is the heaviest new infra in Phase 8. It is run MANUALLY at the phase
+# gate; it does NOT run in `go test`. See README.md for the step-by-step
+# procedure and which step proves SC#2.
+#
+# Topology:
+#   tunnel       — the real RiseVPN tunnel (xray-core, VLESS+REALITY on :8443
+#                  inside the network) configured with active set {U1}.
+#   xray-client  — an official xray image used as a scripted VLESS client. It
+#                  reads ONE of the mounted client configs (good-uuid.json or
+#                  foreign-uuid.json) and tries to proxy traffic through the
+#                  tunnel. The README drives which config to use.
+
+name: wire-vless
+
+services:
+  # The RiseVPN tunnel under test. Built from the repo's tunnel module so the
+  # harness exercises the SAME buildXRayConfig path production uses.
+  tunnel:
+    build:
+      context: ../../server/tunnel
+      dockerfile: Dockerfile
+    container_name: wire-vless-tunnel
+    # Override the baked config with the harness config whose `clients` is the
+    # known ACTIVE set {U1}. The tunnel listens for VLESS+REALITY here; we point
+    # the REALITY inbound at port 8443 to avoid needing privileged :443.
+    volumes:
+      - ./tunnel-config.json:/app/config.json:ro
+    # Expose the REALITY inbound to the host so you can also point a local xray
+    # client at it if you prefer running the client outside docker.
+    ports:
+      - "8443:8443" # VLESS+REALITY inbound (see tunnel-config.json "port")
+      - "8080:8080" # health endpoint
+    networks:
+      - wire
+
+  # Scripted VLESS client. Swap WHICH config it loads to present either the
+  # active UUID (U1 — must SUCCEED) or a foreign/revoked UUID (U2 — must be
+  # REJECTED). Default loads the FOREIGN config so `up` demonstrates rejection;
+  # override the command (see README) to load the good config.
+  xray-client:
+    image: ghcr.io/xtls/xray-core:latest
+    container_name: wire-vless-client
+    depends_on:
+      - tunnel
+    volumes:
+      - ./client-good-uuid.json:/etc/xray/client-good-uuid.json:ro
+      - ./client-foreign-uuid.json:/etc/xray/client-foreign-uuid.json:ro
+    # Default: present the FOREIGN UUID (U2). Expected outcome: no VLESS session
+    # — the local SOCKS proxy on :10808 cannot tunnel out (curl through it fails
+    # / times out). Override `command` to client-good-uuid.json to see U1 succeed.
+    command: ["-config", "/etc/xray/client-foreign-uuid.json"]
+    networks:
+      - wire
+
+networks:
+  wire:
+    driver: bridge

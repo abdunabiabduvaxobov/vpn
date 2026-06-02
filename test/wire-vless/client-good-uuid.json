@@ -1,0 +1,44 @@
+{
+  "_comment": "HARD-02 SC#2 — POSITIVE control. Presents U1, the UUID that IS in the tunnel's active set (tunnel-config.json). Expected: VLESS handshake SUCCEEDS, the local SOCKS proxy on :10808 tunnels out. The `id` MUST match tunnel-config.json clients[0]; the REALITY publicKey/serverName/shortId MUST match the tunnel's REALITY settings or the handshake fails for an unrelated reason.",
+  "log": { "loglevel": "info" },
+  "inbounds": [
+    {
+      "tag": "socks-in",
+      "port": 10808,
+      "listen": "0.0.0.0",
+      "protocol": "socks",
+      "settings": { "udp": true }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "proxy",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "tunnel",
+            "port": 8443,
+            "users": [
+              {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "www.microsoft.com",
+          "fingerprint": "chrome",
+          "publicKey": "OAmaJn5JqNlYdNIulgafHAwZs8MLLuU8MXs9rt26sl0",
+          "shortId": "abcd1234"
+        }
+      }
+    }
+  ]
+}
