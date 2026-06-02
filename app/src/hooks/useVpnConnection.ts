@@ -1,577 +1,64 @@
-import {useEffect, useCallback, useRef} from 'react';
-import NetInfo from '@react-native-community/netinfo';
+import {useRef} from 'react';
 import {useVpnStore} from '../stores/vpnStore';
-import {useServerStore} from '../stores/serverStore';
-import {useSettingsStore} from '../stores/settingsStore';
-import {useInterstitialAd} from '../ads/useInterstitialAd';
-import * as vpnBridge from '../services/vpnBridge';
-import api from '../services/api';
-import type {ServerConfig} from '../types/api';
-
-const MAX_RECONNECT_ATTEMPTS = 3;
-const MAX_PROTOCOL_FALLBACKS = 3;
-const BASE_RECONNECT_DELAY_MS = 1000;
-const MAX_RECONNECT_DELAY_MS = 30_000;
-
-function getBackoffDelay(attempt: number): number {
-  const delay = BASE_RECONNECT_DELAY_MS * Math.pow(2, attempt);
-  return Math.min(delay, MAX_RECONNECT_DELAY_MS);
-}
+import {useConnectionStats} from './useConnectionStats';
+import {useProtocolFallback} from './useProtocolFallback';
+import {useVpnLifecycle} from './useVpnLifecycle';
+import type {FallbackState, VpnRefs} from './vpnConnectionShared';
 
 /**
- * Builds an ordered list of protocols to try, based on server capabilities
- * and priority hints from the API (geo-aware).
+ * Manages the VPN connection lifecycle with protocol fallback.
+ *
+ * HARD-15 / CODE-REVIEW APP-M-04: this hook was a 591-line monolith with
+ * ~10 effects. It is now a THIN composition over three cohesive slices —
+ *   - useVpnLifecycle    : connect / disconnect / toggle orchestration
+ *   - useProtocolFallback: tryNextProtocol chain + auto-reconnect + netinfo
+ *   - useConnectionStats : native event bridge + slot-leak guard + heartbeat
+ * The shared mutable refs live here and are threaded into each slice so the
+ * behavior is identical to the previous single-hook implementation. The
+ * exported return shape is unchanged, so all call sites stay untouched.
  */
-function buildProtocolQueue(
-  config: ServerConfig,
-  userProtocol: string,
-): string[] {
-  // Start with server-provided priority (geo-aware) or a default
-  const priority = config.protocol_priority ?? [
-    'vless-reality',
-    'amneziawg',
-    'vless-ws',
-  ];
-
-  // Filter to only include protocols the server actually supports
-  const available = priority.filter(p => {
-    if (p === 'vless-reality' && config.reality) return true;
-    if (p === 'vless-ws' && config.websocket) return true;
-    if (p === 'amneziawg' && config.awg) return true;
-    return false;
-  });
-
-  // If user selected a specific protocol (not "auto"), move it to the front
-  if (userProtocol !== 'auto' && available.includes(userProtocol)) {
-    return [
-      userProtocol,
-      ...available.filter(p => p !== userProtocol),
-    ];
-  }
-
-  // Fallback: if no protocols matched (misconfigured server), use the server's default
-  if (available.length === 0) {
-    return [config.protocol];
-  }
-
-  return available;
-}
-
-// Hook that manages the VPN connection lifecycle with protocol fallback.
 export function useVpnConnection() {
-  const {
-    connectionState,
-    currentServer,
-    connectedAt,
-    bytesUp,
-    bytesDown,
-    speedUp,
-    speedDown,
-    error,
-    reconnectAttempt,
-    connectionId,
-    connect: storeConnect,
-    disconnect: storeDisconnect,
-    updateStatus,
-    updateStats,
-    clearError,
-    setReconnectAttempt,
-    setConnectionId,
-  } = useVpnStore();
+  const connectionState = useVpnStore(s => s.connectionState);
+  const currentServer = useVpnStore(s => s.currentServer);
+  const connectedAt = useVpnStore(s => s.connectedAt);
+  const bytesUp = useVpnStore(s => s.bytesUp);
+  const bytesDown = useVpnStore(s => s.bytesDown);
+  const speedUp = useVpnStore(s => s.speedUp);
+  const speedDown = useVpnStore(s => s.speedDown);
+  const error = useVpnStore(s => s.error);
+  const reconnectAttempt = useVpnStore(s => s.reconnectAttempt);
+  const clearError = useVpnStore(s => s.clearError);
 
-  const {selectedServer} = useServerStore();
-  const {autoReconnect, protocol: userProtocol} = useSettingsStore();
-  const {maybeShowInterstitial} = useInterstitialAd();
-
-  // Track the previous connection state to detect unexpected disconnects
-  const prevStateRef = useRef(connectionState);
-  // Track whether the disconnect was user-initiated
+  // Shared mutable refs coordinated across the decomposed slices. Created
+  // once here so all three sub-hooks see the same source of truth.
+  const prevStateRef = useRef<string>(connectionState);
   const isManualDisconnectRef = useRef(false);
-  // Reconnect timer handle
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Protocol fallback state
-  const fallbackRef = useRef({
-    queue: [] as string[],
+  const fallbackRef = useRef<FallbackState>({
+    queue: [],
     index: 0,
     attemptPerProtocol: 0,
-    config: null as ServerConfig | null,
+    config: null,
   });
-
-  // Listen for native status change events
-  useEffect(() => {
-    const unsubStatus = vpnBridge.onStatusChanged(updateStatus);
-    const unsubStats = vpnBridge.onStatsUpdated(updateStats);
-
-    return () => {
-      unsubStatus();
-      unsubStats();
-    };
-  }, [updateStatus, updateStats]);
-
-  // Reserve a connection slot on the backend. Returns the connection ID or null on failure.
-  const reserveConnection = useCallback(
-    async (serverId: string): Promise<string | null> => {
-      try {
-        const res = await api.post<{data: {id: string}}>('/connections', {
-          server_id: serverId,
-        });
-        const id = res.data.data.id;
-        setConnectionId(id);
-        return id;
-      } catch (err) {
-        console.error('[VPN Connection] Failed to reserve connection slot:', err);
-        return null;
-      }
-    },
-    [setConnectionId],
-  );
-
-  // Unregister connection from backend on disconnect
-  const unregisterConnection = useCallback(
-    async (id: string) => {
-      try {
-        await api.delete(`/connections/${id}`);
-      } catch (err) {
-        console.error('[VPN Connection] Failed to unregister connection:', err);
-      } finally {
-        setConnectionId(null);
-      }
-    },
-    [setConnectionId],
-  );
-
-  // Release any reserved slot whenever the tunnel lands in the
-  // 'error' state. The main transition watcher further down only
-  // releases slots on disconnect-edge transitions, which misses
-  // the case where the native tunnel fires an 'error' event
-  // directly without going through 'disconnected' first. Without
-  // this the slot leaks to the server's active-connection count
-  // and the next manual retry can hit the per-user device limit.
-  useEffect(() => {
-    if (connectionState === 'error' && connectionId) {
-      unregisterConnection(connectionId);
-    }
-  }, [connectionState, connectionId, unregisterConnection]);
-
-  // Try connecting with the next protocol in the fallback queue
-  const tryNextProtocol = useCallback(async () => {
-    const fb = fallbackRef.current;
-    if (!fb.config || fb.index >= fb.queue.length || fb.index >= MAX_PROTOCOL_FALLBACKS) {
-      // All protocols exhausted
-      useVpnStore.setState({
-        connectionState: 'error',
-        error: 'All protocols blocked',
-      });
-      return;
-    }
-
-    const nextProtocol = fb.queue[fb.index];
-    console.log(
-      `[VPN Connection] Switching to protocol: ${nextProtocol} (${fb.index + 1}/${fb.queue.length})`,
-    );
-
-    useVpnStore.setState({connectionState: 'switching_protocol'});
-
-    const server = selectedServer || currentServer;
-    if (!server) return;
-
-    try {
-      // Ensure we have a connection slot reserved
-      if (!useVpnStore.getState().connectionId) {
-        const reserved = await reserveConnection(server.id);
-        if (!reserved) {
-          useVpnStore.setState({
-            connectionState: 'error',
-            error: 'Device limit reached',
-          });
-          return;
-        }
-      }
-
-      // Re-fetch config in case server updated priority hints
-      const {data} = await api.get<{data: ServerConfig}>(
-        `/servers/${server.id}/config`,
-      );
-      fb.config = data.data;
-
-      // Rebuild queue from fresh config (server may have changed priorities)
-      const freshQueue = buildProtocolQueue(data.data, userProtocol);
-      const currentProtocolInFresh = freshQueue.indexOf(nextProtocol);
-      if (currentProtocolInFresh >= 0) {
-        fb.queue = freshQueue;
-        fb.index = currentProtocolInFresh;
-      }
-
-      // Override the protocol in the config for the Go tunnel
-      const configWithProtocol = {
-        ...data.data,
-        protocol: nextProtocol,
-      };
-
-      await storeConnect(server, configWithProtocol);
-      fb.attemptPerProtocol = 0;
-    } catch (err) {
-      console.error(
-        `[VPN Connection] Failed with protocol ${nextProtocol}:`,
-        err,
-      );
-      // Move to next protocol
-      fb.index++;
-      fb.attemptPerProtocol = 0;
-      // Small delay before trying next protocol
-      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = setTimeout(() => tryNextProtocol(), 1000);
-    }
-  }, [selectedServer, currentServer, storeConnect, userProtocol, reserveConnection]);
-
-  // Watch for state transitions to handle auto-reconnect
-  useEffect(() => {
-    const prevState = prevStateRef.current;
-
-    // On transition to connected: reset fallback state (connection was already reserved before tunnel connect)
-    if (prevState !== 'connected' && connectionState === 'connected') {
-      fallbackRef.current.attemptPerProtocol = 0;
-    }
-
-    // On transition from ANY non-terminal state to disconnected: unregister + maybe reconnect.
-    //
-    // Previously this only covered connected/reconnecting/switching_protocol → disconnected,
-    // which missed the case where the tunnel fails BEFORE ever reaching 'connected' (i.e.
-    // prev='connecting' → curr='disconnected'). That left a reserved connection slot
-    // orphaned on the server; a few failed taps in a row would exhaust the per-user
-    // device limit and the retry button would start showing "device limit reached"
-    // errors even though no real devices were active.
-    //
-    // Including 'connecting' in the prev set means every failed first-time connect
-    // also releases its slot, so the server-side count stays honest.
-    if (
-      (prevState === 'connected' ||
-        prevState === 'connecting' ||
-        prevState === 'reconnecting' ||
-        prevState === 'switching_protocol') &&
-      connectionState === 'disconnected'
-    ) {
-      // Unregister the connection
-      if (connectionId) {
-        unregisterConnection(connectionId);
-      }
-
-      // Auto-reconnect with protocol fallback
-      if (
-        !isManualDisconnectRef.current &&
-        autoReconnect &&
-        (selectedServer || currentServer)
-      ) {
-        const fb = fallbackRef.current;
-        fb.attemptPerProtocol++;
-
-        if (fb.attemptPerProtocol >= MAX_RECONNECT_ATTEMPTS) {
-          // Current protocol is failing — try next one
-          fb.index++;
-          fb.attemptPerProtocol = 0;
-
-          if (fb.index < fb.queue.length && fb.index < MAX_PROTOCOL_FALLBACKS) {
-            reconnectTimerRef.current = setTimeout(
-              () => tryNextProtocol(),
-              1000,
-            );
-          } else {
-            useVpnStore.setState({
-              connectionState: 'error',
-              error: 'All protocols blocked',
-            });
-          }
-        } else {
-          // Retry same protocol with backoff
-          const delay = getBackoffDelay(fb.attemptPerProtocol);
-          setReconnectAttempt(fb.attemptPerProtocol);
-          useVpnStore.setState({connectionState: 'reconnecting'});
-
-          reconnectTimerRef.current = setTimeout(async () => {
-            const server = selectedServer || currentServer;
-            if (!server || !fb.config) return;
-            try {
-              // Ensure we have a connection slot reserved for the reconnect
-              if (!useVpnStore.getState().connectionId) {
-                const reserved = await reserveConnection(server.id);
-                if (!reserved) {
-                  useVpnStore.setState({
-                    connectionState: 'error',
-                    error: 'Device limit reached',
-                  });
-                  return;
-                }
-              }
-              const configWithProtocol = {
-                ...fb.config,
-                protocol: fb.queue[fb.index] || fb.config.protocol,
-              };
-              await storeConnect(server, configWithProtocol);
-            } catch (err) {
-              console.error('[VPN Connection] Reconnect attempt failed:', err);
-            }
-          }, delay);
-        }
-      }
-    }
-
-    prevStateRef.current = connectionState;
-  }, [
-    connectionState,
-    connectionId,
-    autoReconnect,
-    currentServer,
-    selectedServer,
-    unregisterConnection,
-    reserveConnection,
-    setReconnectAttempt,
-    storeConnect,
-    tryNextProtocol,
-  ]);
-
-  // Cleanup reconnect timer on unmount
-  useEffect(() => {
-    return () => {
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-      }
-    };
-  }, []);
-
-  // Send heartbeat every 60s while connected
-  useEffect(() => {
-    if (connectionState !== 'connected' || !connectionId) return;
-
-    const interval = setInterval(async () => {
-      try {
-        await api.patch(`/connections/${connectionId}/heartbeat`);
-      } catch (err) {
-        console.error('[VPN Connection] Heartbeat failed:', err);
-      }
-    }, 60_000);
-
-    // Send initial heartbeat immediately on connect
-    api.patch(`/connections/${connectionId}/heartbeat`).catch(() => {});
-
-    return () => clearInterval(interval);
-  }, [connectionState, connectionId]);
-
-  // Detect network recovery and trigger reconnection when VPN was active
   const wasConnectedRef = useRef(false);
 
-  useEffect(() => {
-    if (connectionState === 'connected') {
-      wasConnectedRef.current = true;
-    } else if (
-      connectionState === 'disconnected' ||
-      connectionState === 'error'
-    ) {
-      // Reset only on manual disconnect (auto-reconnect keeps it true)
-      if (isManualDisconnectRef.current) {
-        wasConnectedRef.current = false;
-      }
-    }
-  }, [connectionState]);
+  const refs: VpnRefs = {
+    prevStateRef,
+    isManualDisconnectRef,
+    reconnectTimerRef,
+    fallbackRef,
+    wasConnectedRef,
+  };
 
-  useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener(state => {
-      const isConnected = state.isConnected && state.isInternetReachable !== false;
-      const vpnState = useVpnStore.getState().connectionState;
+  // Protocol fallback / auto-reconnect / network recovery. Exposes the
+  // slot unregister helper used by the stats slice's error-path guard.
+  const {unregisterConnection} = useProtocolFallback(refs);
 
-      // Network came back while VPN is in error/disconnected state and wasn't manually disconnected.
-      // Skip if auto-reconnect is already handling it (reconnecting/connecting/switching_protocol).
-      if (
-        isConnected &&
-        wasConnectedRef.current &&
-        !isManualDisconnectRef.current &&
-        autoReconnect &&
-        (vpnState === 'error' || vpnState === 'disconnected') &&
-        (selectedServer || currentServer)
-      ) {
-        console.log('[VPN Connection] Network recovered — attempting reconnect');
-        wasConnectedRef.current = false; // prevent duplicate triggers
+  // Native event bridge + error-slot guard + heartbeat.
+  useConnectionStats(unregisterConnection);
 
-        // Small delay to let the network stabilize
-        if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = setTimeout(async () => {
-          // Re-check state — auto-reconnect may have already started
-          const currentState = useVpnStore.getState().connectionState;
-          if (currentState === 'connecting' || currentState === 'reconnecting' || currentState === 'connected' || currentState === 'switching_protocol') {
-            return;
-          }
-
-          const server = selectedServer || currentServer;
-          if (!server) return;
-
-          try {
-            const {data} = await api.get<{data: ServerConfig}>(
-              `/servers/${server.id}/config`,
-            );
-            const config = data.data;
-            const queue = buildProtocolQueue(config, userProtocol);
-            fallbackRef.current = {queue, index: 0, attemptPerProtocol: 0, config};
-
-            const reservedId = await reserveConnection(server.id);
-            if (!reservedId) {
-              useVpnStore.setState({connectionState: 'error', error: 'Device limit reached'});
-              return;
-            }
-
-            useVpnStore.setState({connectionState: 'reconnecting'});
-            setReconnectAttempt(1);
-
-            const configWithProtocol = {...config, protocol: queue[0] || config.protocol};
-            await storeConnect(server, configWithProtocol);
-          } catch (err) {
-            console.error('[VPN Connection] Network recovery reconnect failed:', err);
-          }
-        }, 2000);
-      }
-    });
-
-    return () => unsubscribe();
-  }, [autoReconnect, selectedServer, currentServer, userProtocol, reserveConnection, storeConnect, setReconnectAttempt]);
-
-  const connect = useCallback(async () => {
-    const server = selectedServer;
-    if (!server) return;
-
-    // Flip the UI to 'connecting' immediately so the button turns
-    // yellow + shows the spinner the moment the user taps. Without
-    // this, the API prep work below (interstitial, slot release,
-    // config fetch, slot reservation) runs first and the button
-    // stays on the idle "Press to connect" text for ~500-1500ms,
-    // which feels like nothing happened. vpnStore.connect() no
-    // longer blocks on this state so the subsequent storeConnect
-    // call inside this function proceeds normally.
-    useVpnStore.setState({connectionState: 'connecting', error: null});
-
-    // Show interstitial ad (free users, every Nth connect).
-    // Awaits until dismissed, skipped, or times out — never blocks VPN.
-    await maybeShowInterstitial();
-
-    isManualDisconnectRef.current = false;
-
-    // Defensive: release any lingering connection slot from a
-    // previous failed attempt before reserving a new one. In normal
-    // operation the state watcher handles this, but the watcher
-    // relies on seeing a state transition — if the previous tunnel
-    // attempt left the state stuck in 'error' and the slot wasn't
-    // cleaned up, a fresh connect() call would pile a second slot
-    // on top of the first and hit the device-limit cap on the next
-    // reserveConnection call.
-    const lingeringId = useVpnStore.getState().connectionId;
-    if (lingeringId) {
-      try {
-        await api.delete(`/connections/${lingeringId}`);
-      } catch {
-        // Best effort — the scheduler will eventually clean stale
-        // rows if this fails, and the next reserveConnection will
-        // surface any real error to the user.
-      }
-      setConnectionId(null);
-    }
-
-    try {
-      // 1. Fetch server config
-      const {data} = await api.get<{data: ServerConfig}>(
-        `/servers/${server.id}/config`,
-      );
-      const config = data.data;
-
-      // 2. Reserve connection slot BEFORE connecting tunnel
-      const reservedConnectionId = await reserveConnection(server.id);
-      if (!reservedConnectionId) {
-        useVpnStore.setState({
-          connectionState: 'error',
-          error: 'Device limit reached',
-        });
-        return;
-      }
-
-      // 3. Build protocol queue and connect tunnel
-      const queue = buildProtocolQueue(config, userProtocol);
-      fallbackRef.current = {
-        queue,
-        index: 0,
-        attemptPerProtocol: 0,
-        config,
-      };
-
-      const primaryProtocol = queue[0] || config.protocol;
-      const configWithProtocol = {
-        ...config,
-        protocol: primaryProtocol,
-      };
-
-      console.log(
-        `[VPN Connection] Connecting with protocol: ${primaryProtocol}, queue: [${queue.join(', ')}]`,
-      );
-
-      try {
-        await storeConnect(server, configWithProtocol);
-      } catch (err) {
-        // 4. Tunnel failed — release reservation
-        if (reservedConnectionId) {
-          try {
-            await api.delete(`/connections/${reservedConnectionId}`);
-          } catch {}
-          setConnectionId(null);
-        }
-        throw err;
-      }
-    } catch (err) {
-      console.error('Failed to connect:', err);
-      // Release any slot we managed to reserve before the failure
-      // so the next tap doesn't pile another one on top. The state
-      // watcher also runs on error transition but belt-and-suspenders
-      // here covers synchronous throws before the state transitions.
-      const stuckId = useVpnStore.getState().connectionId;
-      if (stuckId) {
-        try {
-          await api.delete(`/connections/${stuckId}`);
-        } catch {}
-        setConnectionId(null);
-      }
-      useVpnStore.setState({
-        connectionState: 'error',
-        error: err instanceof Error ? err.message : 'Connection failed',
-      });
-    }
-  }, [selectedServer, storeConnect, userProtocol, reserveConnection, setConnectionId, maybeShowInterstitial]);
-
-  const disconnect = useCallback(async () => {
-    // Mark as manual so the auto-reconnect logic is suppressed
-    isManualDisconnectRef.current = true;
-
-    // Cancel any pending reconnect
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
-    setReconnectAttempt(0);
-    fallbackRef.current = {queue: [], index: 0, attemptPerProtocol: 0, config: null};
-
-    // Unregister BEFORE store clears tunnel — read fresh ID from store
-    const currentId = useVpnStore.getState().connectionId;
-    if (currentId) {
-      await unregisterConnection(currentId);
-    }
-
-    await storeDisconnect();
-  }, [storeDisconnect, setReconnectAttempt, unregisterConnection]);
-
-  // Toggle: connect if disconnected, disconnect if connected
-  const toggle = useCallback(async () => {
-    if (connectionState === 'connected') {
-      await disconnect();
-    } else if (
-      connectionState === 'disconnected' ||
-      connectionState === 'error'
-    ) {
-      await connect();
-    }
-  }, [connectionState, connect, disconnect]);
+  // User-facing connect / disconnect / toggle.
+  const {connect, disconnect, toggle} = useVpnLifecycle(refs);
 
   return {
     connectionState,
