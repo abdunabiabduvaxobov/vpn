@@ -421,7 +421,8 @@ func LinkDevice(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 				"error": "internal server error",
 			})
 		}
-		_ = storeRefreshSession(c.Context(), db, owner.ID, tokens.RefreshToken)
+		// HARD-04: bind the session to the linking device + issue IP.
+		_ = storeRefreshSession(c.Context(), db, owner.ID, tokens.RefreshToken, req.DeviceID, c.IP())
 
 		logger.Info("device linked to owner",
 			zap.String("owner_user_id", owner.ID),

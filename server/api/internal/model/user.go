@@ -57,11 +57,21 @@ type User struct {
 }
 
 // Session represents an active user session (refresh token).
+//
+// DeviceID and IssueIP (HARD-04, migration 025) bind a refresh session to the
+// device + IP it was issued from. DeviceID is HARD-checked on /auth/refresh —
+// a mismatch is a 401, blocking a stolen refresh token from being replayed on
+// another device (audit S1-7). IssueIP is SOFT-checked — an IP change is logged
+// but allowed, because mobile clients roam networks (D-10). Both are nullable
+// VARCHARs (no `not null`) so any pre-migration semantics stay tolerant; after
+// migration 025's clean-break DELETE every live row has device_id populated.
 type Session struct {
 	ID               string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()"`
 	UserID           string    `gorm:"not null;index"`
 	RefreshTokenHash string    `gorm:"not null"`
 	DeviceInfo       string    `gorm:"type:varchar(255)"`
+	DeviceID         string    `gorm:"column:device_id;type:varchar(255);index"`
+	IssueIP          string    `gorm:"column:issue_ip;type:varchar(45)"`
 	CreatedAt        time.Time `gorm:"autoCreateTime"`
 	ExpiresAt        time.Time `gorm:"not null"`
 }

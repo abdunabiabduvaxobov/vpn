@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -104,7 +106,11 @@ func AdminLogin(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Handl
 			})
 		}
 
-		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken); err != nil {
+		// Admin login is not device-bound (the admin panel is a browser, not a
+		// registered device): bind no device_id so the refresh hard check is
+		// skipped for admin sessions, but still record the issue IP for the soft
+		// anomaly log (HARD-04).
+		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken, "", c.IP()); err != nil {
 			// Don't hand back a token that has no backing session row — the
 			// next /auth/refresh will 401 and the user will be silently
 			// signed out. Failing the login lets the client retry cleanly.
@@ -229,6 +235,7 @@ func RefreshToken(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Han
 	return func(c *fiber.Ctx) error {
 		var req struct {
 			RefreshToken string `json:"refresh_token"`
+			DeviceID     string `json:"device_id"`
 		}
 		if err := c.BodyParser(&req); err != nil || req.RefreshToken == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -249,6 +256,36 @@ func RefreshToken(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Han
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "internal server error",
 			})
+		}
+
+		// HARD-04 (audit S1-7): device binding. The session was bound to a
+		// device_id at issue. A refresh presented with a DIFFERENT device_id is a
+		// stolen-token replay from another device — reject 401. device_id is an
+		// OS identifier, not a secret, so a plain string compare is correct (no
+		// constant-time needed). When the bound device_id is empty (e.g. admin
+		// login, which is not device-bound) the hard check is skipped so those
+		// sessions keep refreshing (D-10).
+		if session.DeviceID != "" && session.DeviceID != req.DeviceID {
+			logger.Warn("refresh device mismatch — rejecting (HARD-04)",
+				zap.String("user_id", session.UserID),
+				zap.String("bound_device_id", session.DeviceID),
+				zap.String("presented_device_id", req.DeviceID),
+			)
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "invalid or expired refresh token",
+			})
+		}
+
+		// HARD-04 soft IP check (D-10): an IP change is logged as a security
+		// signal but the refresh is STILL allowed, because mobile clients roam
+		// networks and an IP-reject would cause false logouts. The anomaly is
+		// recorded for detection only.
+		if session.IssueIP != "" && session.IssueIP != c.IP() {
+			logger.Warn("refresh ip mismatch (allowed — soft check)",
+				zap.String("user_id", session.UserID),
+				zap.String("issue_ip", session.IssueIP),
+				zap.String("current_ip", c.IP()),
+			)
 		}
 
 		// Rotate session inside a single transaction so a failed insert never
@@ -285,7 +322,13 @@ func RefreshToken(logger *zap.Logger, cfg *config.Config, db *gorm.DB) fiber.Han
 			// existing helper keeps the SHA-256 hashing and expiry logic in one
 			// place. The new session row is inserted in the same tx as the
 			// delete, providing the atomicity guarantee.
-			if err := storeRefreshSession(c.Context(), tx, user.ID, newTokens.RefreshToken); err != nil {
+			//
+			// HARD-04: carry the device binding forward — the rotated row keeps
+			// the SAME device_id (so the next refresh from this device still
+			// passes the hard check) and the ORIGINAL issue_ip (preserve the
+			// anomaly baseline; we deliberately do NOT reset it to the current IP,
+			// so a roaming client's drift stays comparable across rotations).
+			if err := storeRefreshSession(c.Context(), tx, user.ID, newTokens.RefreshToken, session.DeviceID, session.IssueIP); err != nil {
 				return fmt.Errorf("storing new session: %w", err)
 			}
 
@@ -411,7 +454,7 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 							"error": "internal server error",
 						})
 					}
-					if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken); err != nil {
+					if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken, req.DeviceID, c.IP()); err != nil {
 						// Without a session row the token we'd return is dead on
 						// arrival — the next /auth/refresh would 401. Fail the
 						// request so the client retries cleanly; the device row
@@ -547,7 +590,10 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 			})
 		}
 
-		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken); err != nil {
+		// Bind the session to req.DeviceID (may be "" for legacy clients that
+		// omit it — then the refresh hard check is skipped for this session,
+		// preserving legacy behaviour). issue_ip is recorded for the soft check.
+		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken, req.DeviceID, c.IP()); err != nil {
 			// User + subscription rows were just created, but without a
 			// session row the access token we'd return is dead on arrival
 			// (the next /auth/refresh would 401). Fail the request — the
@@ -575,18 +621,34 @@ func GuestLogin(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.Handl
 	}
 }
 
-// storeRefreshSession hashes the refresh token and stores it in the sessions table.
-func storeRefreshSession(ctx context.Context, db *gorm.DB, userID, refreshToken string) error {
+// storeRefreshSession hashes the refresh token and stores it in the sessions
+// table, binding the new row to the issuing device + IP (HARD-04, migration 025).
+//
+// deviceID is the OS device identifier captured at issue; it is HARD-checked on
+// /auth/refresh (mismatch -> 401), blocking a stolen refresh token from being
+// replayed on another device (audit S1-7). An empty deviceID is allowed — the
+// refresh handler skips the hard check when the bound device_id is empty, so
+// non-device-bound issuers (e.g. admin login) keep working.
+//
+// issueIP is the client IP at issue; it is SOFT-checked (logged-only) so mobile
+// roaming does not cause false logouts (D-10).
+func storeRefreshSession(ctx context.Context, db *gorm.DB, userID, refreshToken, deviceID, issueIP string) error {
 	tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(refreshToken)))
 	session := model.Session{
 		UserID:           userID,
 		RefreshTokenHash: tokenHash,
+		DeviceID:         deviceID,
+		IssueIP:          issueIP,
 		ExpiresAt:        time.Now().Add(30 * 24 * time.Hour),
 	}
 	return repository.CreateSession(ctx, db, &session)
 }
 
-// generateTokens creates a JWT access token (5 min) and refresh token (30 days).
+// generateTokens creates a JWT access token (5 min) and an OPAQUE refresh token
+// (HARD-03 / audit S1-2). The refresh token is 32 bytes of crypto/rand,
+// base64url-encoded (43 chars) — not a JWT — so it cannot be forged from
+// JWT_SECRET; its only authority is the matching sessions row. The session's
+// 30-day expiry is enforced by storeRefreshSession + FindSessionByTokenHash.
 // The role claim is embedded in the access token for admin middleware checks.
 // The name claim carries the user's display name so the app can show it without
 // a separate /account call immediately after login/register.
@@ -618,18 +680,21 @@ func generateTokens(userID, tier, role, name, planID, secret string) (*authRespo
 		return nil, fmt.Errorf("signing access token: %w", err)
 	}
 
-	refreshClaims := jwt.MapClaims{
-		"sub":  userID,
-		"type": "refresh",
-		"iat":  now.Unix(),
-		"exp":  now.Add(30 * 24 * time.Hour).Unix(),
+	// HARD-03 (audit S1-2): the refresh token is an OPAQUE 32-byte random
+	// string, base64url-encoded (43 chars, no padding, no "."). It is NOT a
+	// JWT — there are no claims to trust and no signature to forge, so a holder
+	// of JWT_SECRET can no longer mint a valid refresh token. The token is a
+	// pure server-side lookup key: storeRefreshSession SHA-256-hashes it and the
+	// only authority is the matching sessions row. Mirrors the opaque-token
+	// pattern in recovery/start_token.go (D-08).
+	//
+	// The ACCESS token above remains a signed JWT — unchanged. Only the refresh
+	// envelope changed.
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, fmt.Errorf("generating refresh token: %w", err)
 	}
-
-	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	refreshString, err := refreshToken.SignedString([]byte(secret))
-	if err != nil {
-		return nil, fmt.Errorf("signing refresh token: %w", err)
-	}
+	refreshString := base64.RawURLEncoding.EncodeToString(raw) // 43 chars, opaque
 
 	return &authResponse{
 		AccessToken:  accessString,
@@ -1003,7 +1068,9 @@ func AppleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier a
 			logger.Error("apple signin: generate tokens", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
-		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken); err != nil {
+		// HARD-04: bind the session to the device the user signed in from
+		// (req.DeviceID; empty for web sign-in, which skips the hard check).
+		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken, req.DeviceID, c.IP()); err != nil {
 			logger.Error("apple signin: store refresh", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
@@ -1068,7 +1135,9 @@ func GoogleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier 
 			logger.Error("google signin: generate tokens", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
-		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken); err != nil {
+		// HARD-04: bind the session to the device the user signed in from
+		// (req.DeviceID; empty for web sign-in, which skips the hard check).
+		if err := storeRefreshSession(c.Context(), db, user.ID, tokens.RefreshToken, req.DeviceID, c.IP()); err != nil {
 			logger.Error("google signin: store refresh", zap.Error(err))
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal server error"})
 		}
