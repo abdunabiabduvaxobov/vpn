@@ -82,6 +82,8 @@ func newUserControlsDB(t *testing.T) *gorm.DB {
 			user_id             TEXT NOT NULL,
 			refresh_token_hash  TEXT NOT NULL,
 			device_info         TEXT,
+			device_id           TEXT,
+			issue_ip            TEXT,
 			created_at          DATETIME,
 			expires_at          DATETIME NOT NULL
 		);

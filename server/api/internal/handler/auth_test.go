@@ -90,11 +90,16 @@ func newAuthTestDB(t *testing.T) *gorm.DB {
 			started_at       DATETIME,
 			expires_at       DATETIME
 		)`,
+		// HARD-04 (migration 025): device_id is bound at issue and hard-checked on
+		// refresh; issue_ip is bound at issue and soft-checked (log-only). Mirror
+		// the production columns so the device-binding tests run on the in-memory DB.
 		`CREATE TABLE IF NOT EXISTS sessions (
 			id                  TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
 			user_id             TEXT NOT NULL,
 			refresh_token_hash  TEXT NOT NULL,
 			device_info         TEXT,
+			device_id           TEXT,
+			issue_ip            TEXT,
 			created_at          DATETIME,
 			expires_at          DATETIME NOT NULL
 		)`,
