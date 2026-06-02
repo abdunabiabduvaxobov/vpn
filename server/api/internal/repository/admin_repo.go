@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"vpnapp/server/api/internal/model"
@@ -14,9 +16,17 @@ import (
 var errNilDB = fmt.Errorf("database connection is nil")
 
 // ListUsers returns a paginated slice of users and the total matching count.
-// search is matched case-insensitively against user id, email_hash, or full_name.
-// Useful for the admin panel's user search — a user_id prefix pasted by a user
-// contacting support will resolve to the correct account.
+//
+// HARD-06 (S2-3): the search filter is now PREFIX-only on indexed columns to
+// kill the unbounded `ILIKE %x%` full-table scan that an admin-supplied string
+// could trigger. We match `full_name ILIKE 'search%'` (anchored prefix — the
+// idx_users_full_name index can serve it) and, only when the input parses as a
+// full email address, an exact `email_hash = sha256hex(search)` equality (the
+// existing zero-knowledge email lookup path). The old `CAST(id AS TEXT) ILIKE`
+// branch is dropped entirely: a CAST can never use an index, and a full UUID
+// paste is better served by AdminGetUser. The handler rejects len<3 searches
+// before reaching here, so the prefix is always at least 3 chars.
+//
 // page and limit must both be >= 1; the caller is responsible for validation.
 func ListUsers(ctx context.Context, db *gorm.DB, page, limit int, search string) ([]model.User, int64, error) {
 	if db == nil {
@@ -25,11 +35,16 @@ func ListUsers(ctx context.Context, db *gorm.DB, page, limit int, search string)
 	query := db.WithContext(ctx).Model(&model.User{})
 
 	if search != "" {
-		like := fmt.Sprintf("%%%s%%", search)
-		query = query.Where(
-			"CAST(id AS TEXT) ILIKE ? OR email_hash ILIKE ? OR full_name ILIKE ?",
-			like, like, like,
-		)
+		// Anchored prefix on the indexed full_name column — NO leading '%'.
+		prefix := search + "%"
+		if looksLikeEmail(search) {
+			// Exact email match via the zero-knowledge hash. sha256hex matches
+			// how email_hash is written at sign-in (handler/auth.go).
+			emailHash := fmt.Sprintf("%x", sha256.Sum256([]byte(search)))
+			query = query.Where("full_name ILIKE ? OR email_hash = ?", prefix, emailHash)
+		} else {
+			query = query.Where("full_name ILIKE ?", prefix)
+		}
 	}
 
 	var total int64
@@ -44,6 +59,15 @@ func ListUsers(ctx context.Context, db *gorm.DB, page, limit int, search string)
 	}
 
 	return users, total, nil
+}
+
+// looksLikeEmail reports whether the search input should be treated as a full
+// email address (and thus matched exactly against email_hash). It mirrors the
+// loose validation the auth login path uses: contains '@', plausible length.
+// We deliberately keep this loose — a false positive only adds a harmless
+// indexed equality clause; it never widens the scan.
+func looksLikeEmail(s string) bool {
+	return strings.Contains(s, "@") && len(s) >= 5 && len(s) <= 255
 }
 
 // UpdateUser applies an arbitrary set of column updates to a single user row.

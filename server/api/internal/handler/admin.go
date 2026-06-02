@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"vpnapp/server/api/internal/cache"
@@ -36,11 +37,22 @@ func parsePagination(c *fiber.Ctx) (page, limit int) {
 }
 
 // AdminListUsers handles GET /admin/users.
-// Query params: page (default 1), limit (default 20, max 100), search (partial email_hash match).
+// Query params: page (default 1), limit (default 20, max 100), search.
+//
+// HARD-06 (S2-3): a non-empty search must be at least 3 characters. A 1-2 char
+// search would still scan a large slice of the users table even with the prefix
+// index, so we reject it with 400 rather than let it through. An EMPTY search
+// (no filter) stays allowed and returns the full paginated list.
 func AdminListUsers(logger *zap.Logger, db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		page, limit := parsePagination(c)
-		search := c.Query("search")
+		search := strings.TrimSpace(c.Query("search"))
+
+		if search != "" && len(search) < 3 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "search must be at least 3 characters",
+			})
+		}
 
 		users, total, err := repository.ListUsers(c.Context(), db, page, limit, search)
 		if err != nil {
@@ -173,6 +185,10 @@ func AdminUpdateUser(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 		}
 
 		// Handle subscription expiration — either explicit timestamp or extend_days.
+		// extend_days needs the current row to extend from, so it is resolved AFTER
+		// the `before` load below (which itself runs only after request-shape
+		// validation, so a bad request still 400s without touching the DB).
+		applyExtendDays := false
 		if req.SubscriptionExpiresAt != nil {
 			if *req.SubscriptionExpiresAt == "" {
 				updates["subscription_expires_at"] = nil
@@ -186,30 +202,41 @@ func AdminUpdateUser(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 				updates["subscription_expires_at"] = expires
 			}
 		} else if req.ExtendDays > 0 {
-			// Extend from the current expiration or from now, whichever is later.
-			user, err := repository.FindUserByIDAdmin(c.Context(), db, userID)
-			if err != nil {
-				if errors.Is(err, repository.ErrNotFound) {
-					return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-						"error": "user not found",
-					})
-				}
-				logger.Error("admin: failed to load user for extend", zap.Error(err))
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-					"error": "internal server error",
-				})
-			}
-			base := time.Now()
-			if user.SubscriptionExpiresAt != nil && user.SubscriptionExpiresAt.After(base) {
-				base = *user.SubscriptionExpiresAt
-			}
-			updates["subscription_expires_at"] = base.Add(time.Duration(req.ExtendDays) * 24 * time.Hour)
+			applyExtendDays = true
 		}
 
-		if len(updates) == 0 {
+		// Nothing to change unless extend_days was requested (which always sets
+		// an expiry). Reject before any DB read so a no-op / invalid request 400s.
+		if len(updates) == 0 && !applyExtendDays {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "no updatable fields provided",
 			})
+		}
+
+		// HARD-07 (S2-4/S9-4): load the current row so we can (a) extend the
+		// existing expiry for extend_days and (b) record a before->after diff of
+		// privilege-relevant fields. Runs AFTER request-shape validation so a bad
+		// role / empty body still returns 400 without a DB read.
+		before, err := repository.FindUserByIDAdmin(c.Context(), db, userID)
+		if err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+					"error": "user not found",
+				})
+			}
+			logger.Error("admin: failed to load user for update", zap.String("user_id", userID), zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "internal server error",
+			})
+		}
+
+		if applyExtendDays {
+			// Extend from the current expiration or from now, whichever is later.
+			base := time.Now()
+			if before.SubscriptionExpiresAt != nil && before.SubscriptionExpiresAt.After(base) {
+				base = *before.SubscriptionExpiresAt
+			}
+			updates["subscription_expires_at"] = base.Add(time.Duration(req.ExtendDays) * 24 * time.Hour)
 		}
 
 		if err := repository.UpdateUser(c.Context(), db, userID, updates); err != nil {
@@ -222,6 +249,25 @@ func AdminUpdateUser(logger *zap.Logger, db *gorm.DB, redisClient *redis.Client)
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "internal server error",
 			})
+		}
+
+		// HARD-07 (S2-4/S9-4): record a before->after diff of the privilege-
+		// relevant fields that actually changed, so an escalation is attributable
+		// in the audit trail. We diff role and subscription_tier (the two fields
+		// that grant access/spend) against the `before` snapshot and stash the
+		// diff in Locals; the AuditLog middleware merges it into the audit row's
+		// details JSONB. Empty diff (e.g. expiry-only change) writes nothing extra.
+		diff := map[string]map[string]any{}
+		if _, ok := updates["role"]; ok && before.Role != req.Role {
+			diff["role"] = map[string]any{"before": before.Role, "after": req.Role}
+		}
+		if _, ok := updates["subscription_tier"]; ok && before.SubscriptionTier != req.SubscriptionTier {
+			diff["subscription_tier"] = map[string]any{
+				"before": before.SubscriptionTier, "after": req.SubscriptionTier,
+			}
+		}
+		if len(diff) > 0 {
+			c.Locals("audit_details", diff)
 		}
 
 		// PERF-04 / D-06: synchronously bust user:<id> so the tier/role/expiry

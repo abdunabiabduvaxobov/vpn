@@ -80,6 +80,25 @@ func AuditLog(db *gorm.DB, logger *zap.Logger) fiber.Handler {
 			details["param_"+k] = v
 		}
 
+		// HARD-07 (S2-4/S9-4): a handler may stash a structured before->after
+		// diff under "audit_details" (e.g. AdminUpdateUser records role/tier
+		// changes). Merge each top-level key into the details JSONB so the
+		// recorded row carries e.g. {"role":{"before":"user","after":"admin"}}.
+		// We do NOT re-query inside the middleware — the handler already had both
+		// states. Accept either a map[string]any or a typed diff map.
+		if extra := c.Locals("audit_details"); extra != nil {
+			switch m := extra.(type) {
+			case map[string]any:
+				for k, v := range m {
+					details[k] = v
+				}
+			case map[string]map[string]any:
+				for k, v := range m {
+					details[k] = v
+				}
+			}
+		}
+
 		entry := &model.AuditLogEntry{
 			AdminID:  adminID,
 			Action:   action,

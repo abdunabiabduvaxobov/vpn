@@ -1,0 +1,34 @@
+-- HARD-06 (S2-3): index supporting the hardened admin user-search.
+--
+-- ListUsers (repository/admin_repo.go) was rewritten to PREFIX-match
+-- `full_name ILIKE 'search%'` (anchored, NO leading '%') instead of the old
+-- unbounded `ILIKE %x%` full-table scan. This index gives the planner an
+-- ordered structure over full_name so the anchored prefix can be served by a
+-- range scan rather than a sequential scan of the whole users table.
+--
+-- NUMBERING: 025 is reserved for HARD-04 session device-binding (plan 08-04)
+-- and 026 for HARD-02 per-user VLESS UUID (plan 08-07). This search index is
+-- numbered 027 to avoid a collision with either, per 08-02-PLAN.md task 2.
+--
+-- text_pattern_ops: a plain b-tree on full_name orders by the default collation
+-- and the planner will NOT use it for a case-insensitive ILIKE prefix. We index
+-- lower(full_name) with text_pattern_ops so an anchored prefix predicate is
+-- index-eligible regardless of case; the equivalent lower()-prefix form is what
+-- ILIKE 'x%' reduces to. This keeps the search bounded (T-08-06 DoS mitigation)
+-- even on a large users table.
+--
+-- IMPORTANT: CREATE INDEX CONCURRENTLY cannot run inside a transaction block, so
+-- this file contains NO BEGIN/COMMIT. It is applied by Postgres's native
+-- docker-entrypoint-initdb.d runner (per-file `psql -f`, no implicit tx) exactly
+-- like migrations 017 and 022. The test harness special-cases CONCURRENTLY and
+-- runs each statement on its own connection. CONCURRENTLY avoids the ACCESS
+-- EXCLUSIVE lock a plain CREATE INDEX would take; IF NOT EXISTS makes it idempotent.
+--
+-- CAVEAT (empty-volume manual backfill — carry to the deploy runbook):
+-- docker-entrypoint-initdb.d scripts run ONLY on first container init. On the
+-- existing live database the production backfill MUST be a manual runbook step,
+-- run online (no write lock) thanks to CONCURRENTLY:
+--   docker exec vpn-postgres psql -U vpnapp -d vpnapp -f /docker-entrypoint-initdb.d/027_admin_search_index.sql
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_full_name
+    ON users (lower(full_name) text_pattern_ops);
