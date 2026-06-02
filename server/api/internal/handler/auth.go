@@ -747,21 +747,27 @@ type googleVerifier interface {
 	Verify(ctx context.Context, idToken string) (google.GoogleIdentity, error)
 }
 
+// JSON tags are snake_case to match the mobile client contract (authStore.ts
+// posts identity_token / id_token / device_id / device_secret / full_name /
+// authorization_code) and the rest of this API's request bodies (e.g. the guest
+// and refresh structs use json:"device_id"). They were camelCase before, which
+// silently 400'd every mobile Apple/Google sign-in — Go's json decoder does not
+// bridge identity_token -> identityToken (v2.2.0 milestone audit gap).
 type appleSignInRequest struct {
-	IdentityToken     string `json:"identityToken"`
-	AuthorizationCode string `json:"authorizationCode"` // D-18: accepted, not exchanged this phase
-	FullName          string `json:"fullName"`
+	IdentityToken     string `json:"identity_token"`
+	AuthorizationCode string `json:"authorization_code"` // D-18: accepted, not exchanged this phase
+	FullName          string `json:"full_name"`
 	Email             string `json:"email"`
-	DeviceID          string `json:"deviceId"`
-	DeviceSecret      string `json:"deviceSecret"`
+	DeviceID          string `json:"device_id"`
+	DeviceSecret      string `json:"device_secret"`
 	Platform          string `json:"platform"`
 	Model             string `json:"model"`
 }
 
 type googleSignInRequest struct {
-	IDToken      string `json:"idToken"`
-	DeviceID     string `json:"deviceId"`
-	DeviceSecret string `json:"deviceSecret"`
+	IDToken      string `json:"id_token"`
+	DeviceID     string `json:"device_id"`
+	DeviceSecret string `json:"device_secret"`
 	Platform     string `json:"platform"`
 	Model        string `json:"model"`
 }
@@ -1031,7 +1037,7 @@ func AppleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier a
 	return func(c *fiber.Ctx) error {
 		var req appleSignInRequest
 		if err := c.BodyParser(&req); err != nil || req.IdentityToken == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "identityToken is required"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "identity_token is required"})
 		}
 
 		// Optional guest-promotion JWT in Authorization header (T-2-GuestJWTSpoof).
@@ -1115,7 +1121,7 @@ func GoogleSignIn(logger *zap.Logger, cfg *config.Config, db *gorm.DB, verifier 
 	return func(c *fiber.Ctx) error {
 		var req googleSignInRequest
 		if err := c.BodyParser(&req); err != nil || req.IDToken == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "idToken is required"})
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id_token is required"})
 		}
 
 		guestUserID, err := parseGuestJWT(c.Get("Authorization"), cfg.JWTSecret)

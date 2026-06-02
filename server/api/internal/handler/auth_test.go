@@ -616,7 +616,7 @@ func TestAppleSignIn_HappyPath(t *testing.T) {
 	app := newAppleApp(t, db, cfg, fv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-		bytes.NewBufferString(`{"identityToken":"x"}`))
+		bytes.NewBufferString(`{"identity_token":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req, -1)
 	if err != nil {
@@ -649,7 +649,7 @@ func TestAppleSignIn_AudienceMismatch_Returns401(t *testing.T) {
 	app := newAppleApp(t, db, cfg, fv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-		bytes.NewBufferString(`{"identityToken":"x"}`))
+		bytes.NewBufferString(`{"identity_token":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req, -1)
 	if err != nil {
@@ -674,7 +674,7 @@ func TestAppleSignIn_CrossSurfaceSameSubSameID(t *testing.T) {
 
 	// First sign-in creates the row.
 	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-		bytes.NewBufferString(`{"identityToken":"x","deviceId":"d1"}`))
+		bytes.NewBufferString(`{"identity_token":"x","device_id":"d1"}`))
 	req1.Header.Set("Content-Type", "application/json")
 	resp1, _ := app.Test(req1, -1)
 	body1, _ := io.ReadAll(resp1.Body)
@@ -683,7 +683,7 @@ func TestAppleSignIn_CrossSurfaceSameSubSameID(t *testing.T) {
 
 	// Second sign-in from "different device" but same sub.
 	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-		bytes.NewBufferString(`{"identityToken":"x","deviceId":"d2"}`))
+		bytes.NewBufferString(`{"identity_token":"x","device_id":"d2"}`))
 	req2.Header.Set("Content-Type", "application/json")
 	resp2, _ := app.Test(req2, -1)
 	if resp2.StatusCode != http.StatusOK {
@@ -728,7 +728,7 @@ func TestAppleSignIn_AutoLinkByEmail(t *testing.T) {
 	app := newAppleApp(t, db, cfg, fv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-		bytes.NewBufferString(`{"identityToken":"x"}`))
+		bytes.NewBufferString(`{"identity_token":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ := app.Test(req, -1)
 	if resp.StatusCode != http.StatusOK {
@@ -768,7 +768,7 @@ func TestAppleSignIn_PrivateRelaySkipsLink(t *testing.T) {
 	app := newAppleApp(t, db, cfg, fv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-		bytes.NewBufferString(`{"identityToken":"x"}`))
+		bytes.NewBufferString(`{"identity_token":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ := app.Test(req, -1)
 	if resp.StatusCode != http.StatusOK {
@@ -804,7 +804,7 @@ func TestAppleSignIn_PromoteGuestInPlace(t *testing.T) {
 
 	guestJWT := mintGuestJWT(t, cfg.JWTSecret, guestID)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-		bytes.NewBufferString(`{"identityToken":"x"}`))
+		bytes.NewBufferString(`{"identity_token":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+guestJWT)
 	resp, _ := app.Test(req, -1)
@@ -862,7 +862,7 @@ func TestAppleSignIn_GuestWithConflict_DevicesReassigned(t *testing.T) {
 
 	guestJWT := mintGuestJWT(t, cfg.JWTSecret, guestG)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-		bytes.NewBufferString(`{"identityToken":"x"}`))
+		bytes.NewBufferString(`{"identity_token":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+guestJWT)
 	resp, err := app.Test(req, -1)
@@ -904,7 +904,7 @@ func TestAppleSignIn_InvalidGuestJWT_Returns403(t *testing.T) {
 	app := newAppleApp(t, db, cfg, fv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-		bytes.NewBufferString(`{"identityToken":"x"}`))
+		bytes.NewBufferString(`{"identity_token":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer not.a.real.token")
 	resp, _ := app.Test(req, -1)
@@ -945,7 +945,7 @@ func TestAppleSignIn_ConcurrentSameSub(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-				bytes.NewBufferString(`{"identityToken":"x"}`))
+				bytes.NewBufferString(`{"identity_token":"x"}`))
 			req.Header.Set("Content-Type", "application/json")
 			resp, err := app.Test(req, -1)
 			if err != nil {
@@ -1040,7 +1040,7 @@ func TestAppleSignIn_ConcurrentAutoLinkByEmail(t *testing.T) {
 			}}
 			app := newAppleApp(t, db, cfg, fv)
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-				bytes.NewBufferString(`{"identityToken":"x"}`))
+				bytes.NewBufferString(`{"identity_token":"x"}`))
 			req.Header.Set("Content-Type", "application/json")
 			resp, err := app.Test(req, -1)
 			if err != nil {
@@ -1107,7 +1107,7 @@ func TestAppleSignIn_BodyEmailNeverUsedForAutoLink(t *testing.T) {
 	app := newAppleApp(t, db, cfg, fv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-		bytes.NewBufferString(`{"identityToken":"x","email":"victim@example.com"}`))
+		bytes.NewBufferString(`{"identity_token":"x","email":"victim@example.com"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ := app.Test(req, -1)
 	if resp.StatusCode != http.StatusOK {
@@ -1131,7 +1131,7 @@ func TestGoogleSignIn_HappyPath(t *testing.T) {
 	app := newGoogleApp(t, db, cfg, fv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/google",
-		bytes.NewBufferString(`{"idToken":"x"}`))
+		bytes.NewBufferString(`{"id_token":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ := app.Test(req, -1)
 	if resp.StatusCode != http.StatusOK {
@@ -1158,7 +1158,7 @@ func TestAuth_JWTShapeUnchanged(t *testing.T) {
 	app := newAppleApp(t, db, cfg, fv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-		bytes.NewBufferString(`{"identityToken":"x"}`))
+		bytes.NewBufferString(`{"identity_token":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ := app.Test(req, -1)
 	if resp.StatusCode != http.StatusOK {
@@ -1204,7 +1204,7 @@ func TestAppleSignIn_EmptySub_Returns401(t *testing.T) {
 	app := newAppleApp(t, db, cfg, fv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-		bytes.NewBufferString(`{"identityToken":"x"}`))
+		bytes.NewBufferString(`{"identity_token":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req, -1)
 	if err != nil {
@@ -1241,7 +1241,7 @@ func TestGoogleSignIn_EmptySub_Returns401(t *testing.T) {
 	app := newGoogleApp(t, db, cfg, fv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/google",
-		bytes.NewBufferString(`{"idToken":"x"}`))
+		bytes.NewBufferString(`{"id_token":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req, -1)
 	if err != nil {
@@ -1648,7 +1648,7 @@ func TestAppleSignIn_NewUser_HasSubscriptionRow(t *testing.T) {
 	app := newAppleApp(t, db, cfg, fv)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/apple",
-		bytes.NewBufferString(`{"identityToken":"x"}`))
+		bytes.NewBufferString(`{"identity_token":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req, -1)
 	if err != nil {
