@@ -1,0 +1,49 @@
+# CI — security gate for Go modules (HARD-09 / S11-2 / SC#3).
+#
+# Runs govulncheck on every pull_request that touches server code, one job per
+# Go module so each is scanned with its own go.mod / go.sum graph. The official
+# golang/govulncheck-action@v1 exits NON-ZERO when the Go vuln DB reports a
+# vulnerability in a reachable dependency — that non-zero exit fails the job,
+# which is the blocking behaviour SC#3 wants (a vuln-introducing PR is red).
+#
+# IMPORTANT — making a red check actually BLOCK merge is a one-time GitHub
+# repo-settings toggle (Settings -> Branches -> require `govulncheck-api` and
+# `govulncheck-tunnel` as required status checks on `main`). A YAML file alone
+# does NOT block merge until the checks are marked required. See the runbook
+# and deliberate-vuln proof in docs/ci/govulncheck-branch-protection.md.
+#
+# SUPPRESSION POLICY: golang/govulncheck-action has NO built-in silencing flag.
+# The correct way to "suppress" a finding is to FIX it — upgrade or replace the
+# vulnerable dependency (govulncheck only flags advisories with a reachable
+# call path, so a finding is real). Only as an absolute last resort for a
+# genuinely unfixable advisory, replace that single job with a direct
+# `govulncheck` invocation that post-processes output against an explicit,
+# commented allowlist — never blanket-disable the gate.
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - 'server/**'
+
+jobs:
+  # server/api (Go 1.25) — Fiber backend, the money/auth path.
+  govulncheck-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: server/api/go.mod
+          work-dir: server/api
+
+  # server/tunnel — imports xtls/xray-core, a high-churn dependency that is the
+  # most likely source of a surprise advisory; scanned with its own go.mod.
+  govulncheck-tunnel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: server/tunnel/go.mod
+          work-dir: server/tunnel
