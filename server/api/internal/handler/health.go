@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"errors"
-	"runtime"
 	"strings"
 	"time"
 
@@ -22,11 +21,13 @@ var startTime = time.Now()
 // Health handles GET /health.
 func Health() fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		// S9-2 (HARD-17): do NOT expose the Go runtime version here — /health is
+		// unauthenticated and that version string is fingerprinting fuel for an
+		// attacker mapping known-CVE surface. Status/uptime/timestamp only.
 		return c.JSON(fiber.Map{
-			"status":     "healthy",
-			"uptime":     time.Since(startTime).Round(time.Second).String(),
-			"go_version": runtime.Version(),
-			"timestamp":  time.Now().UTC(),
+			"status":    "healthy",
+			"uptime":    time.Since(startTime).Round(time.Second).String(),
+			"timestamp": time.Now().UTC(),
 		})
 	}
 }
