@@ -31,8 +31,8 @@ import (
 //
 // The MISSING half — the webhook WRITE that POPULATES subscription_expires_at
 // on successful payment — is intentionally deferred to Phase 3 (lava.top
-// webhook) per CONTEXT.md D-07. The existing Stripe handler is being deleted
-// in Phase 8 and has zero paying users.
+// webhook) per CONTEXT.md D-07. The legacy payment handler has been deleted
+// in Phase 8 and had zero paying users.
 //
 // These three regression tests therefore guard the existing scheduler
 // behavior while Phase 3 is being built, so a future refactor that

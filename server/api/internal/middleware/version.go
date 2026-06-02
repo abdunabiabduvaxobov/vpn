@@ -81,7 +81,7 @@ type SkipRule struct {
 // SkipRules bypass the check either by exact (method, path) match or — when
 // Prefix is true — by path prefix. Intended for:
 //   - GET /health
-//   - POST /webhook/stripe (called by Stripe servers, not the app)
+//   - POST /webhook/lava (called by lava.top servers, not the app)
 //   - POST /auth/admin-login, POST /auth/refresh (callable from the web admin
 //     panel without the mobile header)
 //   - prefix /api/v1/admin/ for the entire admin route tree (web panel only)
