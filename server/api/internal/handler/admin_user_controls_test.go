@@ -442,6 +442,14 @@ func TestAdminCancelSubscription(t *testing.T) {
 		systemPlanID := seedSystemPlan(t, db)
 		userID := seedControlsUser(t, db, "pro")
 		contractID := seedPaidContract(t, db, userID)
+		// Active VLESS identity that the cancel must revoke at the wire (HARD-02
+		// — v2.2.0 audit gap: cancel is a Pro->free plan change).
+		if err := db.Exec(
+			`INSERT INTO user_vless_identities (user_id, vless_uuid, is_active) VALUES (?, ?, 1)`,
+			userID, "11111111-1111-1111-1111-111111111111",
+		).Error; err != nil {
+			t.Fatalf("seed vless identity: %v", err)
+		}
 
 		app, _ := adminApp(http.MethodPost, "/admin/users/:id/cancel-subscription",
 			handler.AdminCancelSubscription(zap.NewNop(), db, rdb))
@@ -472,6 +480,18 @@ func TestAdminCancelSubscription(t *testing.T) {
 		}
 		if contract.CancelledAt == nil {
 			t.Error("cancel: contract cancelled_at should be set")
+		}
+
+		// HARD-02 wire enforcement: the user's active VLESS UUID must be revoked
+		// by the cancel so it stops being admitted at the tunnel.
+		var activeVless int64
+		if err := db.Raw(
+			`SELECT COUNT(*) FROM user_vless_identities WHERE user_id = ? AND is_active = 1`, userID,
+		).Scan(&activeVless).Error; err != nil {
+			t.Fatalf("count active vless: %v", err)
+		}
+		if activeVless != 0 {
+			t.Errorf("cancel: %d active VLESS identities remain, want 0 (HARD-02: cancel must revoke wire access)", activeVless)
 		}
 
 		// Audit row carries reason + refund_intent.

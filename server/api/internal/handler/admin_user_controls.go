@@ -364,6 +364,16 @@ func AdminCancelSubscription(logger *zap.Logger, db *gorm.DB, redisClient *redis
 				return err
 			}
 
+			// 3b. Revoke the user's per-user VLESS UUIDs (HARD-02 wire
+			//     enforcement). A Pro->free force-cancel is a plan change, so the
+			//     premium UUID must stop being admitted at the wire — this mirrors
+			//     the AdminUpdateUser tier-change path (which rotates on
+			//     tierChanged). Without it, a cancelled user keeps premium-server
+			//     wire access until an unrelated tunnel reload (v2.2.0 audit gap).
+			if err := repository.RevokeAllVlessUUIDs(c.Context(), tx, userID); err != nil {
+				return err
+			}
+
 			// 4. Mark the active contract cancelled.
 			now := time.Now()
 			if err := tx.Model(&model.LavaContract{}).
