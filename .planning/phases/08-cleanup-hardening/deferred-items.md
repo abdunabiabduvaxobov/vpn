@@ -22,6 +22,28 @@ pre-existing or unrelated to the task that surfaced them).
 - **Why deferred:** SCOPE BOUNDARY — the failing assertion is in a file 08-02 did not modify. Fixing the loop (apply 019/020/021 inline in order, or apply 024+ only after the staged migrations) is a separate change.
 - **Suggested owner:** A Phase 08 migration-hardening plan or a quick task; fix is to apply the staged 019/020/021 in numeric order within the loop rather than deferring them past 024.
 
+## From plan 08-05 (stripe removal + durable fence)
+
+### `TestGenerateTokens_RefreshIsOpaque` RED (sibling Wave-2 plan, not 08-05)
+
+- **Found during:** plan 08-05 full changed-package test run.
+- **File:** `server/api/internal/handler/auth_opaque_refresh_test.go` (NOT touched by 08-05).
+- **Symptom:** refresh token is still a JWT (`eyJ...`), so the HARD-03 opaque-token
+  assertion (`^[A-Za-z0-9_-]{43}$`) is RED.
+- **Scope:** PRE-EXISTING RED test owned by the HARD-03 plan (refresh tokens →
+  32-byte opaque). 08-05 (stripe removal) touches no token-generation path. Goes
+  GREEN when HARD-03 lands. Out of scope for 08-05.
+
+### Redis-dependent handler tests fail with `connection refused`
+
+- **Found during:** plan 08-05 full changed-package test run.
+- **Symptom:** `dial tcp 127.0.0.1:...: connect: connection refused` and
+  `database connection is nil` in handler tests that need a live Redis/Postgres.
+- **Scope:** ENVIRONMENTAL — no local Redis/Postgres in this worktree's `go test`.
+  Not caused by 08-05 (stripe removal touches no Redis/DB path). CI provides both.
+  The stripe-relevant handler tests (Admin/Payment/Webhook) and `TestNoStripeReferences`
+  all pass `ok`. Out of scope for 08-05.
+
 ## 08-01 (Wave 0 test infra)
 
 ### Pre-existing tunnel test-binary linker failure (xray-core / sagernet/sing)
