@@ -71,6 +71,9 @@ func StartPostgres(t *testing.T) *gorm.DB {
 
 	db, err := gorm.Open(postgresdriver.Open(dsn), &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+		// WR-03: mirror production gormConfig so integration tests observe the
+		// same gorm.ErrDuplicatedKey translation for unique-violation paths.
+		TranslateError: true,
 	})
 	if err != nil {
 		t.Fatalf("open gorm: %v", err)

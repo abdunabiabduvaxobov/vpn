@@ -29,6 +29,11 @@ func gormConfig() *gorm.Config {
 	return &gorm.Config{
 		Logger:      logger.Default.LogMode(logger.Warn),
 		PrepareStmt: true, // D-10d
+		// WR-03: translate driver errors (e.g. pg 23505 unique violation) into
+		// GORM sentinels so repositories can errors.Is(..., gorm.ErrDuplicatedKey)
+		// portably. GetOrCreateActiveVlessUUID relies on this to detect the
+		// partial-unique-index conflict and re-read the winning active identity.
+		TranslateError: true,
 	}
 }
 

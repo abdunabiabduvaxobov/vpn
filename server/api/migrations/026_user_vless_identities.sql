@@ -20,14 +20,21 @@
 --
 -- Indexes (both PARTIAL on is_active = TRUE — the only rows the hot paths read):
 --   * idx_uvi_user_active — GetOrCreateActiveVlessUUID's "this user's active row"
---                           lookup. Effectively unique-active-per-user in practice
---                           (the repo only ever inserts one active row per user).
+--                           lookup. PARTIAL UNIQUE so the "at most one ACTIVE
+--                           identity per user" invariant is enforced by the DB,
+--                           not merely by repo discipline (WR-03): a check-then-
+--                           insert race between two concurrent first-fetches can
+--                           otherwise create two is_active=TRUE rows. With the
+--                           unique index the loser's INSERT fails on conflict and
+--                           the repo re-reads the winner.
 --   * idx_uvi_active      — ListActiveVlessUUIDs' "all active UUIDs" scan that the
 --                           tunnel pulls each heartbeat.
 --
 -- Idempotency: CREATE TABLE / INDEX IF NOT EXISTS make the DDL safe to re-run.
 -- Applied by the generic lexicographic migration loop and the production runner;
--- no test wiring change needed.
+-- no test wiring change needed. NOTE: this migration has not shipped to any
+-- environment yet (pre-launch), so the partial unique index is added in place
+-- rather than as a follow-up migration.
 
 BEGIN;
 
@@ -40,7 +47,11 @@ CREATE TABLE IF NOT EXISTS user_vless_identities (
     revoked_at   TIMESTAMPTZ
 );
 
-CREATE INDEX IF NOT EXISTS idx_uvi_user_active ON user_vless_identities(user_id) WHERE is_active = TRUE;
+-- WR-03: PARTIAL UNIQUE on (user_id) WHERE is_active enforces one active identity
+-- per user. RotateVlessUUID retires the old active row and inserts the new one in
+-- the SAME transaction, so the two never coexist as is_active=TRUE — the unique
+-- index is satisfied at every commit boundary.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_uvi_user_active ON user_vless_identities(user_id) WHERE is_active = TRUE;
 CREATE INDEX IF NOT EXISTS idx_uvi_active ON user_vless_identities(is_active) WHERE is_active = TRUE;
 
 COMMIT;

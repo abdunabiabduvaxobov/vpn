@@ -21,20 +21,40 @@ import (
 //
 // This is the read path GetServerConfig calls per config fetch; it runs on the
 // shared *gorm.DB (its own implicit statement), not inside a caller transaction.
+//
+// WR-03: the check-then-insert below is racy on its own — two concurrent
+// first-fetches for the same brand-new user (the mobile client fans config
+// fetches out across servers, and the protocol-fallback hook re-fetches) can
+// both miss the First() and both Create(), yielding two is_active=TRUE rows. The
+// durable fix lives in migration 026: a PARTIAL UNIQUE index on (user_id) WHERE
+// is_active = TRUE. With that index the loser's INSERT fails with a unique
+// violation; we treat that as "someone else won the allocation" and re-read the
+// winner's UUID, so exactly one active identity per user survives under
+// concurrency. (errors.Is on gorm.ErrDuplicatedKey covers the wrapped pg error.)
 func GetOrCreateActiveVlessUUID(ctx context.Context, db *gorm.DB, userID string) (string, error) {
 	if db == nil {
 		return "", errNilDB
 	}
-	var ident model.UserVlessIdentity
-	err := db.WithContext(ctx).
-		Where("user_id = ? AND is_active = ?", userID, true).
-		Order("created_at DESC").
-		First(&ident).Error
-	if err == nil {
-		return ident.VlessUUID, nil
+
+	readActive := func() (string, bool, error) {
+		var ident model.UserVlessIdentity
+		err := db.WithContext(ctx).
+			Where("user_id = ? AND is_active = ?", userID, true).
+			Order("created_at DESC").
+			First(&ident).Error
+		if err == nil {
+			return ident.VlessUUID, true, nil
+		}
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, nil
+		}
+		return "", false, err
 	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
+
+	if u, found, err := readActive(); err != nil {
 		return "", err
+	} else if found {
+		return u, nil
 	}
 
 	// No active identity — allocate a fresh random UUIDv4 (D-06).
@@ -45,6 +65,17 @@ func GetOrCreateActiveVlessUUID(ctx context.Context, db *gorm.DB, userID string)
 		IsActive:  true,
 	}
 	if err := db.WithContext(ctx).Create(row).Error; err != nil {
+		// WR-03: a concurrent first-fetch won the race and inserted the active
+		// row first; the partial unique index (migration 026) rejected ours.
+		// Re-read the winner instead of surfacing the conflict or inserting a
+		// second active row.
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			if u, found, rerr := readActive(); rerr != nil {
+				return "", rerr
+			} else if found {
+				return u, nil
+			}
+		}
 		return "", err
 	}
 	return newUUID, nil
