@@ -16,6 +16,7 @@ import (
 	"vpnapp/server/api/internal/config"
 	"vpnapp/server/api/internal/handler"
 	"vpnapp/server/api/internal/lava"
+	applog "vpnapp/server/api/internal/logger"
 	"vpnapp/server/api/internal/middleware"
 	"vpnapp/server/api/internal/repository"
 	"vpnapp/server/api/internal/scheduler"
@@ -57,8 +58,12 @@ func buildFiberConfig(errorHandler fiber.ErrorHandler) fiber.Config {
 }
 
 func main() {
-	// Initialize logger
-	logger, err := zap.NewProduction()
+	// Initialize logger. The production base is wrapped with the redacting
+	// core (HARD-10 / SECURITY-AUDIT S4-4) so that token-shaped string fields
+	// (JWTs, 32-byte opaque tokens, API keys) and known-sensitive keys are
+	// replaced with [REDACTED] before any entry reaches log aggregation. Every
+	// downstream call site receives this wrapped logger unchanged.
+	logger, err := applog.Production()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to init logger: %v\n", err)
 		os.Exit(1)
