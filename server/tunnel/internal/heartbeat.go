@@ -123,6 +123,22 @@ func StartClientSync(ctx context.Context, server clientReloader, apiBaseURL, ser
 				// Unchanged active set — skip the connection-dropping reload.
 				continue
 			}
+			// WR-02: refuse to reload to an EMPTY active set. A transient empty
+			// read (migration window, bad mass-revoke, or a query the handler
+			// turns into uuids=[]) would otherwise rebuild xray with zero clients
+			// and Close the live instance — a full-server outage dropping every
+			// connection and admitting nobody. Treat empty as suspicious: keep the
+			// previous client set and retry on the next tick WITHOUT advancing
+			// lastETag, so a genuine (durable) empty set still converges once a
+			// non-empty read or an explicit signal arrives. xray-core has no hot
+			// reload, so the cost of a wrong empty reload is total, not partial.
+			if len(resp.UUIDs) == 0 {
+				logger.Warn("vless-sync: refusing to reload to an EMPTY active set — keeping previous client set",
+					zap.String("etag", etag),
+				)
+				// Do NOT advance lastETag: retry on the next tick.
+				continue
+			}
 			// DEBOUNCE: wait to coalesce a burst of rotations into one reload.
 			// Honour ctx so shutdown is not delayed by the debounce window.
 			if debounce > 0 {
