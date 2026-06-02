@@ -330,7 +330,7 @@ func main() {
 	// device_secret, tokens) and the request body would otherwise leak
 	// into log aggregation. Anything else needed for diagnosis should be
 	// added as an explicit field on the client side.
-	api.Post("/debug/error", func(c *fiber.Ctx) error {
+	api.Post("/debug/error", middleware.DebugErrorLimit(redisClient, logger), func(c *fiber.Ctx) error {
 		var body struct {
 			Error  string `json:"error"`
 			Action string `json:"action"`
@@ -401,11 +401,17 @@ func main() {
 	// Admin routes (JWT + admin role required).
 	// The audit middleware wraps the whole group so every mutating
 	// admin action is persisted to the audit_log table on success.
-	admin := api.Group("/admin",
+	// Admin security headers (HARD-08 / S2-5) are mounted FIRST on the group,
+	// before auth, so even a 401 from authMiddleware carries the hardened
+	// response headers. AdminSecurityHeaders returns helmet (nosniff, CSP,
+	// X-Frame-Options DENY) plus an unconditional Strict-Transport-Security.
+	adminMiddlewares := append(
+		middleware.AdminSecurityHeaders(),
 		authMiddleware,
 		middleware.AdminRequired(db),
 		middleware.AuditLog(db, logger),
 	)
+	admin := api.Group("/admin", adminMiddlewares...)
 	admin.Get("/users", handler.AdminListUsers(logger, db))
 	admin.Get("/users/:id", handler.AdminGetUser(logger, db))
 	admin.Patch("/users/:id", handler.AdminUpdateUser(logger, db, redisClient))
