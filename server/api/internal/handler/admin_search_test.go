@@ -36,19 +36,27 @@ func dryRunDB(t *testing.T) *gorm.DB {
 // btree index on full_name/email_hash and forces a sequential scan — the S2-3
 // admin-search DoS amplifier.
 //
-// RED now: ListUsers builds `like := "%search%"` (admin_repo.go:28), so the
-// bound LIKE argument still begins with `%`. Flips GREEN when HARD-06 rewrites
-// the predicate to a prefix match on indexed columns only.
+// GREEN when HARD-06 builds an anchored prefix (`search%`) on indexed columns
+// instead of a leading-wildcard contains match (`%search%`).
 func TestListUsers_SearchUsesPrefixNoLeadingWildcard(t *testing.T) {
 	db := dryRunDB(t)
 
-	// In DryRun, ListUsers builds the statement (binding the LIKE pattern into
-	// Statement.Vars) without executing it. The repository's internal Count call
-	// returns no error under DryRun, so the Where bindings are captured.
+	// ListUsers calls db.WithContext(ctx), which clones the gorm.Statement, so
+	// the bound LIKE pattern lands on the clone — never on this outer db. A query
+	// callback is stored on the shared Config and therefore fires on the clone
+	// too, so it can capture the Vars actually bound when the SELECT is built
+	// under DryRun.
+	var captured []interface{}
+	if err := db.Callback().Query().After("gorm:query").Register("capture_vars_test", func(tx *gorm.DB) {
+		captured = append(captured, tx.Statement.Vars...)
+	}); err != nil {
+		t.Fatalf("register capture callback: %v", err)
+	}
+
 	_, _, _ = repository.ListUsers(t.Context(), db, 1, 20, "abcdef")
 
 	foundStringVar := false
-	for _, v := range db.Statement.Vars {
+	for _, v := range captured {
 		s, ok := v.(string)
 		if !ok {
 			continue
@@ -59,7 +67,7 @@ func TestListUsers_SearchUsesPrefixNoLeadingWildcard(t *testing.T) {
 		}
 	}
 	if !foundStringVar {
-		t.Fatalf("HARD-06: no bound search pattern captured — DryRun did not record the LIKE arg (Vars=%v); adjust capture", db.Statement.Vars)
+		t.Fatalf("HARD-06: no bound search pattern captured — DryRun did not record the LIKE arg (captured=%v); adjust capture", captured)
 	}
 }
 

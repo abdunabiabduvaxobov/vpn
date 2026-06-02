@@ -3,6 +3,15 @@
 Out-of-scope discoveries logged during plan execution (not fixed — they are
 pre-existing or unrelated to the task that surfaced them).
 
+## DEF-08-W1-A — Pre-existing `TestPerfIndexes` plan_id seed failure
+
+- **Found during:** Wave 1 post-merge test run (orchestrator).
+- **File:** `server/api/migrations/perf_indexes_test.go` (NOT touched by any Phase 08 plan).
+- **Symptom:** `TestPerfIndexes` fails with `null value in column "plan_id" of relation "users" violates not-null constraint (SQLSTATE 23502)` while seeding a test user.
+- **Scope:** PRE-EXISTING — confirmed failing at base `2122b84` before any Wave 1 commit. Related to the post-019 `plan_id` NOT-NULL constraint (cf. memory `guest-login-planid-blocker`); the test's seed helper inserts a user without setting `plan_id`.
+- **Why deferred:** unrelated to Wave 1 scope; the seed helper predates Phase 08. Fix is to set a system `plan_id` (or a valid plan FK) in the test's user seed before insert.
+- **Suggested owner:** a migration/test-hardening task alongside DEF-08-02-A (same migrations test package).
+
 ## DEF-08-02-A — Pre-existing `TestMigrations019_020` ordering bug
 
 - **Found during:** Plan 08-02, Task 2 (running the full migration test suite after adding migration 027).
