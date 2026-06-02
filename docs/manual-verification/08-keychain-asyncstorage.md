@@ -96,10 +96,68 @@ from `RKStorage`.
 
 ---
 
+> **Implementation note (08-09 landed):** `secureTokenStore.ts` passes an
+> **explicit** `{ service: 'risevpn.auth' }` to every
+> `setGenericPassword` / `getGenericPassword` / `resetGenericPassword` call. So
+> the load-bearing identifier to search for is **`risevpn.auth`**, NOT the
+> default bundle id. On iOS search Keychain Access for `risevpn.auth`; on
+> Android the encrypted prefs file is named after that service.
+
+---
+
+## Coordinated single re-login (D-09 ↔ D-12, Open Risk 1)
+
+HARD-16 (this plan, 08-09) wipes the mobile AsyncStorage token AND HARD-03/04
+(plan 08-04) clears `sessions` server-side. If these ship on different days the
+user re-logs in **twice**. They MUST ship as **one release wave** so the user
+re-authenticates exactly **once**.
+
+**Release sequence (runbook step, not just code):**
+
+1. Deploy the 08-04 backend cutover (migration that does `DELETE FROM sessions`;
+   opaque device-bound refresh tokens live). All existing tokens are now dead
+   server-side.
+2. Release the new mobile build (this plan) at the same time.
+3. On first launch of the new build:
+   - `initialize()` runs a one-time `AsyncStorage.removeItem('auth-tokens')`.
+   - `secureTokenStore.getTokens()` finds nothing (fresh Keychain) → the app
+     re-mints a guest / routes to login.
+   - The fresh tokens are written **straight to the Keychain** (never AsyncStorage).
+
+**Single-re-login verification:**
+
+- [ ] With the 08-04 cutover deployed, launch the new build on a device that was
+      previously signed in on the OLD build.
+- [ ] Confirm the user is asked to authenticate **exactly once** (a guest auto
+      re-mint counts as the one event; an Apple/Google user signs in once).
+- [ ] Confirm Pro/guest tier is correct afterwards (no downgrade, no double prompt).
+- [ ] Confirm a subsequent token refresh succeeds — the `/auth/refresh` request
+      body now carries `device_id` (HARD-04); the backend must accept it.
+
+## device_id on refresh (HARD-04 client side)
+
+`services/api.ts` now sends `device_id` (from `getDeviceFingerprint()`) in the
+`/auth/refresh` body so the backend can hard-reject a refresh token replayed
+from a different device.
+
+**How to confirm on device (optional, network inspection):**
+
+- [ ] Force an access-token expiry (wait out the 5-min TTL or clear the access
+      token), trigger any authenticated call, and capture the `/auth/refresh`
+      request. Confirm the JSON body contains both `refresh_token` and
+      `device_id`.
+- [ ] Confirm a refresh with the wrong/foreign `device_id` is rejected by the
+      backend (cross-check with 08-04's device-binding behaviour).
+
+---
+
 ## Overall SC#5 result
 
-- [ ] iOS: token in Keychain (service `com.vpnapp`), `auth-tokens` absent from AsyncStorage manifest
+- [ ] iOS: token in Keychain (service **`risevpn.auth`**), `auth-tokens` absent from AsyncStorage manifest
 - [ ] Android: encrypted prefs XML present, `auth-tokens` absent from `RKStorage`
+- [ ] Single coordinated re-login confirmed (exactly one auth prompt at cutover)
+- [ ] `/auth/refresh` body carries `device_id`
 
-Both boxes checked → **SC#5 PASS**. Attach a screenshot of the Keychain entry
-and the grep showing no `auth-tokens` key to the phase verification record.
+All boxes checked → **SC#5 + HARD-16 PASS**. Attach a screenshot of the Keychain
+entry, the grep showing no `auth-tokens` key, and a note confirming the single
+re-login to the phase verification record.

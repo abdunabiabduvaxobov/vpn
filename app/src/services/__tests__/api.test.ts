@@ -21,6 +21,17 @@ jest.mock('../../stores/authStore', () => ({
   },
 }));
 
+// HARD-04: the refresh interceptor now reads the device fingerprint to send
+// device_id on /auth/refresh. Mock it so the test does not hit native code.
+jest.mock('../deviceFingerprint', () => ({
+  getDeviceFingerprint: jest.fn().mockResolvedValue({
+    device_id: 'dev_1',
+    device_secret: 'sec_1',
+    platform: 'ios',
+    model: 'iPhone',
+  }),
+}));
+
 import axios from 'axios';
 import api from '../api';
 
@@ -99,7 +110,8 @@ describe('axios interceptor T-7 short-circuit', () => {
     expect(refreshSpy).toHaveBeenCalledTimes(1);
     const [refreshUrl, refreshBody] = refreshSpy.mock.calls[0];
     expect(String(refreshUrl)).toContain('/auth/refresh');
-    expect(refreshBody).toEqual({refresh_token: 'r'});
+    // HARD-04 client side: refresh now carries device_id for backend binding.
+    expect(refreshBody).toEqual({refresh_token: 'r', device_id: 'dev_1'});
     expect(mockUpdateTokens).toHaveBeenCalledWith({
       access_token: 'NEW_AT',
       refresh_token: 'NEW_RT',
