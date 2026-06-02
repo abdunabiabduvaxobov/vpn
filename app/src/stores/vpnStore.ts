@@ -72,18 +72,17 @@ export const useVpnStore = create<VpnState>((set, get) => ({
     // wait for it to finish before starting a new connect. Otherwise the
     // fresh connect() races the still-pending native disconnect and the
     // native side typically loses the race — leaving the user with a
-    // failed first tap and a "works on second tap" experience. Poll
-    // every 100ms up to a 3s cap; the store's own disconnect safety
-    // timeout is 5s so we always finish inside that window.
+    // failed first tap and a "works on second tap" experience.
+    //
+    // Event-driven (HARD-15 / CODE-REVIEW APP-H-04): instead of polling
+    // connectionState every 100ms, await waitForDisconnected() which
+    // resolves the instant the store leaves 'disconnecting' (via a
+    // one-shot store subscription), with the SAME 3s safety cap as the
+    // old poll. The store's own disconnect safety timeout is 5s so we
+    // always finish inside that window.
     if (connectionState === 'disconnecting') {
       console.log('[VPN Store] connect waiting for disconnecting to finish');
-      const waitStart = Date.now();
-      while (
-        get().connectionState === 'disconnecting' &&
-        Date.now() - waitStart < 3000
-      ) {
-        await new Promise<void>(resolve => setTimeout(() => resolve(), 100));
-      }
+      await waitForDisconnected();
       connectionState = get().connectionState;
       // If we're still stuck in disconnecting after the wait, force it.
       if (connectionState === 'disconnecting') {
@@ -285,3 +284,43 @@ export const useVpnStore = create<VpnState>((set, get) => ({
 
   setConnectionId: (id) => set({connectionId: id}),
 }));
+
+/**
+ * Event-driven replacement for the old 100ms busy-wait poll in connect()
+ * (HARD-15 / CODE-REVIEW APP-H-04). Resolves the instant the store leaves
+ * the 'disconnecting' state via a one-shot store subscription, or after
+ * `timeoutMs` as a safety cap — preserving the old 3s cap and the
+ * force-to-disconnected fallback that connect() applies afterwards.
+ *
+ * Observable behavior is identical to the previous poll loop; the only
+ * difference is no CPU-spinning setTimeout(…, 100) cycle.
+ */
+export function waitForDisconnected(timeoutMs = 3000): Promise<void> {
+  return new Promise<void>(resolve => {
+    // Already settled — nothing to wait for.
+    if (useVpnStore.getState().connectionState !== 'disconnecting') {
+      resolve();
+      return;
+    }
+
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsub();
+      resolve();
+    };
+
+    // Resolve the moment we transition out of 'disconnecting'.
+    const unsub = useVpnStore.subscribe(state => {
+      if (state.connectionState !== 'disconnecting') {
+        finish();
+      }
+    });
+
+    // Safety cap — preserves the old 3s upper bound so connect() can
+    // force-to-disconnected if the native side never confirms.
+    const timer = setTimeout(finish, timeoutMs);
+  });
+}
