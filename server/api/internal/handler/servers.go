@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math/rand"
@@ -323,15 +324,30 @@ func GetServerConfig(logger *zap.Logger, db *gorm.DB, cfg *config.Config) fiber.
 			zap.String("user_id", userID),
 		)
 
+		// HARD-02 (S4-2/S5-1, D-06): allocate (or fetch) a PER-USER VLESS UUID
+		// instead of handing every user the shared cfg.TunnelVLESSUUID. Two users
+		// on the same plan now get DIFFERENT UUIDs, the UUID rotates on plan change,
+		// and the tunnel admits only the active set — so a leaked/revoked UUID no
+		// longer admits anyone or lets a free user enumerate the fleet. Lazy
+		// allocation on first fetch keeps the read path a single indexed lookup.
+		vlessUUID, verr := repository.GetOrCreateActiveVlessUUID(c.Context(), db, userID)
+		if verr != nil {
+			logger.Error("failed to allocate per-user VLESS UUID",
+				zap.String("user_id", userID), zap.Error(verr))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "internal server error",
+			})
+		}
+
 		// Device limit is enforced at connection registration (POST /connections),
 		// not here — config fetch must succeed so the client can attempt to connect.
 		config := ServerConfig{
 			ServerAddress: server.IPAddress,
 			ServerPort:    443,
 			Protocol:      server.Protocol,
-			// Use the shared tunnel UUID configured via TUNNEL_VLESS_UUID env var.
-			// Per-user UUIDs will be implemented when tunnel supports dynamic client management.
-			UserID: cfg.TunnelVLESSUUID,
+			// Per-user VLESS UUID (HARD-02). The tunnel admits only UUIDs in the
+			// active set it pulls from /internal/servers/:id/vless-clients.
+			UserID: vlessUUID,
 		}
 
 		// Include REALITY config when keys are provisioned.
@@ -475,6 +491,60 @@ func protocolPriorityForRegion(region string, cfg ServerConfig) []string {
 	}
 
 	return available
+}
+
+// ListServerVlessClients handles GET /api/v1/internal/servers/:id/vless-clients
+// (HARD-02). It is mounted on the internal group behind the InternalSecret
+// middleware (same constant-time shared-secret gate as the heartbeat endpoint),
+// so an unauthenticated pull is rejected before this handler runs.
+//
+// It returns the CURRENT active VLESS UUID set the tunnel should admit, plus a
+// stable ETag (sha256 of the sorted set) the tunnel uses to cheaply detect a
+// change and skip a needless connection-dropping reload when the set is
+// unchanged. The tunnel pulls this on each heartbeat tick, debounces, and calls
+// ReloadClients only when the ETag differs.
+func ListServerVlessClients(logger *zap.Logger, db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		serverID := c.Params("id")
+		if serverID == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "missing server id"})
+		}
+
+		uuids, err := repository.ListActiveVlessUUIDs(c.Context(), db, serverID)
+		if err != nil {
+			logger.Error("failed to list active vless uuids",
+				zap.String("server_id", serverID), zap.Error(err))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "internal server error",
+			})
+		}
+		if uuids == nil {
+			uuids = []string{}
+		}
+
+		etag := vlessClientsETag(uuids)
+		c.Set("ETag", etag)
+		return c.JSON(fiber.Map{
+			"uuids": uuids,
+			"etag":  etag,
+		})
+	}
+}
+
+// vlessClientsETag returns a stable sha256 hex digest of the active UUID set,
+// computed over a SORTED copy so the digest is order-independent — the tunnel
+// can compare it across pulls regardless of DB row ordering and reload only on a
+// genuine membership change.
+func vlessClientsETag(uuids []string) string {
+	sorted := make([]string, len(uuids))
+	copy(sorted, uuids)
+	sort.Strings(sorted)
+	h := sha256.New()
+	for _, u := range sorted {
+		h.Write([]byte(u))
+		h.Write([]byte{0}) // separator so ["ab","c"] != ["a","bc"]
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // resolveUserPlanID returns the plan_id for the authenticated user.

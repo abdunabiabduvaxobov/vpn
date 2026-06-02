@@ -125,6 +125,14 @@ func newUserControlsDB(t *testing.T) *gorm.DB {
 			cancelled_at       DATETIME,
 			created_at         DATETIME
 		);
+		CREATE TABLE IF NOT EXISTS user_vless_identities (
+			id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			user_id     TEXT NOT NULL,
+			vless_uuid  TEXT NOT NULL UNIQUE,
+			is_active   INTEGER NOT NULL DEFAULT 1,
+			created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			revoked_at  DATETIME
+		);
 	`
 	if err := db.Exec(ddl).Error; err != nil {
 		t.Fatalf("failed to create test tables: %v", err)
