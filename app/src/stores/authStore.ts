@@ -4,9 +4,19 @@ import api from '../services/api';
 import {getDeviceFingerprint} from '../services/deviceFingerprint';
 import {signInWithApple as performAppleSignIn} from '../services/appleSignIn';
 import {signInWithGoogle as performGoogleSignIn} from '../services/googleSignIn';
+import {secureTokenStore} from '../services/secureTokenStore';
 import type {User, AuthTokens, ApiResponse} from '../types/api';
 
-const TOKENS_KEY = 'auth-tokens';
+// HARD-16 / SC#5 (D-12): the auth token pair used to live here in AsyncStorage
+// (plaintext app-sandbox file). It now persists via secureTokenStore (iOS
+// Keychain / Android EncryptedSharedPreferences). This key is retained ONLY so
+// the one-time boot cleanup below can purge any token an upgrade-in-place user
+// still carries in AsyncStorage. Tokens are never WRITTEN here again.
+const LEGACY_TOKENS_KEY = 'auth-tokens';
+
+// D-12 one-time wipe guard — flips true after the first boot cleanup so the
+// removeItem only runs once per process (it is idempotent regardless).
+let legacyTokensWiped = false;
 
 interface AuthState {
   user: User | null;
@@ -69,22 +79,36 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     initializing = true;
     set({isLoading: true});
     try {
-      const stored = await AsyncStorage.getItem(TOKENS_KEY);
-      if (stored) {
+      // D-12 one-time wipe: purge any token an upgrade-in-place user still
+      // carries in the old AsyncStorage 'auth-tokens' key. The backend
+      // clean-break cutover (08-04) already cleared sessions server-side, so a
+      // carried-forward token is dead anyway — we deliberately do NOT migrate
+      // it into the Keychain (research §6.4: migrate-then-carry-forward gains
+      // nothing because the token is invalid). This leaves AsyncStorage with no
+      // auth token, satisfying the SC#5 literal lock, and the app routes to
+      // login / re-mints a guest below, writing fresh tokens straight to
+      // Keychain.
+      if (!legacyTokensWiped) {
+        legacyTokensWiped = true;
         try {
-          const tokens = JSON.parse(stored) as AuthTokens;
-          set({tokens, isAuthenticated: true, isLoading: false});
-          return;
+          await AsyncStorage.removeItem(LEGACY_TOKENS_KEY);
         } catch {
-          await AsyncStorage.removeItem(TOKENS_KEY);
+          // Cleanup is best-effort; a failure here does not block boot.
         }
+      }
+
+      // Tokens now live in the OS secure store (Keychain / EncryptedSharedPrefs).
+      const tokens = await secureTokenStore.getTokens();
+      if (tokens) {
+        set({tokens, isAuthenticated: true, isLoading: false});
+        return;
       }
 
       const fingerprint = await getDeviceFingerprint();
       const {data} = await api.post<{data: AuthTokens}>('/auth/guest', fingerprint);
-      const tokens = data.data;
-      await AsyncStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
-      set({tokens, isAuthenticated: true, isLoading: false});
+      const guestTokens = data.data;
+      await secureTokenStore.setTokens(guestTokens);
+      set({tokens: guestTokens, isAuthenticated: true, isLoading: false});
     } catch {
       // Guest login failed (e.g. no network). The app stays unauthenticated
       // and will retry the next time initialize() is called.
@@ -107,7 +131,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         ...fingerprint,
       });
       const tokens = data.data;
-      await AsyncStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
+      await secureTokenStore.setTokens(tokens);
       set({tokens, isAuthenticated: true, isLoading: false, user: null});
       // Re-fetch the account so the UI immediately reflects the new tier.
       await get().fetchAccount();
@@ -146,7 +170,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         {_skipAuthRefresh: true},
       );
       const tokens = data.data;
-      await AsyncStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
+      await secureTokenStore.setTokens(tokens);
       set({tokens, isAuthenticated: true, isLoading: false, user: null});
       await get().fetchAccount();
     } catch (error) {
@@ -172,7 +196,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         {_skipAuthRefresh: true},
       );
       const tokens = data.data;
-      await AsyncStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
+      await secureTokenStore.setTokens(tokens);
       set({tokens, isAuthenticated: true, isLoading: false, user: null});
       await get().fetchAccount();
     } catch (error) {
@@ -218,15 +242,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   updateTokens: (tokens: AuthTokens) => {
-    AsyncStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
+    // Fire-and-forget persist into the secure store (Keychain / EncryptedSharedPrefs).
+    void secureTokenStore.setTokens(tokens);
     set({tokens});
   },
 
-  // Awaits the AsyncStorage removal so a racing initialize() (e.g. caused
+  // Awaits the secure-store removal so a racing initialize() (e.g. caused
   // by app resume) cannot read the now-stale tokens before they are cleared.
   logout: async () => {
     try {
-      await AsyncStorage.removeItem(TOKENS_KEY);
+      await secureTokenStore.clearTokens();
     } catch {
       // Even if persistence fails, drop the in-memory tokens so the UI
       // immediately reflects the logged-out state.

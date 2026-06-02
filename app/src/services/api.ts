@@ -1,5 +1,6 @@
 import axios from 'axios';
 import {useAuthStore} from '../stores/authStore';
+import {getDeviceFingerprint} from './deviceFingerprint';
 import {APP_VERSION} from '../config/version';
 
 // T-7: allow callers to opt out of the 401→refresh→retry cycle for
@@ -94,8 +95,15 @@ api.interceptors.response.use(
       const tokens = useAuthStore.getState().tokens;
       if (tokens?.refresh_token) {
         try {
+          // HARD-04 client side: the backend now issues opaque refresh tokens
+          // bound to device_id (08-04 clean-break). Send device_id on refresh
+          // so the server can hard-reject a stolen refresh token replayed from
+          // a different device. getDeviceFingerprint() is cached after first
+          // call, so this adds no native round-trip on the hot path.
+          const fingerprint = await getDeviceFingerprint();
           const {data} = await axios.post(`${API_BASE_URL}/auth/refresh`, {
             refresh_token: tokens.refresh_token,
+            device_id: fingerprint.device_id,
           });
 
           useAuthStore.getState().updateTokens(data.data);

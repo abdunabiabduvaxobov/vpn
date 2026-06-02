@@ -9,6 +9,14 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   removeItem: jest.fn().mockResolvedValue(undefined),
 }));
 
+// HARD-16: tokens now persist via react-native-keychain (secureTokenStore).
+// Mock the native module so the store's get/set/clear resolve in jsdom.
+jest.mock('react-native-keychain', () => ({
+  setGenericPassword: jest.fn().mockResolvedValue(true),
+  getGenericPassword: jest.fn().mockResolvedValue(false),
+  resetGenericPassword: jest.fn().mockResolvedValue(true),
+}));
+
 jest.mock('../../services/api', () => ({
   __esModule: true,
   default: {
@@ -148,6 +156,77 @@ describe('signInWithGoogle action', () => {
       }),
       expect.objectContaining({_skipAuthRefresh: true}),
     );
+  });
+});
+
+describe('HARD-16 secure-storage persistence', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetStore();
+  });
+
+  // SC#5: signing in writes the token pair to the Keychain (secureTokenStore),
+  // NOT to AsyncStorage.
+  it('signInWithApple persists tokens to Keychain, never to AsyncStorage', async () => {
+    const Keychain = require('react-native-keychain');
+    const AsyncStorage = require('@react-native-async-storage/async-storage');
+    (api.post as jest.Mock).mockResolvedValue({
+      data: {data: {access_token: 'AT', refresh_token: 'RT', expires_in: 300}},
+    });
+    (api.get as jest.Mock).mockResolvedValue({data: {data: {id: 'u1'}}});
+
+    await useAuthStore.getState().signInWithApple();
+
+    expect(Keychain.setGenericPassword).toHaveBeenCalledWith(
+      'risevpn-auth',
+      JSON.stringify({access_token: 'AT', refresh_token: 'RT', expires_in: 300}),
+      {service: 'risevpn.auth'},
+    );
+    // No token ever goes to AsyncStorage.
+    expect(AsyncStorage.setItem).not.toHaveBeenCalledWith(
+      'auth-tokens',
+      expect.anything(),
+    );
+  });
+
+  // D-12 one-time wipe: initialize() purges the legacy AsyncStorage 'auth-tokens'
+  // key so an upgrade-in-place user ends with no token there (SC#5 literal lock),
+  // then mints a guest whose tokens land in the Keychain.
+  it('initialize wipes legacy AsyncStorage token and writes guest tokens to Keychain', async () => {
+    const Keychain = require('react-native-keychain');
+    const AsyncStorage = require('@react-native-async-storage/async-storage');
+    (Keychain.getGenericPassword as jest.Mock).mockResolvedValueOnce(false);
+    (api.post as jest.Mock).mockResolvedValue({
+      data: {data: {access_token: 'GAT', refresh_token: 'GRT', expires_in: 300}},
+    });
+
+    await useAuthStore.getState().initialize();
+
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('auth-tokens');
+    expect(AsyncStorage.setItem).not.toHaveBeenCalledWith(
+      'auth-tokens',
+      expect.anything(),
+    );
+    expect(Keychain.setGenericPassword).toHaveBeenCalledWith(
+      'risevpn-auth',
+      JSON.stringify({access_token: 'GAT', refresh_token: 'GRT', expires_in: 300}),
+      {service: 'risevpn.auth'},
+    );
+    expect(useAuthStore.getState().tokens?.access_token).toBe('GAT');
+  });
+
+  // logout clears the Keychain entry (not AsyncStorage).
+  it('logout resets the Keychain entry', async () => {
+    const Keychain = require('react-native-keychain');
+    useAuthStore.setState({
+      tokens: {access_token: 'AT', refresh_token: 'RT', expires_in: 300},
+      isAuthenticated: true,
+    });
+    await useAuthStore.getState().logout();
+    expect(Keychain.resetGenericPassword).toHaveBeenCalledWith({
+      service: 'risevpn.auth',
+    });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
   });
 });
 
