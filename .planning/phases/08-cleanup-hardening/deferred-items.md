@@ -3,6 +3,15 @@
 Out-of-scope discoveries logged during plan execution (not fixed — they are
 pre-existing or unrelated to the task that surfaced them).
 
+## DEF-08-W2-A — Pre-existing `TestFlushHeartbeatsCollapsesNto1` cache failure
+
+- **Found during:** Wave 2 post-merge test run (orchestrator).
+- **File:** `server/api/internal/cache/heartbeat_cache_test.go` (NOT touched by any Phase 08 plan).
+- **Symptom:** `TestFlushHeartbeatsCollapsesNto1` fails at `heartbeat_cache_test.go:130` with `SMembers after flush: ERR no such key`.
+- **Scope:** PRE-EXISTING + ENVIRONMENTAL — confirmed failing at base `2122b84`; `git diff 2122b84..HEAD -- internal/cache/` is empty (no wave touched the package). The `ERR no such key` on `SMembers` is a miniredis/test-double quirk (real Redis returns an empty set for a missing key), not a code defect.
+- **Why deferred:** unrelated to any Phase 08 plan scope. Fix is to seed the key before the SMembers assertion or upgrade/replace the Redis test double.
+- **Suggested owner:** a cache/test-hardening task.
+
 ## DEF-08-W1-A — Pre-existing `TestPerfIndexes` plan_id seed failure
 
 - **Found during:** Wave 1 post-merge test run (orchestrator).
