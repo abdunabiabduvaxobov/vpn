@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"vpnapp/server/api/internal/cache"
+	"vpnapp/server/api/internal/config"
 	"vpnapp/server/api/internal/handler"
 
 	"github.com/alicebob/miniredis/v2"
@@ -93,7 +94,7 @@ func TestServersCacheNoSelect(t *testing.T) {
 		c.Locals("role", "admin")
 		return c.Next()
 	})
-	app.Get("/servers", handler.ListServersCached(zap.NewNop(), db, rc))
+	app.Get("/servers", handler.ListServersCached(zap.NewNop(), db, rc, &config.Config{JWTSecret: "test-secret"}))
 
 	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/servers", nil), -1)
 	if err != nil {

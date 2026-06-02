@@ -360,7 +360,7 @@ func main() {
 	// the in-tree "token:blacklist:" prefix), subsequent requests with the
 	// same access token return 401 automatically.
 	protected.Post("/auth/logout", handler.Logout(logger, redisClient, db))
-	protected.Get("/servers", handler.ListServersCached(logger, db, redisClient))
+	protected.Get("/servers", handler.ListServersCached(logger, db, redisClient, cfg))
 	protected.Get("/servers/:id/config", handler.GetServerConfig(logger, db, cfg))
 	protected.Get("/subscription", handler.GetSubscription(logger, db))
 	protected.Get("/account", handler.GetAccount(logger, db))
