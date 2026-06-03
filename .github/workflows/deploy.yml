@@ -98,6 +98,22 @@ jobs:
       (needs.build-api.result == 'success' || needs.build-tunnel.result == 'success')
     runs-on: ubuntu-latest
     steps:
+      - name: Pre-flight — prod host reachable on :22
+        env:
+          HOST: ${{ secrets.SERVER_HOST }}
+        run: |
+          if [ -z "$HOST" ]; then
+            echo "::error title=SERVER_HOST is empty::Set it with: gh secret set SERVER_HOST"
+            exit 1
+          fi
+          echo "Probing prod host on :22 (5s timeout)…"
+          if nc -z -w 5 "$HOST" 22; then
+            echo "✓ prod host reachable — proceeding to deploy"
+          else
+            echo "::error title=Prod host unreachable::No SSH response on :22 within 5s. Is the VPS up (paid/running)? Is the SERVER_HOST secret current? Is port 22 open to GitHub Actions runner IPs? (last good deploy: 2026-04-26)"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - name: Copy files to server
