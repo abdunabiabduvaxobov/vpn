@@ -1,10 +1,11 @@
 ---
 phase: 7
 slug: admin-panel-overhaul
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: verified
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-05-30
+validated: 2026-06-03
 ---
 
 # Phase 7 — Validation Strategy
@@ -55,9 +56,9 @@ ADMIN-02 (per-user controls UI) and ADMIN-05 (system controls UI) validate via `
 
 ## Wave 0 Requirements
 
-- [ ] Backend integration-test helper (`testutil.StartPostgres`) to connect a real Postgres for the advisory-lock race (SC-2) + webhook-replay idempotency (SC-3) tests under `server/api/integration/` — `app.Test()` + SQLite alone cannot exercise `pg_advisory_xact_lock`.
-- [ ] RED-first stub tests for ADMIN-01,03,04,06,07,08 handler/middleware behaviors.
-- [ ] (Optional, operator decision per RESEARCH Open Q3) introduce `vitest` in `admin-web` for the new pages; otherwise `tsc` build + manual UAT.
+- [x] Backend integration-test helper (`testutil.StartPostgres`) — real-PG advisory-lock race (SC-2) + webhook-replay idempotency (SC-3) tests run green under `server/api/integration/`.
+- [x] RED-first stub tests for ADMIN-01,03,04,06,07 handler/middleware behaviors — all GREEN.
+- [ ] (Optional, operator decision per RESEARCH Open Q3) `vitest` in `admin-web` — NOT adopted; `tsc` build + manual UAT is the gate (per decision).
 
 ---
 
@@ -73,13 +74,32 @@ ADMIN-02 (per-user controls UI) and ADMIN-05 (system controls UI) validate via `
 
 ---
 
+## Validation Audit 2026-06-03
+
+All 6 backend success criteria run GREEN (verified this audit):
+
+| SC | Req | Test | Result |
+|----|-----|------|--------|
+| SC-1 live KPIs | ADMIN-01 | `handler TestAdminGetStatsKPIs` | ✅ green |
+| SC-2 advisory lock race | ADMIN-03 | `integration TestForceCancelWebhookRace` (real PG) | ✅ green |
+| SC-3 webhook replay idempotent | ADMIN-06 | `integration TestWebhookReplayIdempotent` (real PG) | ✅ green |
+| SC-4 server drain hides from public | ADMIN-04 | `handler TestServerDrainHidesFromPublic` | ✅ green |
+| SC-5 readyz/livez | ADMIN-07 | `handler TestReadyzLivez` | ✅ green |
+| SC-6 maintenance mode | ADMIN-05 | `middleware TestMaintenanceMiddleware` | ✅ green |
+
+ADMIN-02 (per-user controls UI) + ADMIN-05/08 (system controls UI) validate via the `admin-web` `tsc` build gate (sandbox can't run node; passed at phase execution) + the 5 manual UI/tunnel UAT items below. No automatable backend gaps. `nyquist_compliant: true`.
+
+> Note: the SC-2 force-cancel/webhook race test still passes after the v2.2.0 audit fix that added `RevokeAllVlessUUIDs` to `AdminCancelSubscription` (commit 08cb14b) — the lock behavior is intact.
+
+---
+
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references (PG integration helper)
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 120s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references (PG integration helper)
+- [x] No watch-mode flags
+- [x] Feedback latency < 120s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** verified 2026-06-03 (6/6 backend SCs green incl. 2 real-PG integration tests; admin-web UI via tsc gate + manual UAT)
