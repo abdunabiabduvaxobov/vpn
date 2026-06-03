@@ -17,7 +17,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_PREFIX: ghcr.io/abdunabia/vpn
+  IMAGE_PREFIX: ghcr.io/abdunabiabduvaxobov/vpn
 
 jobs:
   # Detect which services changed
@@ -135,7 +135,7 @@ jobs:
             fi
 
             # Login to GHCR
-            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u abdunabia --password-stdin
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u abdunabiabduvaxobov --password-stdin
 
             # Pull and restart — bring up BOTH tiers together for the co-located
             # single-host deploy (PERF-03 / D-01). The data tier (postgres +

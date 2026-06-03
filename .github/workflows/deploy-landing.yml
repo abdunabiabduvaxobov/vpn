@@ -43,6 +43,20 @@ jobs:
       - name: Build (static export)
         working-directory: landing
         run: npm run build
+        env:
+          # The typed env loader (landing/src/lib/env.ts) calls readRequired()
+          # for these at module load, so Next's page-data collection throws if
+          # any is empty. Use the GitHub secret when set (correct ISR/SSG data),
+          # otherwise a non-empty build placeholder so CI stays green — the
+          # standalone server reads the REAL values from the container's runtime
+          # env on the staging host. Set these as repo secrets for production.
+          BACKEND_API_URL: ${{ secrets.BACKEND_API_URL || 'http://api:8080' }}
+          REVALIDATE_SECRET: ${{ secrets.REVALIDATE_SECRET || 'build-placeholder' }}
+          APPLE_SERVICE_ID: ${{ secrets.APPLE_SERVICE_ID || 'com.risevpn.web.placeholder' }}
+          APPLE_REDIRECT_URI: ${{ secrets.APPLE_REDIRECT_URI || 'https://risevpn.com/auth/apple/callback' }}
+          GOOGLE_CLIENT_ID_WEB: ${{ secrets.GOOGLE_CLIENT_ID_WEB || 'build-placeholder.apps.googleusercontent.com' }}
+          GOOGLE_REDIRECT_URI: ${{ secrets.GOOGLE_REDIRECT_URI || 'https://risevpn.com/auth/google/callback' }}
+          APP_URL: ${{ secrets.APP_URL || 'https://risevpn.com' }}
 
       # Upload to a staging directory so the currently-live dist/ never
       # disappears mid-scp. `rm: true` clears dist.new before each upload —
