@@ -21,10 +21,13 @@
 
 services:
   landing-node:
+    # CI (deploy-landing.yml) builds + pushes this image to GHCR; the server
+    # `docker compose pull`s it. The `build:` block is kept for local dev
+    # (`docker compose -f landing/docker-compose.landing.yml build`).
     build:
       context: ./
       dockerfile: Dockerfile
-    image: rise-vpn-landing-node:latest
+    image: ${LANDING_IMAGE:-ghcr.io/abdunabiabduvaxobov/vpn-landing:latest}
     container_name: landing-node
     restart: unless-stopped
     environment:

@@ -9,72 +9,65 @@ on:
   workflow_dispatch:
 
 # Decoupled from deploy.yml (backend) and deploy-admin.yml (admin panel).
-# All three share only the production host (194.87.31.44) and the /opt/vpn
-# path prefix. Path filters above keep this workflow from triggering when
-# only backend or admin code changes.
+# All three share only the production host and the /opt/vpn path prefix.
 #
-# Output of `next build` with `output: 'export'` lands in landing/out/.
-# We rename it to dist/ on the server so the directory layout matches the
-# admin panel (/opt/vpn/admin-web/dist) and uses the same atomic-swap dance.
+# The landing app is a Next.js `output: "standalone"` Node server — it needs a
+# runtime for the /api/* proxy, HttpOnly-cookie auth, and force-dynamic pages,
+# so it CANNOT be a static `out/` export. It is shipped as a Docker image
+# (mirroring the api/tunnel pattern in deploy.yml) and run as the `landing-node`
+# container on the shared vpn-net created by the backend prod stack.
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/abdunabiabduvaxobov/vpn
 
 jobs:
-  build-and-deploy:
+  # Build and push the landing standalone image
+  build-landing:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # No build-args: landing/Dockerfile bakes placeholder ARG defaults so
+      # env.ts's fail-fast validation passes at build time. The REAL values are
+      # injected at container start by docker-compose.landing.yml's ${VAR:?}
+      # substitutions from /opt/vpn/.env.
+      - uses: docker/build-push-action@v6
+        with:
+          context: landing
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-landing:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-landing:latest
+
+  # Deploy the landing container to the production host
+  deploy:
+    needs: build-landing
+    if: needs.build-landing.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          # Next.js 16 requires Node 20+. We pin 22 LTS to stay current
-          # without chasing odd-numbered releases.
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: landing/package-lock.json
-
-      - name: Install dependencies
-        working-directory: landing
-        # `npm install` (not `npm ci`) tolerates lockfile drift between the
-        # dev box (Node 25) and the runner (Node 22). The trade-off is a
-        # slightly slower install; for a static landing of this size it
-        # costs ~5s, which we'd rather pay than have CI fail on phantom
-        # lockfile mismatches whenever Node majors diverge.
-        run: npm install --no-audit --no-fund
-
-      - name: Build (static export)
-        working-directory: landing
-        run: npm run build
-        env:
-          # The typed env loader (landing/src/lib/env.ts) calls readRequired()
-          # for these at module load, so Next's page-data collection throws if
-          # any is empty. Use the GitHub secret when set (correct ISR/SSG data),
-          # otherwise a non-empty build placeholder so CI stays green — the
-          # standalone server reads the REAL values from the container's runtime
-          # env on the staging host. Set these as repo secrets for production.
-          BACKEND_API_URL: ${{ secrets.BACKEND_API_URL || 'http://api:8080' }}
-          REVALIDATE_SECRET: ${{ secrets.REVALIDATE_SECRET || 'build-placeholder' }}
-          APPLE_SERVICE_ID: ${{ secrets.APPLE_SERVICE_ID || 'com.risevpn.web.placeholder' }}
-          APPLE_REDIRECT_URI: ${{ secrets.APPLE_REDIRECT_URI || 'https://risevpn.com/auth/apple/callback' }}
-          GOOGLE_CLIENT_ID_WEB: ${{ secrets.GOOGLE_CLIENT_ID_WEB || 'build-placeholder.apps.googleusercontent.com' }}
-          GOOGLE_REDIRECT_URI: ${{ secrets.GOOGLE_REDIRECT_URI || 'https://risevpn.com/auth/google/callback' }}
-          APP_URL: ${{ secrets.APP_URL || 'https://risevpn.com' }}
-
-      # Upload to a staging directory so the currently-live dist/ never
-      # disappears mid-scp. `rm: true` clears dist.new before each upload —
-      # safe because nginx never serves from it. strip_components: 2 drops
-      # the "landing/out" prefix so files land at dist.new/index.html,
-      # dist.new/_next/*, dist.new/ru/*, dist.new/sitemap.xml etc.
-      - name: Upload out/ to staging
+      - name: Copy landing compose to server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "landing/out/*"
-          target: "/opt/vpn/landing/dist.new"
-          strip_components: 2
-          rm: true
+          source: "landing/docker-compose.landing.yml"
+          target: "/opt/vpn"
+          strip_components: 0
 
-      - name: Atomic swap and verify
+      - name: Deploy landing container
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -82,22 +75,19 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -e
-            cd /opt/vpn/landing
-            # Sanity-check the staging tree before touching live dist/.
-            # If the upload failed we abort here so dist/ keeps serving
-            # whatever was there before.
-            test -f dist.new/index.html
-            test -f dist.new/ru/index.html
-            test -f dist.new/sitemap.xml
-            test -f dist.new/robots.txt
-            # Atomic swap. dist.old is kept one rotation so a rollback is
-            # `mv dist dist.broken && mv dist.old dist`.
-            if [ -d dist.old ]; then
-              rm -rf dist.old
-            fi
-            if [ -d dist ]; then
-              mv dist dist.old
-            fi
-            mv dist.new dist
-            echo "Landing deployed at $(date) — files:"
-            ls -lah dist/
+            cd /opt/vpn
+
+            # landing-node joins vpn-net (external), created by the backend
+            # prod stack — ensure the backend deploy has run at least once so
+            # the network exists.
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u abdunabiabduvaxobov --password-stdin
+
+            # Requires /opt/vpn/.env to define the landing runtime vars
+            # (compose ${VAR:?} fails fast otherwise):
+            #   BACKEND_API_URL, REVALIDATE_SECRET, APPLE_SERVICE_ID,
+            #   APPLE_REDIRECT_URI, GOOGLE_CLIENT_ID_WEB, GOOGLE_REDIRECT_URI, APP_URL
+            docker compose -f landing/docker-compose.landing.yml pull landing-node
+            docker compose -f landing/docker-compose.landing.yml up -d landing-node
+
+            docker image prune -f
+            echo "Landing deploy complete: $(date)"
